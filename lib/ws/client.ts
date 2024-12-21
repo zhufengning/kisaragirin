@@ -44,6 +44,11 @@ export class Client implements Bot {
         });
     }
 
+    dispose () {
+        this.logger.info('Closing WebSocket connection ...');
+        this.ws.close();
+    }
+
     private getEventDetail (event: OneBotEvent): string {
         if ('message_type' in event) return event.message_type;
         if ('request_type' in event) return event.request_type;
