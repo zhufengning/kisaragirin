@@ -1,5 +1,4 @@
-import { readFileSync } from 'fs';
-import { parse } from 'smol-toml';
+import type { Model, Api } from '@earendil-works/pi-ai';
 
 export interface OneBotConfig {
     host: string;
@@ -20,13 +19,19 @@ export interface WebPanelConfig {
     password: string;
 }
 
+export interface ModelEntry {
+    model: Model<Api>;
+    apiKey: string;
+}
+
+export interface AiConfig {
+    models: Record<string, ModelEntry>;
+    assignments: Record<string, string>;
+}
+
 export interface AppConfig {
     onebot: OneBotConfig;
     input: InputConfig;
     web: WebPanelConfig;
-}
-
-export function loadConfig(path = './config.toml'): AppConfig {
-    const raw = readFileSync(path, 'utf-8');
-    return parse(raw) as unknown as AppConfig;
+    ai: AiConfig;
 }

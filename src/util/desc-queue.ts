@@ -1,11 +1,22 @@
+import { Agent } from '@earendil-works/pi-agent-core';
+import { config } from '../../config';
+import { readFileSync } from 'fs';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db';
 import { schema } from '../db';
 import { findImagePath } from './image-store';
+import { prompts } from '../prompts';
 
-/** 假函数：图片描述（待接入视觉 LLM） */
-export async function describeImage(_path: string): Promise<string> {
-    return '一张图片';
+function extToMime(ext: string): string {
+    const map: Record<string, string> = {
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        bmp: 'image/bmp',
+    };
+    return map[ext.toLowerCase()] || 'application/octet-stream';
 }
 
 export class DescQueue {
@@ -14,9 +25,18 @@ export class DescQueue {
     private waiters = new Map<string, Array<(desc: string | undefined) => void>>();
     private db: Db;
     private running = false;
+    private agent: Agent;
 
     constructor(db: Db) {
         this.db = db;
+        const modelEntry = config.ai.models[config.ai.assignments.vision];
+        this.agent = new Agent({
+            initialState: {
+                systemPrompt: prompts.visionSystem,
+                model: modelEntry.model,
+            },
+            getApiKey: () => modelEntry.apiKey,
+        });
     }
 
     start() {
@@ -68,7 +88,7 @@ export class DescQueue {
                     continue;
                 }
 
-                const desc = await describeImage(path);
+                const desc = await this.describe(path);
                 await this.db.update(schema.images)
                     .set({ description: desc })
                     .where(eq(schema.images.sha256, sha256));
@@ -80,6 +100,30 @@ export class DescQueue {
                 this.processing.delete(sha256);
             }
         }
+    }
+
+    private async describe(path: string): Promise<string> {
+        const base64 = readFileSync(path).toString('base64');
+        const ext = path.split('.').pop() ?? 'jpg';
+        const mimeType = extToMime(ext);
+
+        this.agent.reset();
+        await this.agent.prompt(prompts.visionUser, [
+            { type: 'image', data: base64, mimeType },
+        ]);
+        await this.agent.waitForIdle();
+
+        const msgs = this.agent.state.messages;
+        const last = msgs[msgs.length - 1];
+        if (last?.role === 'assistant' && last.stopReason !== 'error') {
+            const text = last.content
+                .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+                .map(c => c.text)
+                .join('')
+                .trim();
+            if (text) return text;
+        }
+        return '一张图片';
     }
 
     private notify(sha256: string, desc: string | undefined) {

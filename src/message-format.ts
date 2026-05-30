@@ -1,4 +1,5 @@
 import type { Message, GroupMessageEvent } from '../lib/types';
+import type { Bot } from '../lib/types';
 import { downloadAndStoreImage } from './util/image-store';
 
 /**
@@ -190,7 +191,7 @@ function renderReply(seg: StoredReplySegment, ctx: RenderContext): string {
             inForward: ctx.inForward,
             descCache: ctx.descCache,
         });
-        return `\n${indentStr(ctx.indent + 1)}[ref ${sender}]: ${body}`;
+        return `\n${indentStr(ctx.indent + 1)}[ref ${sender}]: ${body}\n`;
     }
     return `[ref ${sender}]`;
 }
@@ -288,8 +289,8 @@ export async function messagesToString(
 
 /** 将 OneBot Message 数组转换为 StoredSegment 数组（不生成描述） */
 export async function onebotMessageToSegments(
+    bot: Bot,
     msgs: Message[],
-    _selfId?: number
 ): Promise<StoredSegment[]> {
     const out: StoredSegment[] = [];
     for (const m of msgs) {
@@ -306,8 +307,7 @@ export async function onebotMessageToSegments(
                 break;
             }
             case 'face': {
-                const rawFaceText = m.data.raw?.faceText as string | undefined;
-                const name = rawFaceText?.startsWith('/') ? rawFaceText.slice(1) : rawFaceText;
+                const name = m.data.raw?.faceText as string | undefined;
                 out.push({ type: 'face', id: m.data.id, ...(name ? { name } : {}) });
                 break;
             }
@@ -332,12 +332,52 @@ export async function onebotMessageToSegments(
             case 'rps':
                 out.push({ type: 'rps' });
                 break;
-            case 'reply':
-                out.push({ type: 'reply', id: m.data.id });
+            case 'reply': {
+                let nested: StoredMessage | undefined;
+                try {
+                    const res = await bot.getMsg(m.data.id);
+                    const nestedMsgs = typeof res.message === 'string' ? [] : res.message;
+                    nested = {
+                        time: res.time,
+                        messageId: res.message_id,
+                        senderId: res.sender.user_id,
+                        senderName: res.sender.nickname,
+                        senderCard: 'card' in res.sender ? res.sender.card : undefined,
+                        segments: await onebotMessageToSegments(bot, nestedMsgs),
+                    };
+                } catch {
+                    // API 失败时不阻塞主消息入库
+                }
+                out.push({ type: 'reply', id: m.data.id, ...(nested ? { message: nested } : {}) });
                 break;
-            case 'forward':
-                out.push({ type: 'forward', id: m.data.id });
+            }
+            case 'forward': {
+                let nested: StoredMessage[] | undefined;
+                try {
+                    const res = await bot.getForwardMsg(String(m.data.id));
+                    // 运行时适配：NapCat 返回 { messages: [...] }
+                    const rawMessages = (res as any).messages ?? (res as any).message;
+                    if (Array.isArray(rawMessages)) {
+                        nested = [];
+                        for (const item of rawMessages) {
+                            if (item && Array.isArray(item.message)) {
+                                nested.push({
+                                    time: item.time ?? 0,
+                                    messageId: item.message_id,
+                                    senderId: item.sender?.user_id,
+                                    senderName: item.sender?.nickname ?? '',
+                                    senderCard: item.sender?.card,
+                                    segments: await onebotMessageToSegments(bot, item.message),
+                                });
+                            }
+                        }
+                    }
+                } catch {
+                    // API 失败时不阻塞主消息入库
+                }
+                out.push({ type: 'forward', id: m.data.id, ...(nested ? { messages: nested } : {}) });
                 break;
+            }
             default:
                 out.push({ type: 'text', text: `[${(m as Message).type}]` });
         }
@@ -347,10 +387,11 @@ export async function onebotMessageToSegments(
 
 /** 将 OneBot 群消息事件转换为 StoredMessage */
 export async function groupMessageEventToStoredMessage(
-    event: GroupMessageEvent
+    event: GroupMessageEvent,
+    bot: Bot,
 ): Promise<StoredMessage> {
     const msgs = typeof event.message === 'string' ? [] : event.message;
-    const segments = await onebotMessageToSegments(msgs, event.self_id);
+    const segments = await onebotMessageToSegments(bot, msgs);
     const isAtBot = segments.some(
         s => s.type === 'at' && s.target === String(event.self_id)
     );

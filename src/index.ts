@@ -1,11 +1,9 @@
 import { createBot } from '../lib';
-import { loadConfig } from './config';
+import { config } from '../config';
 import { groupMessageEventToStoredMessage } from './message-format';
 import { createDb, schema } from './db';
 import { createWebPanel } from './web/server';
 import { DescQueue } from './util/desc-queue';
-
-const config = loadConfig('./config.toml');
 const bot = createBot(config.onebot);
 const db = createDb();
 const queue = new DescQueue(db);
@@ -23,7 +21,7 @@ panel.start();
 bot.on('message.group', async e => {
     if (!config.input.group_whitelist.includes(e.group_id)) return;
 
-    const stored = await groupMessageEventToStoredMessage(e);
+    const stored = await groupMessageEventToStoredMessage(e, bot);
 
     // 图片 sha256 写入 images 表，并加入后台描述队列
     for (const seg of stored.segments) {
