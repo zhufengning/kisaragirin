@@ -19,10 +19,14 @@ export interface FileMessage {
 export interface FaceMessage {
     type: 'face';
     data: {
-        /**
-         * @link https://github.com/kyubotics/coolq-http-api/wiki/%E8%A1%A8%E6%83%85-CQ-%E7%A0%81-ID-%E8%A1%A8
-         */
-        id: number;
+        /** NapCat / go-cqhttp 等返回的表情 ID（可能为 string） */
+        id: number | string;
+        /** 表情原始数据，NapCat 大表情会带 faceText 等字段 */
+        raw?: any;
+        /** 骰子或石头剪刀布结果 ID */
+        resultId?: string;
+        /** 连续发送次数 */
+        chainCount?: number;
     };
 }
 

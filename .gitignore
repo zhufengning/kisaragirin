@@ -130,4 +130,7 @@ dist
 .pnp.*
 
 # Philia
-config.json
+config.toml
+
+*.db
+data

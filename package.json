@@ -3,24 +3,24 @@
     "description": "Fastly build your own QQ bot",
     "version": "1.4.1",
     "type": "module",
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts",
+    "main": "./dist/src/index.js",
+    "types": "./dist/src/index.d.ts",
     "exports": {
         ".": {
-            "types": "./dist/index.d.ts",
-            "import": "./dist/index.js",
-            "require": "./dist/index.js"
+            "types": "./dist/src/index.d.ts",
+            "import": "./dist/src/index.js",
+            "require": "./dist/src/index.js"
         },
         "./*": [
-            "./dist/*",
-            "./dist/*.d.ts"
+            "./dist/src/*",
+            "./dist/src/*.d.ts"
         ]
     },
     "typesVersions": {
         "*": {
             "*": [
-                "./dist/*",
-                "./*"
+                "./dist/src/*",
+                "./dist/src/*.d.ts"
             ]
         }
     },
@@ -28,25 +28,35 @@
         "prepublish": "yarn run build",
         "type:check": "tsc --noEmit",
         "type:watch": "tsc --noEmit --watch",
-        "lint": "eslint . --ext .ts",
-        "start": "tsx ./index.ts",
-        "build": "rimraf ./dist/ && tsc -p tsconfig.dist.json"
+        "lint": "eslint ./src --ext .ts",
+        "start": "tsx ./src/index.ts",
+        "build": "rimraf ./dist/ && tsc -p tsconfig.dist.json",
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "drizzle-kit migrate",
+        "db:studio": "drizzle-kit studio"
     },
     "files": [
         "dist/**/*"
     ],
     "devDependencies": {
+        "@types/better-sqlite3": "^7.6.13",
         "@types/node": "^22.10.2",
         "@types/ws": "^8.5.13",
         "@typescript-eslint/eslint-plugin": "^8.18.1",
         "@typescript-eslint/parser": "^8.18.1",
+        "drizzle-kit": "^0.31.10",
         "eslint": "^8",
         "rimraf": "^6.0.1",
         "tsx": "^4.19.2",
         "typescript": "^5.7.2"
     },
     "dependencies": {
+        "@hono/node-server": "^2.0.4",
+        "better-sqlite3": "^12.10.0",
         "chalk": "^5.4.0",
+        "drizzle-orm": "^0.45.2",
+        "hono": "^4.12.23",
+        "smol-toml": "^1.6.1",
         "ws": "^8.18.0"
     },
     "optionalDependencies": {
