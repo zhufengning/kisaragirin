@@ -1,0 +1,88 @@
+---
+interface Props {
+    title: string;
+}
+const { title } = Astro.props;
+---
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style is:global>
+        :root {
+            --bg: #0f0f12;
+            --surface: #18181c;
+            --surface-hover: #22222a;
+            --border: #2a2a32;
+            --text: #e8e8ef;
+            --text-secondary: #9090a0;
+            --accent: #6c7ae0;
+            --accent-hover: #5a67d8;
+            --danger: #e06c75;
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        nav {
+            position: sticky; top: 0; z-index: 10;
+            background: rgba(15,15,18,0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+        }
+        nav ul {
+            list-style: none; display: flex; gap: 24px;
+            max-width: 1200px; margin: 0 auto; height: 56px; align-items: center;
+        }
+        nav a {
+            color: var(--text-secondary); font-size: 14px; font-weight: 500;
+            display: flex; align-items: center; gap: 6px;
+        }
+        nav a[aria-current="page"] { color: var(--text); }
+        nav a:hover { color: var(--text); text-decoration: none; }
+        main {
+            max-width: 1200px; margin: 0 auto; padding: 24px;
+        }
+        h1 {
+            font-size: 24px; font-weight: 600; margin-bottom: 20px;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .meta { color: var(--text-secondary); font-size: 14px; font-weight: 400; }
+        button { font-family: inherit; }
+        .btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 8px 16px; border-radius: var(--radius-sm); border: none;
+            background: var(--accent); color: #fff; font-size: 14px; cursor: pointer;
+            font-weight: 500;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+        .btn-secondary:hover { background: var(--surface-hover); }
+        .btn-danger { background: var(--danger); color: #fff; }
+        .btn-sm { padding: 6px 12px; font-size: 13px; }
+        .toolbar { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <nav>
+        <ul>
+            <li><a href="/" aria-current={Astro.url.pathname === '/' ? 'page' : undefined}>群消息</a></li>
+            <li><a href="/images" aria-current={Astro.url.pathname === '/images' ? 'page' : undefined}>图片管理</a></li>
+        </ul>
+    </nav>
+    <main>
+        <slot />
+    </main>
+</body>
+</html>

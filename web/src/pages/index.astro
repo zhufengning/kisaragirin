@@ -1,0 +1,68 @@
+---
+import Layout from '@layouts/Layout.astro';
+import { db, schema } from '@lib/db';
+import { desc, sql } from 'drizzle-orm';
+
+const rows = await db
+    .select({
+        groupId: schema.messages.groupId,
+        count: sql<number>`count(*)`,
+        lastTime: sql<number>`max(${schema.messages.time})`,
+    })
+    .from(schema.messages)
+    .groupBy(schema.messages.groupId)
+    .orderBy(desc(sql`max(${schema.messages.time})`));
+
+function fmtTime(ts: number): string {
+    return new Date(ts * 1000).toLocaleString('zh-CN');
+}
+---
+
+<Layout title="群消息浏览">
+    <h1>群消息浏览 <span class="meta">({rows.length} 个群)</span></h1>
+    <div class="grid">
+        {rows.map(r => (
+            <a class="card" href={`/group/${r.groupId}`}>
+                <div class="card-title">群 {r.groupId}</div>
+                <div class="card-meta">{r.count} 条消息 · 最后更新 {fmtTime(r.lastTime)}</div>
+            </a>
+        ))}
+        {rows.length === 0 && <p class="empty">暂无消息</p>}
+    </div>
+</Layout>
+
+<style>
+    .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 16px;
+    }
+    .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 20px;
+        transition: transform 0.1s, background 0.15s;
+    }
+    .card:hover {
+        background: var(--surface-hover);
+        transform: translateY(-2px);
+        text-decoration: none;
+    }
+    .card-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 6px;
+        color: var(--text);
+    }
+    .card-meta {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+    .empty {
+        grid-column: 1 / -1;
+        color: var(--text-secondary);
+        text-align: center;
+        padding: 40px;
+    }
+</style>

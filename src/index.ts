@@ -9,6 +9,11 @@ const config = loadConfig('./config.toml');
 const bot = createBot(config.onebot);
 const db = createDb();
 const queue = new DescQueue(db);
+
+// 把 db / queue 挂到 globalThis，让 Astro web 复用同一连接
+(globalThis as any).__db__ = db;
+(globalThis as any).__queue__ = queue;
+
 const panel = createWebPanel(db, config.web, queue);
 
 queue.start();
