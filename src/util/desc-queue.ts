@@ -1,23 +1,12 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { config } from '../../config';
-import { readFileSync } from 'fs';
 import { eq } from 'drizzle-orm';
 import type { Db } from '../db';
 import { schema } from '../db';
 import { findImagePath } from './image-store';
 import { prompts } from '../prompts';
-
-function extToMime(ext: string): string {
-    const map: Record<string, string> = {
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        png: 'image/png',
-        gif: 'image/gif',
-        webp: 'image/webp',
-        bmp: 'image/bmp',
-    };
-    return map[ext.toLowerCase()] || 'application/octet-stream';
-}
+import { withRetry } from './agent-retry';
+import { preprocessImage } from './image-preprocess';
 
 export class DescQueue {
     private queue: string[] = [];
@@ -103,15 +92,31 @@ export class DescQueue {
     }
 
     private async describe(path: string): Promise<string> {
-        const base64 = readFileSync(path).toString('base64');
-        const ext = path.split('.').pop() ?? 'jpg';
-        const mimeType = extToMime(ext);
+        const result = await preprocessImage(path);
 
-        this.agent.reset();
-        await this.agent.prompt(prompts.visionUser, [
-            { type: 'image', data: base64, mimeType },
-        ]);
-        await this.agent.waitForIdle();
+        const inputText = result.isAnimation
+            ? prompts.visionAnimated(result.totalFrames, result.extractedFrames)
+            : prompts.visionUser;
+
+        await withRetry(
+            async () => {
+                this.agent.reset();
+                await this.agent.prompt(
+                    inputText,
+                    result.frames.map(f => ({ type: 'image' as const, data: f.base64, mimeType: f.mimeType })),
+                );
+                await this.agent.waitForIdle();
+            },
+            {
+                maxRetries: 2,
+                onRetry: (attempt, maxRetries, delayMs, err) => {
+                    console.warn(
+                        `[DescQueue] Retry ${attempt}/${maxRetries} after ${delayMs}ms:`,
+                        err instanceof Error ? err.message : err,
+                    );
+                },
+            },
+        );
 
         const msgs = this.agent.state.messages;
         const last = msgs[msgs.length - 1];
@@ -132,5 +137,13 @@ export class DescQueue {
             list.forEach(r => r(desc));
             this.waiters.delete(sha256);
         }
+    }
+
+    getStatus() {
+        return {
+            pending: this.queue.length,
+            processing: this.processing.size,
+            current: this.processing.values().next().value as string | undefined,
+        };
     }
 }
