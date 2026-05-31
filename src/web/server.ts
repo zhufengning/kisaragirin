@@ -3,8 +3,10 @@ import { resolve } from 'node:path';
 import type { Db } from '../db';
 import type { WebPanelConfig } from '../config';
 import type { DescQueue } from '../util/desc-queue';
+import { Logger } from '../../lib/util/logger';
 
 export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueue) {
+    const logger = new Logger('info');
     return {
         start() {
             process.env.WEB_USERNAME = config.username;
@@ -18,11 +20,11 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
                         handler(req, res);
                     });
                     server.listen(config.port, config.host, () => {
-                        console.log(`Web panel listening on http://${config.host}:${config.port}`);
+                        logger.info(`Web panel listening on http://${config.host}:${config.port}`);
                     });
                 })
                 .catch((err) => {
-                    console.error('Failed to load Astro handler:', err);
+                    logger.error('Failed to load Astro handler:', err);
                 });
         },
     };

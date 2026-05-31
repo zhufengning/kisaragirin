@@ -10,6 +10,12 @@ export interface OneBotConfig {
 
 export interface InputConfig {
     group_whitelist: number[];
+    merge_window?: number;
+    silence_wait_time?: number;
+    reply_probability?: number;
+    max_msg_count?: number;
+    bot_name?: string;
+    bot_persona?: string;
 }
 
 export interface WebPanelConfig {
@@ -26,7 +32,11 @@ export interface ModelEntry {
 
 export interface AiConfig {
     models: Record<string, ModelEntry>;
-    assignments: Record<string, string>;
+    assignments: {
+        vision: string;
+        reply: string;
+        deep_research: string;
+    };
 }
 
 export interface AppConfig {

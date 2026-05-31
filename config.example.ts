@@ -45,6 +45,12 @@ export const config: AppConfig = {
     },
     input: {
         group_whitelist: [],
+        merge_window: 30,
+        silence_wait_time: 30,
+        reply_probability: 0.1,
+        max_msg_count: 50,
+        bot_name: '',
+        bot_persona: '',
     },
     web: {
         host: '0.0.0.0',
@@ -77,9 +83,21 @@ export const config: AppConfig = {
             'ocg-minimax-m2.5': ocgAnthropic('minimax-m2.5', 'OpenCode MiniMax M2.5'),
             'ocg-qwen3.6-plus': ocgOpenai('qwen3.6-plus', 'OpenCode Qwen 3.6 Plus'),
             'ocg-qwen3.5-plus': ocgOpenai('qwen3.5-plus', 'OpenCode Qwen 3.5 Plus'),
+            'hermes': {
+                model: {
+                    id: 'sec-bot',
+                    name: 'Hermes Sec-Bot',
+                    provider: 'openai',
+                    baseUrl: 'http://127.0.0.1:8642/v1',
+                    ...openaiCompatBase,
+                } satisfies Model<Api>,
+                apiKey: '',
+            },
         },
         assignments: {
             vision: 'qwen',
+            reply: 'ocg-qwen3.7-max',
+            deep_research: 'hermes',
         },
     },
 };

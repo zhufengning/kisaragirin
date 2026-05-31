@@ -126,8 +126,8 @@ export class Server implements Bot {
     private getEventDetail (event: any): string {
         if ('message_type' in event) return event.message_type;
         if ('request_type' in event) return event.request_type;
-        if ('notice_type' in event) return event.notice_type;
-        if ('meta_event_type' in event) return event.meta_event_type;
+        if ('notice_type' in event) return ('sub_type' in event && event.sub_type) ? `${event.notice_type}.${event.sub_type}` : event.notice_type;
+        if ('meta_event_type' in event) return ('sub_type' in event && event.sub_type) ? `${event.meta_event_type}.${event.sub_type}` : event.meta_event_type;
         return '';
     }
 

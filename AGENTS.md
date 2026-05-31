@@ -5,6 +5,9 @@
 已实现的功能：
 - 群消息采集
 - 消息与图片浏览
+- @触发回复（支持merge_window合并）
+- 闲时触发回复（沉默定时器 + 概率抽卡）
+- 两轮回复（支持深度研究agent）
 
 ## 包管理
 
@@ -20,7 +23,7 @@ yarn
 - 其余库可通过context7查询文档
 - 对于任何库，先阅读相关文档，再写代码
 - 优先阅读文档，无法找到答案的，再阅读源代码
-- 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码
+- 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码。在此之前求助于文档，而不是你的想象
 
 ## 架构设计
 
@@ -40,6 +43,8 @@ src/
     image-store.ts      -- 图片下载 + 本地存储
     image-preprocess.ts -- 图片转 jpg、压缩到 6MB 以下、动图切帧
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
+    reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列）
+    reply-agent.ts      -- 回复Agent（两轮回复 + 深度研究调用）
   prompts.ts         -- 所有 LLM prompt 的统一入口
   web/
     server.ts        -- Node.js HTTP server，加载 Astro handler
@@ -68,7 +73,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### AI 配置架构
 
-配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。
+配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
@@ -93,6 +98,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
 - `src/util/agent-retry.ts` — Agent 调用通用指数退避重试封装
+- `src/util/reply-manager.ts` — 群回复触发管理与队列
+- `src/util/reply-agent.ts` — 回复Agent与深度研究调用
 - `src/prompts.ts` — 所有 LLM prompt 的统一入口
 - `src/web/server.ts` — Web 面板 Node adapter
 - `lib/types/messages.ts` — OneBot 消息段类型
