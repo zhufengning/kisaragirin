@@ -12,12 +12,15 @@ yarn
 
 ## 约束
 
-- `StoredImageSegment` 只有 `sha256`，description 存 `images` 表
-- `messages.segments` JSON 不内嵌 description，渲染时通过 `resolveDesc` 回填
 - `src/prompts.ts` 统一管理所有 LLM prompt，禁止在业务代码中硬编码 prompt
 - `lib/` 是上游 SDK，不写业务逻辑
-- NapCat 扩展字段在 `lib/types/messages.ts` 定义，不用 `as any`
-- 数据库变更：删 `data.db`，`npx drizzle-kit push` 重建
+- 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
+- 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
+- pi ai和pi agent的文档和源码保存在~/repos/pi
+- 其余库可通过context7查询文档
+- 对于任何库，先阅读相关文档，再写代码
+- 优先阅读文档，无法找到答案的，再阅读源代码
+- 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码
 
 ## 架构设计
 
@@ -33,8 +36,10 @@ src/
     schema.ts        -- Drizzle SQLite 表定义
     index.ts         -- Database 连接工厂
   util/
-    desc-queue.ts    -- 图片描述后台队列（单线程轮询）
-    image-store.ts   -- 图片下载 + 本地存储
+    desc-queue.ts       -- 图片描述后台队列（单线程轮询）
+    image-store.ts      -- 图片下载 + 本地存储
+    image-preprocess.ts -- 图片转 jpg、压缩到 6MB 以下、动图切帧
+    agent-retry.ts      -- Agent 调用通用指数退避重试封装
   prompts.ts         -- 所有 LLM prompt 的统一入口
   web/
     server.ts        -- Node.js HTTP server，加载 Astro handler
@@ -54,14 +59,6 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       api/images/... -- 图片文件服务 + 描述管理 API
 ```
 
-### 数据流
-
-```
-OneBot WS  ←→  src/index.ts  ←→  src/db (SQLite)
-                              ←→  src/util/desc-queue.ts
-                              ←→  web/dist/server/entry.mjs (Astro SSR)
-```
-
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
@@ -71,23 +68,9 @@ OneBot WS  ←→  src/index.ts  ←→  src/db (SQLite)
 
 ### AI 配置架构
 
-配置统一放在根目录 `config.ts`，`src/config.ts` 仅做 re-export。
+配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。
 
-```
-config.ts
-  onebot     -- OneBot 连接参数
-  input      -- 群白名单等输入过滤
-  web        -- Web 面板监听地址与 Basic Auth
-  ai
-    models
-      [name]       -- 单个模型配置（复用 `Model<Api>` 类型）
-        model      -- 模型元数据（id、api、provider、baseUrl、cost 等）
-        apiKey     -- 该模型的 API key
-    assignments
-      vision       -- 用途对应已配置的模型名称，如 "qwen"
-```
-
-通过 `satisfies Model<Api>` 让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
+通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
 ## 代码规范
 
@@ -101,13 +84,6 @@ config.ts
 - `src/` — 核心业务代码
 - `web/` — Astro 前端项目，**与 `src/` 共享 DB schema 类型**
 
-### 技术栈版本要求
-- TypeScript ^5.7
-- Astro ^6.4
-- `@astrojs/node` ^10（middleware 模式）
-- Drizzle ORM ^0.45
-- better-sqlite3 ^12.10
-
 ## 核心文件
 
 - `src/index.ts` — 入口
@@ -115,6 +91,8 @@ config.ts
 - `src/db/schema.ts` — Drizzle 表定义
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
+- `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
+- `src/util/agent-retry.ts` — Agent 调用通用指数退避重试封装
 - `src/prompts.ts` — 所有 LLM prompt 的统一入口
 - `src/web/server.ts` — Web 面板 Node adapter
 - `lib/types/messages.ts` — OneBot 消息段类型
