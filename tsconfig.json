@@ -8,13 +8,25 @@
         "esModuleInterop": true,
         "isolatedModules": true,
         "skipLibCheck": true,
-        "baseUrl": ".",
         "paths": {
-            "~/*": ["src/*"],
-            "@/*": ["./*"],
-            "@lib": ["lib/index.ts"],
-            "@lib/*": ["lib/*"]
-        }
+            "~/*": [
+                "./src/*"
+            ],
+            "@/*": [
+                "./*"
+            ],
+            "@lib": [
+                "./lib/index.ts"
+            ],
+            "@lib/*": [
+                "./lib/*"
+            ]
+        },
+        "strict": true
     },
-    "exclude": ["web/", "dist/", "node_modules/"]
+    "exclude": [
+        "web/",
+        "dist/",
+        "node_modules/"
+    ]
 }

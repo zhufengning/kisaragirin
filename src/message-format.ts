@@ -3,6 +3,36 @@ import type { Bot } from '@lib/types';
 import { downloadAndStoreImage } from './util/image-store';
 
 /**
+ * 群成员昵称缓存
+ * key: `${groupId}:${qq}`
+ * value: nickname 或 card
+ */
+const memberNameCache = new Map<string, string>();
+
+async function resolveAtTargetName(
+    bot: Bot,
+    groupId: number,
+    target: string,
+): Promise<string | undefined> {
+    if (target === 'all') return '全体成员';
+
+    const cacheKey = `${groupId}:${target}`;
+    const cached = memberNameCache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+        const members = await bot.getGroupMemberList(groupId);
+        for (const m of members) {
+            const name = m.card || m.nickname;
+            memberNameCache.set(`${groupId}:${m.user_id}`, name);
+        }
+        return memberNameCache.get(cacheKey);
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * 消息数据结构设计与序列化实现
  * 参考 docs/消息格式.md 的 simple-id 消息格式规范
  */
@@ -174,15 +204,15 @@ function renderSegment(seg: StoredSegment, ctx: RenderContext): string {
         case 'text':
             return seg.text;
         case 'at':
-            return `@${seg.targetName || '某人'}`;
+            return `@${seg.targetName || '未知用户'}`;
         case 'image':
-            return `[image: ${ctx.descCache.get(seg.sha256) || '图片'}]`;
+            return `[image: ${ctx.descCache.get(seg.sha256) || '未知图片'}]`;
         case 'face':
             return `[face: ${seg.name || seg.id}]`;
         case 'record':
             return '[record: 语音]';
         case 'video':
-            return `[video: ${seg.fileName || '视频'}]`;
+            return `[video: ${seg.fileName || '未知视频'}]`;
         case 'file':
             return `[file: ${seg.fileName}]`;
         case 'json':
@@ -190,9 +220,9 @@ function renderSegment(seg: StoredSegment, ctx: RenderContext): string {
         case 'poke':
             return `[poke: ${seg.pokeType},${seg.id}]`;
         case 'dice':
-            return `[dice: ${seg.result ?? '结果'}]`;
+            return `[dice: ${seg.result ?? '未知结果'}]`;
         case 'rps':
-            return `[rps: ${seg.result ?? '结果'}]`;
+            return `[rps: ${seg.result ?? '未知结果'}]`;
         case 'reply':
             return renderReply(seg, ctx);
         case 'forward':
@@ -316,6 +346,7 @@ export async function messagesToString(
 /** 将 OneBot Message 数组转换为 StoredSegment 数组（不生成描述） */
 export async function onebotMessageToSegments(
     bot: Bot,
+    groupId: number,
     msgs: Message[],
 ): Promise<StoredSegment[]> {
     const out: StoredSegment[] = [];
@@ -324,9 +355,11 @@ export async function onebotMessageToSegments(
             case 'text':
                 out.push({ type: 'text', text: m.data.text });
                 break;
-            case 'at':
-                out.push({ type: 'at', target: m.data.qq });
+            case 'at': {
+                const targetName = await resolveAtTargetName(bot, groupId, m.data.qq);
+                out.push({ type: 'at', target: m.data.qq, targetName });
                 break;
+            }
             case 'image': {
                 const { sha256 } = await downloadAndStoreImage(m.data.url);
                 out.push({ type: 'image', sha256 });
@@ -363,13 +396,14 @@ export async function onebotMessageToSegments(
                 try {
                     const res = await bot.getMsg(m.data.id);
                     const nestedMsgs = typeof res.message === 'string' ? [] : res.message;
+                    const groupId = 'group_id' in res ? (res as any).group_id as number : 0;
                     nested = {
                         time: res.time,
                         messageId: res.message_id,
                         senderId: res.sender.user_id,
                         senderName: res.sender.nickname,
                         senderCard: 'card' in res.sender ? res.sender.card : undefined,
-                        segments: await onebotMessageToSegments(bot, nestedMsgs),
+                        segments: await onebotMessageToSegments(bot, groupId, nestedMsgs),
                     };
                 } catch {
                     // API 失败时不阻塞主消息入库
@@ -393,7 +427,7 @@ export async function onebotMessageToSegments(
                                     senderId: item.sender?.user_id,
                                     senderName: item.sender?.nickname ?? '',
                                     senderCard: item.sender?.card,
-                                    segments: await onebotMessageToSegments(bot, item.message),
+                                    segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
                                 });
                             }
                         }
@@ -417,7 +451,7 @@ export async function groupMessageEventToStoredMessage(
     bot: Bot,
 ): Promise<StoredMessage> {
     const msgs = typeof event.message === 'string' ? [] : event.message;
-    const segments = await onebotMessageToSegments(bot, msgs);
+    const segments = await onebotMessageToSegments(bot, event.group_id, msgs);
     const isAtBot = segments.some(
         s => s.type === 'at' && s.target === String(event.self_id)
     );

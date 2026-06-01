@@ -9,7 +9,7 @@ export interface WsConfig extends BaseConfig {
 
 export class Client implements Bot {
     private config: WsConfig;
-    private ws: WebSocket;
+    private ws!: WebSocket;
     private logger: Logger;
     private listeners: Map<AllEventTypes | '*', ((event: OneBotEvent) => void)[]> = new Map();
 

@@ -1,4 +1,5 @@
 import type { Model, Api } from '@earendil-works/pi-ai';
+import type { MemoryConfig } from 'mem0ai/oss';
 
 export interface OneBotConfig {
     host: string;
@@ -37,6 +38,7 @@ export interface AiConfig {
         reply: string;
         deep_research: string;
     };
+    mem0?: MemoryConfig;
 }
 
 export interface AppConfig {

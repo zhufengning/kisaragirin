@@ -8,7 +8,7 @@ export interface WsReverseConfig extends BaseConfig {
 
 export class Server implements Bot {
     private config: WsReverseConfig;
-    private wss: WebSocketServer;
+    private wss!: WebSocketServer;
     private logger: Logger;
     private listeners: Map<AllEventTypes | '*', ((event: OneBotEvent) => void)[]> = new Map();
 

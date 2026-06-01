@@ -99,5 +99,34 @@ export const config: AppConfig = {
             reply: 'ocg-qwen3.7-max',
             deep_research: 'hermes',
         },
+        mem0: {
+            embedder: {
+                provider: 'openai',
+                config: {
+                    apiKey: '',
+                    model: 'Qwen/Qwen3-Embedding-8B',
+                    baseURL: 'https://api.siliconflow.cn/v1',
+                    embeddingDims: 2560,
+                },
+            },
+            vectorStore: {
+                provider: 'qdrant',
+                config: {
+                    collectionName: 'memories',
+                    dimension: 2560,
+                    host: '127.0.0.1',
+                    port: 6333,
+                },
+            },
+            llm: {
+                provider: 'openai',
+                config: {
+                    apiKey: '',
+                    model: 'MiniMax-M2.5',
+                    baseURL: 'https://opencode.ai/zen/go/v1',
+                },
+            },
+            historyDbPath: 'data/mem0-history.db',
+        },
     },
 };

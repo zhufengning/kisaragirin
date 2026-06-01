@@ -1,7 +1,7 @@
 import {Message} from '../types';
 
 // CQ code escape mapping
-const CQ_ESCAPE_MAP = {
+const CQ_ESCAPE_MAP: Record<string, string> = {
     '&': '&amp;',
     '[': '&#91;',
     ']': '&#93;',
@@ -9,7 +9,7 @@ const CQ_ESCAPE_MAP = {
 };
 
 // CQ code unescape mapping
-const CQ_UNESCAPE_MAP = {
+const CQ_UNESCAPE_MAP: Record<string, string> = {
     '&amp;': '&',
     '&#91;': '[',
     '&#93;': ']',
