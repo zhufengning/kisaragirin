@@ -1,5 +1,7 @@
-import { completeSimple, Type } from '@earendil-works/pi-ai';
-import type { AssistantMessage, Context, Message, Tool, ToolCall } from '@earendil-works/pi-ai';
+import { Agent } from '@earendil-works/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
+import { Type } from '@earendil-works/pi-ai';
+import type { AssistantMessage } from '@earendil-works/pi-ai';
 import type { Db } from '~/db';
 import { schema } from '~/db';
 import { eq, desc } from 'drizzle-orm';
@@ -7,10 +9,9 @@ import type { DescQueue } from './desc-queue';
 import type { ReplyTask } from './reply-manager';
 import type { StoredMessage } from '~/message-format';
 import { messagesToString } from '~/message-format';
-import { withRetry } from './agent-retry';
 import { prompts } from '~/prompts';
 import { Logger } from '@lib/util/logger';
-import { createMem0Tools, executeMem0Tool } from './mem0-tool';
+import { createMem0Tools } from './mem0-tool';
 
 const replyFirstTurnSchema = Type.Object({
     immediate_reply: Type.String(),
@@ -18,20 +19,18 @@ const replyFirstTurnSchema = Type.Object({
     deep_research_keyword: Type.Optional(Type.String()),
 });
 
+type ReplyFirstTurnArgs = {
+    immediate_reply: string;
+    action: 'FINISH' | 'DEEP_RESEARCH';
+    deep_research_keyword?: string;
+};
+
 const replySecondTurnSchema = Type.Object({
     final_reply: Type.String(),
 });
 
-const replyFirstTurnTool: Tool<typeof replyFirstTurnSchema> = {
-    name: 'reply_first_turn',
-    description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。否则将先发送immediate_reply，再为你提供深度研究结果以便发送后续消息。',
-    parameters: replyFirstTurnSchema,
-};
-
-const replySecondTurnTool: Tool<typeof replySecondTurnSchema> = {
-    name: 'reply_second_turn',
-    description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
-    parameters: replySecondTurnSchema,
+type ReplySecondTurnArgs = {
+    final_reply: string;
 };
 
 function extractText(response: AssistantMessage): string {
@@ -42,9 +41,15 @@ function extractText(response: AssistantMessage): string {
         .trim();
 }
 
-function extractToolCall(response: AssistantMessage, toolName: string): ToolCall | null {
-    const calls = response.content.filter((c): c is ToolCall => c.type === 'toolCall' && c.name === toolName);
-    return calls[0] || null;
+function getLastAssistant(agent: Agent): AssistantMessage | undefined {
+    const messages = agent.state.messages;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg.role === 'assistant') {
+            return msg as AssistantMessage;
+        }
+    }
+    return undefined;
 }
 
 export class ReplyAgent {
@@ -52,19 +57,15 @@ export class ReplyAgent {
     private descQueue: DescQueue;
     private config: any;
     private logger: Logger;
-    private mem0Tools: Tool[];
 
     constructor(db: Db, descQueue: DescQueue, config: any) {
         this.db = db;
         this.descQueue = descQueue;
         this.config = config;
         this.logger = new Logger(config.onebot.log_level);
-        this.mem0Tools = config.ai.mem0
-            ? createMem0Tools(config.ai.mem0, config.onebot.log_level)
-            : [];
     }
 
-    async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string> {
+    async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string[]> {
         this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
         const maxMsgCount = this.config.input.max_msg_count ?? 50;
 
@@ -102,105 +103,134 @@ export class ReplyAgent {
         const userPrompt = await this.buildUserPrompt(history, latest, task);
         this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
 
-        // 第一 turn
-        this.logger.debug(`[ReplyAgent] [${groupId}] first turn calling...`);
-        const firstTurnTools = [replyFirstTurnTool, ...this.mem0Tools];
-        let response = await this.callReplyModel(systemPrompt, userPrompt, firstTurnTools);
+        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
+        if (!modelEntry) throw new Error('Reply model not configured');
 
-        let mem0Results1 = await this.handleMem0ToolCalls(response, groupId);
+        const mem0Tools = this.config.ai.mem0
+            ? createMem0Tools(this.config.ai.mem0, this.config.onebot.log_level, groupId)
+            : [];
 
-        if (mem0Results1.length > 0) {
-            const contextWithResults: Message[] = [
-                { role: 'user', content: userPrompt, timestamp: Date.now() },
-                response,
-                ...mem0Results1,
-            ];
-            response = await this.callReplyModel(systemPrompt, '', firstTurnTools, contextWithResults);
-            mem0Results1 = await this.handleMem0ToolCalls(response, groupId);
+        // 第一轮：决策 FINISH 或 DEEP_RESEARCH
+        let firstTurnResult: ReplyFirstTurnArgs | null = null;
+
+        const replyFirstTurnTool: AgentTool<typeof replyFirstTurnSchema> = {
+            name: 'reply_first_turn',
+            label: '第一轮回复',
+            description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。否则将先发送immediate_reply，再为你提供深度研究结果以便发送后续消息。',
+            parameters: replyFirstTurnSchema,
+            async execute(_toolCallId, params) {
+                firstTurnResult = params as ReplyFirstTurnArgs;
+                return {
+                    content: [{ type: 'text', text: `决策: ${params.action}` }],
+                    details: params,
+                    terminate: true,
+                };
+            },
+        };
+
+        const firstTurnTools: AgentTool<any>[] = [replyFirstTurnTool, ...mem0Tools];
+
+        const agent = new Agent({
+            initialState: {
+                systemPrompt,
+                model: modelEntry.model,
+                tools: firstTurnTools,
+            },
+            getApiKey: () => modelEntry.apiKey,
+        });
+
+        this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
+        agent.reset();
+        firstTurnResult = null;
+        await agent.prompt(userPrompt);
+        await agent.waitForIdle();
+
+        let reminderCount = 0;
+        const maxReminders = 2;
+
+        while (!firstTurnResult && reminderCount < maxReminders) {
+            reminderCount++;
+            this.logger.info(`[ReplyAgent] [${groupId}] first turn no toolCall, sending reminder ${reminderCount}/${maxReminders}...`);
+            await agent.prompt(prompts.replyReminderFirstTurn);
+            await agent.waitForIdle();
         }
-        
-        let toolCall = extractToolCall(response, 'reply_first_turn');
 
-        if (!toolCall) {
-            const retryContext1: Message[] = [
-                { role: 'user', content: userPrompt, timestamp: Date.now() },
-                response,
-                ...mem0Results1,
-                { role: 'user', content: prompts.replyReminderFirstTurn, timestamp: Date.now() },
-            ];
-            response = await this.callReplyModel(systemPrompt, prompts.replyReminderFirstTurn, firstTurnTools, retryContext1);
-            const mem0Results1Retry = await this.handleMem0ToolCalls(response, groupId);
-            retryContext1.push(...mem0Results1Retry);
-            toolCall = extractToolCall(response, 'reply_first_turn');
+        if (!firstTurnResult) {
+            const lastAssistant = getLastAssistant(agent);
+            const text = lastAssistant ? extractText(lastAssistant) : '';
+            this.logger.info(`[ReplyAgent] [${groupId}] first turn no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+            return [text || '（沉默）'];
         }
 
-        if (!toolCall) {
-            const text = extractText(response) || '（沉默）';
-            this.logger.info(`[ReplyAgent] [${groupId}] first turn no toolCall, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            return text;
-        }
+        const firstTurnArgs = firstTurnResult as ReplyFirstTurnArgs;
+        this.logger.info(`[ReplyAgent] [${groupId}] first turn action=${firstTurnArgs.action}`);
 
-        const args = toolCall.arguments as { immediate_reply: string; action: 'FINISH' | 'DEEP_RESEARCH'; deep_research_keyword?: string };
-        this.logger.info(`[ReplyAgent] [${groupId}] first turn action=${args.action}`);
-
-        if (args.action === 'FINISH') {
-            this.logger.info(`[ReplyAgent] [${groupId}] FINISH reply=${args.immediate_reply.slice(0, 80)}${args.immediate_reply.length > 80 ? '...' : ''}`);
-            return args.immediate_reply;
+        if (firstTurnArgs.action === 'FINISH') {
+            this.logger.info(`[ReplyAgent] [${groupId}] FINISH reply=${firstTurnArgs.immediate_reply.slice(0, 80)}${firstTurnArgs.immediate_reply.length > 80 ? '...' : ''}`);
+            return [firstTurnArgs.immediate_reply];
         }
 
         // 深度研究
-        this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH keyword=${args.deep_research_keyword || '(empty)'}`);
-        const researchResult = await this.doDeepResearch(args.deep_research_keyword || '');
+        this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH keyword=${firstTurnArgs.deep_research_keyword || '(empty)'}`);
+        const researchResult = await this.doDeepResearch(firstTurnArgs.deep_research_keyword || '');
         this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
 
-        // 第二 turn
-        const secondContext: Message[] = [
-            { role: 'user', content: userPrompt, timestamp: Date.now() },
-            response,
-            ...mem0Results1,
-            { role: 'toolResult', toolCallId: toolCall.id, toolName: toolCall.name, content: [{ type: 'text', text: '已收到，请进行深度研究。' }], isError: false, timestamp: Date.now() },
-            { role: 'user', content: `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`, timestamp: Date.now() },
-        ];
+        // 第二轮：基于研究结果生成最终回复
+        let secondTurnResult: ReplySecondTurnArgs | null = null;
 
-        this.logger.debug(`[ReplyAgent] [${groupId}] second turn calling...`);
-        const secondTurnTools = [replySecondTurnTool, ...this.mem0Tools];
-        let response2 = await this.callReplyModel(systemPrompt, '', secondTurnTools, secondContext);
-        let mem0Results2 = await this.handleMem0ToolCalls(response2, groupId);
+        const replySecondTurnTool: AgentTool<typeof replySecondTurnSchema> = {
+            name: 'reply_second_turn',
+            label: '第二轮回复',
+            description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
+            parameters: replySecondTurnSchema,
+            async execute(_toolCallId, params) {
+                secondTurnResult = params as ReplySecondTurnArgs;
+                return {
+                    content: [{ type: 'text', text: `最终回复已生成` }],
+                    details: params,
+                    terminate: true,
+                };
+            },
+        };
 
-        if (mem0Results2.length > 0) {
-            const context2WithResults: Message[] = [
-                ...secondContext,
-                response2,
-                ...mem0Results2,
-            ];
-            response2 = await this.callReplyModel(systemPrompt, '', secondTurnTools, context2WithResults);
-            mem0Results2 = await this.handleMem0ToolCalls(response2, groupId);
+        const secondTurnTools: AgentTool<any>[] = [replySecondTurnTool, ...mem0Tools];
+
+        const secondAgent = new Agent({
+            initialState: {
+                systemPrompt,
+                model: modelEntry.model,
+                tools: secondTurnTools,
+            },
+            getApiKey: () => modelEntry.apiKey,
+        });
+
+        const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
+
+        this.logger.debug(`[ReplyAgent] [${groupId}] second turn agent prompt...`);
+        secondAgent.reset();
+        secondTurnResult = null;
+        await secondAgent.prompt(secondUserPrompt);
+        await secondAgent.waitForIdle();
+
+        let reminderCount2 = 0;
+
+        while (!secondTurnResult && reminderCount2 < maxReminders) {
+            reminderCount2++;
+            this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall, sending reminder ${reminderCount2}/${maxReminders}...`);
+            await secondAgent.prompt(prompts.replyReminderSecondTurn);
+            await secondAgent.waitForIdle();
         }
 
-        let toolCall2 = extractToolCall(response2, 'reply_second_turn');
-
-        if (!toolCall2) {
-            const retryContext2: Message[] = [
-                ...secondContext,
-                response2,
-                ...mem0Results2,
-                { role: 'user', content: prompts.replyReminderSecondTurn, timestamp: Date.now() },
-            ];
-            response2 = await this.callReplyModel(systemPrompt, '', secondTurnTools, retryContext2);
-            const mem0Results2Retry = await this.handleMem0ToolCalls(response2, groupId);
-            retryContext2.push(...mem0Results2Retry);
-            toolCall2 = extractToolCall(response2, 'reply_second_turn');
+        if (!secondTurnResult) {
+            const lastAssistant = getLastAssistant(secondAgent);
+            const text = lastAssistant ? extractText(lastAssistant) : '';
+            this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+            return [firstTurnArgs.immediate_reply, text || '（沉思）'];
         }
 
-        if (!toolCall2) {
-            const text = extractText(response2) || '（沉思）';
-            this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            return text;
-        }
-
-        const finalReply = (toolCall2.arguments as { final_reply: string }).final_reply;
-        this.logger.info(`[ReplyAgent] [${groupId}] second turn final_reply=${finalReply.slice(0, 80)}${finalReply.length > 80 ? '...' : ''}`);
-        return finalReply;
+        const secondTurnArgs = secondTurnResult as ReplySecondTurnArgs;
+        this.logger.info(`[ReplyAgent] [${groupId}] second turn final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
+        return [firstTurnArgs.immediate_reply, secondTurnArgs.final_reply];
     }
 
     private buildSystemPrompt(): string {
@@ -231,70 +261,22 @@ export class ReplyAgent {
         return parts.join('\n\n');
     }
 
-    private async callReplyModel(systemPrompt: string, userPrompt: string, tools: Tool[], existingMessages: Message[] = []): Promise<AssistantMessage> {
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
-        if (!modelEntry) throw new Error('Reply model not configured');
-        this.logger.debug(`[ReplyAgent] callReplyModel model=${modelEntry.model.name}`);
-
-        const messages: Message[] = existingMessages.length > 0
-            ? existingMessages
-            : [{ role: 'user', content: userPrompt, timestamp: Date.now() }];
-
-        const context: Context = { systemPrompt, messages, tools };
-
-        return await withRetry(async () => {
-            const res = await completeSimple(modelEntry.model, context, { apiKey: modelEntry.apiKey });
-            if (res.stopReason === 'error') {
-                throw new Error(res.errorMessage || 'Reply model returned error');
-            }
-            this.logger.debug(`[ReplyAgent] callReplyModel done stopReason=${res.stopReason}`);
-            return res;
-        }, { maxRetries: 2 });
-    }
-
     private async doDeepResearch(keyword: string): Promise<string> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
         if (!modelEntry) throw new Error('Deep research model not configured');
         this.logger.debug(`[ReplyAgent] doDeepResearch model=${modelEntry.model.name} keyword=${keyword}`);
 
-        const context: Context = {
+        const { completeSimple } = await import('@earendil-works/pi-ai');
+        const response = await completeSimple(modelEntry.model, {
             systemPrompt: prompts.deepResearchSystem,
             messages: [{ role: 'user', content: `请深度研究以下主题：\n${keyword}`, timestamp: Date.now() }],
-        };
-
-        const response = await withRetry(async () => {
-            const res = await completeSimple(modelEntry.model, context, { apiKey: modelEntry.apiKey });
-            if (res.stopReason === 'error') {
-                throw new Error(res.errorMessage || 'Deep research model returned error');
-            }
-            return res;
-        }, { maxRetries: 2 });
+        }, { apiKey: modelEntry.apiKey });
+        if (response.stopReason === 'error') {
+            throw new Error(response.errorMessage || 'Deep research model returned error');
+        }
 
         const text = extractText(response);
         this.logger.debug(`[ReplyAgent] doDeepResearch done text length=${text.length}`);
         return text;
-    }
-
-    private async handleMem0ToolCalls(response: AssistantMessage, groupId: number): Promise<Message[]> {
-        const mem0Calls = response.content.filter((c): c is ToolCall =>
-            c.type === 'toolCall' && (c.name === 'search_memory' || c.name === 'add_memory')
-        );
-        if (mem0Calls.length === 0 || !this.config.ai.mem0) return [];
-
-        const toolResults: Message[] = [];
-        for (const call of mem0Calls) {
-            this.logger.debug(`[ReplyAgent] [${groupId}] mem0 tool call: ${call.name}`);
-            const result = await executeMem0Tool(call.name, call.arguments, this.config.ai.mem0, this.config.onebot.log_level, groupId);
-            this.logger.debug(`[ReplyAgent] [${groupId}] mem0 tool result: ${result.slice(0, 80)}${result.length > 80 ? '...' : ''}`);
-            toolResults.push({
-                role: 'toolResult',
-                toolCallId: call.id,
-                toolName: call.name,
-                content: [{ type: 'text', text: result }],
-                isError: result.startsWith('搜索记忆失败') || result.startsWith('记录记忆失败'),
-                timestamp: Date.now(),
-            });
-        }
-        return toolResults;
     }
 }

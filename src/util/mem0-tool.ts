@@ -1,5 +1,5 @@
 import { Type } from '@earendil-works/pi-ai';
-import type { Tool } from '@earendil-works/pi-ai';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Memory } from 'mem0ai/oss';
 import type { MemoryConfig } from 'mem0ai/oss';
 import { Logger } from '@lib/util/logger';
@@ -12,66 +12,67 @@ const addMemorySchema = Type.Object({
     content: Type.String({ description: '要记录的记忆内容，用简洁中文描述事实或偏好' }),
 });
 
-export function createMem0Tools(_config: MemoryConfig, _logLevel: string): Tool[] {
-    const searchMemoryTool: Tool<typeof searchMemorySchema> = {
+export function createMem0Tools(config: MemoryConfig, logLevel: string, groupId: number): AgentTool<any>[] {
+    const logger = new Logger(logLevel as 'debug' | 'info' | 'warn' | 'error');
+    const userId = `group-${groupId}`;
+    const memory = new Memory(config);
+
+    const searchMemoryTool: AgentTool<typeof searchMemorySchema> = {
         name: 'search_memory',
+        label: '搜索记忆',
         description: '搜索与你相关的历史记忆。当你需要回忆用户的偏好、过去提到的事实、或之前对话中的关键信息时使用此工具。',
         parameters: searchMemorySchema,
+        async execute(_toolCallId, params) {
+            try {
+                logger.debug(`[Mem0] search query="${params.query}" userId=${userId}`);
+                const results = await memory.search(params.query, { topK: 10, filters: { user_id: userId } });
+                const memories = results.results
+                    .map((r: { memory: string; score?: number }) => `- ${r.memory} (相关度: ${(r.score ?? 0 * 100).toFixed(1)}%)`)
+                    .join('\n');
+                const output = memories || '未找到相关记忆。';
+                logger.debug(`[Mem0] search found ${results.results.length} memories`);
+                return {
+                    content: [{ type: 'text', text: output }],
+                    details: { count: results.results.length },
+                };
+            } catch (e) {
+                logger.error('[Mem0] search error:', e);
+                return {
+                    content: [{ type: 'text', text: `搜索记忆失败: ${e instanceof Error ? e.message : String(e)}` }],
+                    details: {},
+                    isError: true,
+                };
+            }
+        },
     };
 
-    const addMemoryTool: Tool<typeof addMemorySchema> = {
+    const addMemoryTool: AgentTool<typeof addMemorySchema> = {
         name: 'add_memory',
+        label: '记录记忆',
         description: '记录新的记忆。当你从对话中了解到关于用户的重要事实、偏好、习惯、或约定时使用此工具。内容应简洁、事实化。',
         parameters: addMemorySchema,
+        async execute(_toolCallId, params) {
+            try {
+                logger.debug(`[Mem0] add content="${params.content}" userId=${userId}`);
+                await memory.add(
+                    [{ role: 'user', content: params.content }],
+                    { userId }
+                );
+                logger.debug('[Mem0] add success');
+                return {
+                    content: [{ type: 'text', text: '记忆已记录。' }],
+                    details: {},
+                };
+            } catch (e) {
+                logger.error('[Mem0] add error:', e);
+                return {
+                    content: [{ type: 'text', text: `记录记忆失败: ${e instanceof Error ? e.message : String(e)}` }],
+                    details: {},
+                    isError: true,
+                };
+            }
+        },
     };
 
     return [searchMemoryTool, addMemoryTool];
-}
-
-export async function executeMem0Tool(
-    toolName: string,
-    args: Record<string, unknown>,
-    config: MemoryConfig,
-    logLevel: string,
-    groupId: number
-): Promise<string> {
-    const logger = new Logger(logLevel as 'debug' | 'info' | 'warn' | 'error');
-    const userId = `group-${groupId}`;
-
-    const memory = new Memory(config);
-
-    if (toolName === 'search_memory') {
-        try {
-            const query = args.query as string;
-            logger.debug(`[Mem0] search query="${query}" userId=${userId}`);
-            const results = await memory.search(query, { topK: 10, filters: { user_id: userId } });
-            const memories = results.results
-                .map((r: { memory: string; score?: number }) => `- ${r.memory} (相关度: ${(r.score ?? 0 * 100).toFixed(1)}%)`)
-                .join('\n');
-            const output = memories || '未找到相关记忆。';
-            logger.debug(`[Mem0] search found ${results.results.length} memories`);
-            return output;
-        } catch (e) {
-            logger.error('[Mem0] search error:', e);
-            return `搜索记忆失败: ${e instanceof Error ? e.message : String(e)}`;
-        }
-    }
-
-    if (toolName === 'add_memory') {
-        try {
-            const content = args.content as string;
-            logger.debug(`[Mem0] add content="${content}" userId=${userId}`);
-            await memory.add(
-                [{ role: 'user', content }],
-                { userId }
-            );
-            logger.debug('[Mem0] add success');
-            return '记忆已记录。';
-        } catch (e) {
-            logger.error('[Mem0] add error:', e);
-            return `记录记忆失败: ${e instanceof Error ? e.message : String(e)}`;
-        }
-    }
-
-    return `未知工具: ${toolName}`;
 }

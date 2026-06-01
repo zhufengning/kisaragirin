@@ -217,18 +217,8 @@ export class GroupReplyManager {
         const currentLatestId = latestRows[0]?.id ?? 0;
 
         const agent = new ReplyAgent(this.db, this.descQueue, this.config);
-        const replyText = await agent.generateReply(this.groupId, this.lastTriggerId, task);
-        this.logger.info(`[ReplyManager] [${this.groupId}] reply generated: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
-
-        // 构造消息
-        const segments: Message[] = [];
-        if (task.type === 'at') {
-            segments.push({ type: 'reply', data: { id: task.triggerMessageId } });
-        }
-        segments.push({ type: 'text', data: { text: replyText } });
-
-        // 发送
-        const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+        const replyTexts = await agent.generateReply(this.groupId, this.lastTriggerId, task);
+        this.logger.info(`[ReplyManager] [${this.groupId}] reply generated: ${replyTexts.length} message(s)`);
 
         // 获取当前群里的群名片
         let botCard: string | null = null;
@@ -239,24 +229,38 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        // 写入数据库
-        const now = Math.floor(Date.now() / 1000);
-        const insertRows = await this.db.insert(schema.messages).values({
-            messageId: sendResult.message_id,
-            groupId: this.groupId,
-            userId: this.botSelfId,
-            time: now,
-            senderName: this.botName,
-            senderCard: botCard,
-            isBot: true,
-            isAtBot: false,
-            segments: [{ type: 'text', text: replyText }] as any,
-            rawMessage: replyText,
-        }).returning({ id: schema.messages.id });
+        for (let i = 0; i < replyTexts.length; i++) {
+            const replyText = replyTexts[i];
+            this.logger.info(`[ReplyManager] [${this.groupId}] sending reply ${i + 1}/${replyTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
-        // 通知自己 bot 消息已发送
-        if (insertRows[0]) {
-            this.onBotMessage(insertRows[0].id);
+            const segments: Message[] = [];
+            if (task.type === 'at' && i === 0) {
+                segments.push({ type: 'reply', data: { id: task.triggerMessageId } });
+            }
+            segments.push({ type: 'text', data: { text: replyText } });
+
+            // 发送
+            const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+
+            // 写入数据库
+            const now = Math.floor(Date.now() / 1000);
+            const insertRows = await this.db.insert(schema.messages).values({
+                messageId: sendResult.message_id,
+                groupId: this.groupId,
+                userId: this.botSelfId,
+                time: now,
+                senderName: this.botName,
+                senderCard: botCard,
+                isBot: true,
+                isAtBot: false,
+                segments: [{ type: 'text', text: replyText }] as any,
+                rawMessage: replyText,
+            }).returning({ id: schema.messages.id });
+
+            // 通知自己 bot 消息已发送
+            if (insertRows[0]) {
+                this.onBotMessage(insertRows[0].id);
+            }
         }
 
         // 更新 lastTriggerId
