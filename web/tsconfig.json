@@ -2,9 +2,13 @@
     "extends": "astro/tsconfigs/strict",
     "compilerOptions": {
         "baseUrl": ".",
+        "verbatimModuleSyntax": false,
         "paths": {
-            "@lib/*": ["src/lib/*"],
-            "@layouts/*": ["src/layouts/*"]
+            "@lib/*": ["src/lib/*", "../lib/*"],
+            "@layouts/*": ["src/layouts/*"],
+            "~/*": ["../src/*"],
+            "@/*": ["../*"],
+            "@lib": ["../lib/index.ts"]
         }
     }
 }

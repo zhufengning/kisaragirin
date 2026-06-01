@@ -1,12 +1,12 @@
-import type { Bot } from '../../lib/types';
-import type { Message } from '../../lib/types/messages';
-import type { Db } from '../db';
-import { schema } from '../db';
+import type { Bot } from '@lib/types';
+import type { Message } from '@lib/types/messages';
+import type { Db } from '~/db';
+import { schema } from '~/db';
 import { eq, desc } from 'drizzle-orm';
 import type { DescQueue } from './desc-queue';
-import type { StoredMessage } from '../message-format';
+import type { StoredMessage } from '~/message-format';
 import { ReplyAgent } from './reply-agent';
-import { Logger } from '../../lib/util/logger';
+import { Logger } from '@lib/util/logger';
 
 export interface ReplyTask {
     type: 'at' | 'silence';
@@ -230,6 +230,15 @@ export class GroupReplyManager {
         // 发送
         const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
 
+        // 获取当前群里的群名片
+        let botCard: string | null = null;
+        try {
+            const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
+            botCard = memberInfo.card || null;
+        } catch (e) {
+            this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
+        }
+
         // 写入数据库
         const now = Math.floor(Date.now() / 1000);
         const insertRows = await this.db.insert(schema.messages).values({
@@ -238,7 +247,7 @@ export class GroupReplyManager {
             userId: this.botSelfId,
             time: now,
             senderName: this.botName,
-            senderCard: null,
+            senderCard: botCard,
             isBot: true,
             isAtBot: false,
             segments: [{ type: 'text', text: replyText }] as any,

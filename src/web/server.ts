@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
-import type { Db } from '../db';
-import type { WebPanelConfig } from '../config';
-import type { DescQueue } from '../util/desc-queue';
-import { Logger } from '../../lib/util/logger';
+import type { Db } from '~/db';
+import type { WebPanelConfig } from '~/config';
+import type { DescQueue } from '~/util/desc-queue';
+import { Logger } from '@lib/util/logger';
 
 export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueue) {
     const logger = new Logger('info');
+    let server: ReturnType<typeof createServer> | undefined;
     return {
         start() {
             process.env.WEB_USERNAME = config.username;
@@ -16,7 +17,7 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
             import(handlerPath)
                 .then((mod: any) => {
                     const handler = mod.handler as (req: any, res: any) => void | Promise<void>;
-                    const server = createServer((req, res) => {
+                    server = createServer((req, res) => {
                         handler(req, res);
                     });
                     server.listen(config.port, config.host, () => {
@@ -26,6 +27,12 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
                 .catch((err) => {
                     logger.error('Failed to load Astro handler:', err);
                 });
+        },
+        stop() {
+            if (server) {
+                server.close();
+                logger.info('Web panel server closed.');
+            }
         },
     };
 }

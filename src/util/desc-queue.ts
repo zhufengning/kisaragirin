@@ -1,12 +1,14 @@
 import { Agent } from '@earendil-works/pi-agent-core';
-import { config } from '../../config';
+import type { AssistantMessage } from '@earendil-works/pi-ai';
+import { config } from '@/config';
 import { eq } from 'drizzle-orm';
-import type { Db } from '../db';
-import { schema } from '../db';
+import type { Db } from '~/db';
+import { schema } from '~/db';
 import { findImagePath } from './image-store';
-import { prompts } from '../prompts';
+import { prompts } from '~/prompts';
 import { withRetry } from './agent-retry';
 import { preprocessImage } from './image-preprocess';
+import { Logger } from '@lib/util/logger';
 
 export class DescQueue {
     private queue: string[] = [];
@@ -15,9 +17,11 @@ export class DescQueue {
     private db: Db;
     private running = false;
     private agent: Agent;
+    private logger: Logger;
 
     constructor(db: Db) {
         this.db = db;
+        this.logger = new Logger(config.onebot.log_level);
         const modelEntry = config.ai.models[config.ai.assignments.vision];
         this.agent = new Agent({
             initialState: {
@@ -72,18 +76,23 @@ export class DescQueue {
             try {
                 const path = findImagePath(sha256);
                 if (!path) {
-                    console.warn(`[DescQueue] Image file not found: ${sha256}`);
+                    this.logger.warn(`[DescQueue] Image file not found: ${sha256}`);
                     this.notify(sha256, undefined);
                     continue;
                 }
 
                 const desc = await this.describe(path);
-                await this.db.update(schema.images)
-                    .set({ description: desc })
-                    .where(eq(schema.images.sha256, sha256));
+                if (desc) {
+                    await this.db.update(schema.images)
+                        .set({ description: desc })
+                        .where(eq(schema.images.sha256, sha256));
+                    this.logger.info(`[DescQueue] description saved for ${sha256.slice(0, 16)}`);
+                } else {
+                    this.logger.warn(`[DescQueue] describe returned empty for ${sha256.slice(0, 16)}, not saving`);
+                }
                 this.notify(sha256, desc);
             } catch (err) {
-                console.error(`[DescQueue] Failed to describe ${sha256}:`, err);
+                this.logger.error(`[DescQueue] Failed to describe ${sha256}:`, err);
                 this.notify(sha256, undefined);
             } finally {
                 this.processing.delete(sha256);
@@ -91,8 +100,9 @@ export class DescQueue {
         }
     }
 
-    private async describe(path: string): Promise<string> {
+    private async describe(path: string): Promise<string | undefined> {
         const result = await preprocessImage(path);
+        this.logger.debug(`[DescQueue] describe start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
 
         const inputText = result.isAnimation
             ? prompts.visionAnimated(result.totalFrames, result.extractedFrames)
@@ -101,16 +111,19 @@ export class DescQueue {
         await withRetry(
             async () => {
                 this.agent.reset();
+                this.logger.debug(`[DescQueue] agent reset, prompt length=${inputText.length}, image count=${result.frames.length}`);
                 await this.agent.prompt(
                     inputText,
                     result.frames.map(f => ({ type: 'image' as const, data: f.base64, mimeType: f.mimeType })),
                 );
+                this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
                 await this.agent.waitForIdle();
+                this.logger.debug(`[DescQueue] agent idle`);
             },
             {
                 maxRetries: 2,
                 onRetry: (attempt, maxRetries, delayMs, err) => {
-                    console.warn(
+                    this.logger.warn(
                         `[DescQueue] Retry ${attempt}/${maxRetries} after ${delayMs}ms:`,
                         err instanceof Error ? err.message : err,
                     );
@@ -120,15 +133,21 @@ export class DescQueue {
 
         const msgs = this.agent.state.messages;
         const last = msgs[msgs.length - 1];
-        if (last?.role === 'assistant' && last.stopReason !== 'error') {
-            const text = last.content
+        const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : undefined;
+        this.logger.debug(`[DescQueue] messages count=${msgs.length}, last role=${last?.role}, stopReason=${lastAssistant?.stopReason}`);
+        if (lastAssistant && lastAssistant.stopReason !== 'error') {
+            const text = lastAssistant.content
                 .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
                 .map(c => c.text)
                 .join('')
                 .trim();
+            this.logger.debug(`[DescQueue] assistant text length=${text.length}`);
             if (text) return text;
+            this.logger.warn(`[DescQueue] assistant text is empty, treating as failure`);
+        } else {
+            this.logger.warn(`[DescQueue] invalid last message role=${last?.role} stopReason=${lastAssistant?.stopReason}`);
         }
-        return '一张图片';
+        return undefined;
     }
 
     private notify(sha256: string, desc: string | undefined) {

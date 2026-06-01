@@ -1,15 +1,15 @@
 import { completeSimple, Type } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context, Message, Tool, ToolCall } from '@earendil-works/pi-ai';
-import type { Db } from '../db';
-import { schema } from '../db';
+import type { Db } from '~/db';
+import { schema } from '~/db';
 import { eq, desc } from 'drizzle-orm';
 import type { DescQueue } from './desc-queue';
 import type { ReplyTask } from './reply-manager';
-import type { StoredMessage } from '../message-format';
-import { messagesToString } from '../message-format';
+import type { StoredMessage } from '~/message-format';
+import { messagesToString } from '~/message-format';
 import { withRetry } from './agent-retry';
-import { prompts } from '../prompts';
-import { Logger } from '../../lib/util/logger';
+import { prompts } from '~/prompts';
+import { Logger } from '@lib/util/logger';
 
 const replyFirstTurnSchema = Type.Object({
     immediate_reply: Type.String(),
@@ -23,7 +23,7 @@ const replySecondTurnSchema = Type.Object({
 
 const replyFirstTurnTool: Tool<typeof replyFirstTurnSchema> = {
     name: 'reply_first_turn',
-    description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。',
+    description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。否则将先发送immediate_reply，再为你提供深度研究结果以便发送后续消息。',
     parameters: replyFirstTurnSchema,
 };
 

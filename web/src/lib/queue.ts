@@ -1,4 +1,4 @@
-import { DescQueue } from '../../../src/util/desc-queue';
+import { DescQueue } from '~/util/desc-queue';
 import { db } from './db';
 
 let queue: DescQueue;

@@ -7,7 +7,14 @@
         "allowJs": true,
         "esModuleInterop": true,
         "isolatedModules": true,
-        "skipLibCheck": true
+        "skipLibCheck": true,
+        "baseUrl": ".",
+        "paths": {
+            "~/*": ["src/*"],
+            "@/*": ["./*"],
+            "@lib": ["lib/index.ts"],
+            "@lib/*": ["lib/*"]
+        }
     },
     "exclude": ["web/", "dist/", "node_modules/"]
 }

@@ -1,5 +1,5 @@
-import type { Message, GroupMessageEvent } from '../lib/types';
-import type { Bot } from '../lib/types';
+import type { Message, GroupMessageEvent } from '@lib/types';
+import type { Bot } from '@lib/types';
 import { downloadAndStoreImage } from './util/image-store';
 
 /**
@@ -145,6 +145,30 @@ function renderBody(segments: StoredSegment[], ctx: RenderContext): string {
     return segments.map(s => renderSegment(s, ctx)).join('');
 }
 
+function collectImageSha256FromSegment(seg: StoredSegment, shaSet: Set<string>): void {
+    switch (seg.type) {
+        case 'image':
+            shaSet.add(seg.sha256);
+            break;
+        case 'reply':
+            if (seg.message) {
+                for (const s of seg.message.segments) {
+                    collectImageSha256FromSegment(s, shaSet);
+                }
+            }
+            break;
+        case 'forward':
+            if (seg.messages) {
+                for (const msg of seg.messages) {
+                    for (const s of msg.segments) {
+                        collectImageSha256FromSegment(s, shaSet);
+                    }
+                }
+            }
+            break;
+    }
+}
+
 function renderSegment(seg: StoredSegment, ctx: RenderContext): string {
     switch (seg.type) {
         case 'text':
@@ -221,10 +245,12 @@ export async function singleMessageToString(
 ): Promise<string> {
     const descCache = new Map<string, string | undefined>();
     if (resolveDesc) {
+        const shaSet = new Set<string>();
         for (const seg of msg.segments) {
-            if (seg.type === 'image') {
-                descCache.set(seg.sha256, await resolveDesc(seg.sha256));
-            }
+            collectImageSha256FromSegment(seg, shaSet);
+        }
+        for (const sha of shaSet) {
+            descCache.set(sha, await resolveDesc(sha));
         }
     }
 
@@ -249,7 +275,7 @@ export async function messagesToString(
         const shaSet = new Set<string>();
         for (const msg of messages) {
             for (const seg of msg.segments) {
-                if (seg.type === 'image') shaSet.add(seg.sha256);
+                collectImageSha256FromSegment(seg, shaSet);
             }
         }
         for (const sha of shaSet) {

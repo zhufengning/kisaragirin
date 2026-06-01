@@ -1,11 +1,11 @@
-import { createBot } from '../lib';
-import { config } from '../config';
+import { createBot } from '@lib';
+import { config } from '@/config';
 import { groupMessageEventToStoredMessage } from './message-format';
 import { createDb, schema } from './db';
 import { createWebPanel } from './web/server';
 import { DescQueue } from './util/desc-queue';
 import { GroupReplyManager } from './util/reply-manager';
-import { Logger } from '../lib/util/logger';
+import { Logger } from '@lib/util/logger';
 
 const logger = new Logger(config.onebot.log_level);
 
