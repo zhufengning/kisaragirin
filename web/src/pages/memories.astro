@@ -1,0 +1,456 @@
+---
+import Layout from '@layouts/Layout.astro';
+import { config } from '@/config';
+import { Memory } from 'mem0ai/oss';
+
+const PAGE_SIZE = 20;
+const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
+const searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
+const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
+const defaultUserId = allGroups[0] || '';
+const userId = Astro.url.searchParams.get('user_id')?.trim() || defaultUserId;
+
+let memories: any[] = [];
+let totalCount = 0;
+let totalPages = 1;
+let error = '';
+
+try {
+    const memory = (globalThis as any).__memory__ as Memory | undefined;
+    if (!memory) {
+        error = 'Memory not initialized';
+    } else if (searchQuery) {
+        const result = await memory.search(searchQuery, { topK: PAGE_SIZE, filters: { user_id: userId } });
+        memories = result.results || [];
+        totalCount = memories.length;
+    } else {
+        const result = await memory.getAll({ page: currentPage, pageSize: PAGE_SIZE, filters: { user_id: userId } });
+        memories = result.results || [];
+        totalCount = result.count || 0;
+        totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+    }
+} catch (e: any) {
+    console.error('[Mem0 Page] Error:', e);
+    error = e.message;
+}
+
+function pageUrl(page: number) {
+    const url = new URL(Astro.url);
+    url.searchParams.set('page', String(page));
+    return url.pathname + url.search;
+}
+
+function searchUrl(query: string, uid: string) {
+    const url = new URL(Astro.url);
+    url.pathname = '/memories';
+    if (query) url.searchParams.set('search', query);
+    else url.searchParams.delete('search');
+    if (uid) url.searchParams.set('user_id', uid);
+    else url.searchParams.delete('user_id');
+    url.searchParams.delete('page');
+    return url.pathname + url.search;
+}
+---
+
+<Layout title="记忆管理">
+    <h1>记忆管理 <span class="meta">({searchQuery ? `搜索: "${searchQuery}"` : `${totalCount} 条`})</span></h1>
+
+    {error && (
+        <div class="error-banner">⚠️ {error}</div>
+    )}
+
+    <!-- 搜索栏 -->
+    <form class="search-bar" method="GET" action="/memories">
+        <input
+            type="text"
+            name="search"
+            value={searchQuery}
+            placeholder="语义搜索记忆..."
+            class="search-input"
+        />
+        <select name="user_id" class="search-input user-input">
+            {allGroups.map(g => (
+                <option value={g} selected={g === userId}>{g}</option>
+            ))}
+        </select>
+        <button type="submit" class="btn">🔍 搜索</button>
+        {searchQuery && (
+            <a href="/memories" class="btn btn-secondary">清除</a>
+        )}
+    </form>
+
+    <!-- 添加记忆表单 -->
+    <div class="add-section">
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('add-form').classList.toggle('hidden')">
+            ➕ 添加记忆
+        </button>
+        <form id="add-form" class="hidden add-form" onsubmit="return addMemory(event)">
+            <textarea name="text" placeholder="记忆内容..." required class="input-textarea"></textarea>
+            <select name="user_id" class="input-text">
+                <option value="">选择用户</option>
+                {allGroups.map(g => (
+                    <option value={g}>{g}</option>
+                ))}
+            </select>
+            <input type="text" name="metadata" placeholder='元数据 JSON (可选，如 {"key":"value"})' class="input-text" />
+            <div class="form-actions">
+                <button type="submit" class="btn">保存</button>
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('add-form').classList.add('hidden')">取消</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- 记忆列表 -->
+    <div class="memory-list">
+        {memories.length === 0 && !error && (
+            <p class="empty">{searchQuery ? '没有找到匹配的记忆' : '暂无记忆'}</p>
+        )}
+        
+        {memories.map(m => (
+            <div class="memory-card" data-id={m.id}>
+                <div class="memory-header">
+                    <span class="memory-id">{m.id}</span>
+                    <span class="memory-user">{m.user_id && `用户: ${m.user_id}`}</span>
+                    <span class="memory-score">{m.score && `相关度: ${(m.score * 100).toFixed(1)}%`}</span>
+                </div>
+                <div class="memory-content">{m.memory || m.text || '（无内容）'}</div>
+                {m.categories && m.categories.length > 0 && (
+                    <div class="memory-categories">
+                        {m.categories.map((c: string) => (
+                            <span class="category-tag">{c}</span>
+                        ))}
+                    </div>
+                )}
+                <div class="memory-actions">
+                    <button class="btn btn-sm btn-secondary" onclick={`editMemory('${m.id}', '${(m.memory || m.text || '').replace(/'/g, "\\'")}')`}>编辑</button>
+                    <button class="btn btn-sm btn-danger" onclick={`deleteMemory('${m.id}')`}>删除</button>
+                </div>
+            </div>
+        ))}
+    </div>
+
+    <!-- 分页导航 -->
+    {!searchQuery && totalPages > 1 && (
+        <nav class="pagination">
+            <a
+                href={pageUrl(currentPage - 1)}
+                class={`page-btn ${currentPage <= 1 ? 'disabled' : ''}`}
+                aria-disabled={currentPage <= 1}
+            >
+                ← 上一页
+            </a>
+            <span class="page-info">
+                第 {currentPage} / {totalPages} 页
+            </span>
+            <a
+                href={pageUrl(currentPage + 1)}
+                class={`page-btn ${currentPage >= totalPages ? 'disabled' : ''}`}
+                aria-disabled={currentPage >= totalPages}
+            >
+                下一页 →
+            </a>
+        </nav>
+    )}
+
+    <!-- 编辑弹窗 -->
+    <div id="edit-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>编辑记忆</h3>
+            <input type="hidden" id="edit-id" />
+            <textarea id="edit-text" class="input-textarea"></textarea>
+            <div class="form-actions">
+                <button class="btn" onclick="saveEdit()">保存</button>
+                <button class="btn btn-secondary" onclick="closeEdit()">取消</button>
+            </div>
+        </div>
+    </div>
+</Layout>
+
+<script is:inline>
+    async function addMemory(e) {
+        e.preventDefault();
+        const form = e.target;
+        const text = form.text.value.trim();
+        const userId = form.user_id.value.trim();
+        const metadataStr = form.metadata.value.trim();
+        
+        if (!text) return alert('请输入记忆内容');
+        
+        const messages = [{ role: 'user', content: text }];
+        const body = { messages };
+        if (userId) body.user_id = userId;
+        if (metadataStr) {
+            try { body.metadata = JSON.parse(metadataStr); } catch {
+                return alert('元数据必须是有效的 JSON');
+            }
+        }
+        
+        try {
+            const res = await fetch('/api/memories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                credentials: 'same-origin',
+            });
+            if (!res.ok) throw new Error(await res.text());
+            alert('记忆添加成功！');
+            location.reload();
+        } catch (err) {
+            alert('添加失败: ' + err.message);
+        }
+        return false;
+    }
+    
+    function editMemory(id, text) {
+        document.getElementById('edit-id').value = id;
+        document.getElementById('edit-text').value = text;
+        document.getElementById('edit-modal').classList.remove('hidden');
+    }
+    
+    function closeEdit() {
+        document.getElementById('edit-modal').classList.add('hidden');
+    }
+    
+    async function saveEdit() {
+        const id = document.getElementById('edit-id').value;
+        const text = document.getElementById('edit-text').value.trim();
+        
+        if (!text) return alert('记忆内容不能为空');
+        
+        try {
+            const res = await fetch(`/api/memories/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text }),
+                credentials: 'same-origin',
+            });
+            if (!res.ok) throw new Error(await res.text());
+            alert('更新成功！');
+            location.reload();
+        } catch (err) {
+            alert('更新失败: ' + err.message);
+        }
+    }
+    
+    async function deleteMemory(id) {
+        if (!confirm('确定删除这条记忆？')) return;
+        
+        try {
+            const res = await fetch(`/api/memories/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+            if (!res.ok) throw new Error(await res.text());
+            alert('删除成功！');
+            location.reload();
+        } catch (err) {
+            alert('删除失败: ' + err.message);
+        }
+    }
+</script>
+
+<style>
+    .search-bar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+    .search-input {
+        flex: 1;
+        min-width: 200px;
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .search-input.user-input {
+        flex: 0 0 150px;
+        min-width: 120px;
+    }
+    .search-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .search-input::placeholder {
+        color: var(--text-secondary);
+    }
+    .error-banner {
+        padding: 12px 16px;
+        background: rgba(224, 108, 117, 0.15);
+        border: 1px solid var(--danger);
+        border-radius: var(--radius-sm);
+        color: var(--danger);
+        margin-bottom: 16px;
+    }
+    .add-section {
+        margin-bottom: 20px;
+    }
+    .add-form {
+        margin-top: 12px;
+        padding: 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .add-form.hidden { display: none; }
+    .input-textarea {
+        width: 100%;
+        min-height: 80px;
+        padding: 10px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+        resize: vertical;
+    }
+    .input-textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .input-text {
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .input-text:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .form-actions {
+        display: flex;
+        gap: 10px;
+    }
+    .memory-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .memory-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        transition: background 0.15s;
+    }
+    .memory-card:hover {
+        background: var(--surface-hover);
+    }
+    .memory-header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
+    }
+    .memory-id {
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 12px;
+        color: var(--text-secondary);
+        background: var(--bg);
+        padding: 2px 8px;
+        border-radius: 4px;
+    }
+    .memory-user {
+        font-size: 12px;
+        color: var(--accent);
+    }
+    .memory-score {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-left: auto;
+    }
+    .memory-content {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text);
+        word-break: break-word;
+    }
+    .memory-categories {
+        display: flex;
+        gap: 6px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+    }
+    .category-tag {
+        font-size: 12px;
+        padding: 2px 8px;
+        background: var(--bg);
+        border-radius: 4px;
+        color: var(--text-secondary);
+    }
+    .memory-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+    }
+    .empty {
+        color: var(--text-secondary);
+        text-align: center;
+        padding: 40px;
+    }
+    .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 16px;
+        margin-top: 24px;
+        padding: 16px;
+    }
+    .page-btn {
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-size: 14px;
+        text-decoration: none;
+        transition: background 0.15s;
+    }
+    .page-btn:hover:not(.disabled) {
+        background: var(--surface-hover);
+        text-decoration: none;
+    }
+    .page-btn.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    .page-info {
+        font-size: 14px;
+        color: var(--text-secondary);
+    }
+    .modal {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+    }
+    .modal.hidden { display: none; }
+    .modal-content {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        width: 90%;
+        max-width: 500px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .modal-content h3 {
+        margin-bottom: 8px;
+    }
+</style>

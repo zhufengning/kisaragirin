@@ -2,9 +2,11 @@
 import Layout from '@layouts/Layout.astro';
 import { db, schema } from '@lib/db';
 import { readdirSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join } from 'node:path';
+import { like, sql } from 'drizzle-orm';
 
 const IMAGE_DIR = './data/images';
+const PAGE_SIZE = 24;
 
 function listImages() {
     try {
@@ -19,24 +21,88 @@ function listImages() {
     }
 }
 
-const files = listImages();
-const descRows = await db.select().from(schema.images);
+// 获取所有图片文件
+const allFiles = listImages();
+
+// 搜索参数
+const searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
+const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
+
+// 如果有搜索词，先从数据库筛选有描述的sha256
+let filteredFiles = allFiles;
+if (searchQuery) {
+    const searchPattern = `%${searchQuery}%`;
+    const matchingRows = await db
+        .select({ sha256: schema.images.sha256 })
+        .from(schema.images)
+        .where(like(schema.images.description, searchPattern));
+    const matchingSet = new Set(matchingRows.map(r => r.sha256));
+    filteredFiles = allFiles.filter(f => matchingSet.has(f.sha256));
+}
+
+// 分页
+const totalCount = filteredFiles.length;
+const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const validPage = Math.min(currentPage, totalPages);
+const startIndex = (validPage - 1) * PAGE_SIZE;
+const pageFiles = filteredFiles.slice(startIndex, startIndex + PAGE_SIZE);
+
+// 查询当前页图片的描述
+const sha256List = pageFiles.map(f => f.sha256);
+const descRows = sha256List.length > 0
+    ? await db.select().from(schema.images).where(sql`${schema.images.sha256} IN ${sha256List}`)
+    : [];
 const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
+
+// 构建分页URL
+function pageUrl(page: number) {
+    const url = new URL(Astro.url);
+    url.searchParams.set('page', String(page));
+    return url.pathname + url.search;
+}
+
+function searchUrl(query: string) {
+    const url = new URL(Astro.url);
+    if (query) {
+        url.searchParams.set('search', query);
+    } else {
+        url.searchParams.delete('search');
+    }
+    url.searchParams.delete('page');
+    return url.pathname + url.search;
+}
 ---
 
 <Layout title="图片管理">
-    <h1>图片管理 <span class="meta">({files.length} 张)</span></h1>
+    <h1>图片管理 <span class="meta">({totalCount} 张{searchQuery ? ` · 搜索: "${searchQuery}"` : ''})</span></h1>
+
+    <!-- 搜索栏 -->
+    <form class="search-bar" method="GET" action="/images">
+        <input
+            type="text"
+            name="search"
+            value={searchQuery}
+            placeholder="按描述搜索图片..."
+            class="search-input"
+        />
+        <button type="submit" class="btn">🔍 搜索</button>
+        {searchQuery && (
+            <a href="/images" class="btn btn-secondary">清除</a>
+        )}
+    </form>
 
     <form method="POST" action="/api/images/delete-descriptions" id="batch">
         <div class="grid">
-            {files.map(f => {
+            {pageFiles.map(f => {
                 const desc = descMap.get(f.sha256);
                 return (
                     <div class="card">
                         <img src={`/api/images/file/${f.name}`} alt={f.sha256} loading="lazy" />
                         <div class="info">
                             <div class="sha">{f.sha256.slice(0, 16)}…</div>
-                            <div class={`desc ${desc ? '' : 'empty'}`}>{desc ?? '（无描述）'}</div>
+                            <div class={`desc ${desc ? '' : 'empty'}`}>
+                                {desc ?? '（无描述）'}
+                            </div>
                         </div>
                         <label class="check">
                             <input type="checkbox" name="sha256" value={f.sha256} /> 选择
@@ -44,13 +110,42 @@ const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
                     </div>
                 );
             })}
-            {files.length === 0 && <p class="empty">暂无图片</p>}
+            {pageFiles.length === 0 && (
+                <p class="empty">
+                    {searchQuery ? '没有找到匹配的图片' : '暂无图片'}
+                </p>
+            )}
         </div>
 
-        <div class="toolbar">
-            <button type="submit" class="btn btn-secondary btn-sm">🗑️ 删除选中描述</button>
-        </div>
+        {pageFiles.length > 0 && (
+            <div class="toolbar">
+                <button type="submit" class="btn btn-secondary btn-sm">🗑️ 删除选中描述</button>
+            </div>
+        )}
     </form>
+
+    <!-- 分页导航 -->
+    {totalPages > 1 && (
+        <nav class="pagination">
+            <a
+                href={pageUrl(validPage - 1)}
+                class={`page-btn ${validPage <= 1 ? 'disabled' : ''}`}
+                aria-disabled={validPage <= 1}
+            >
+                ← 上一页
+            </a>
+            <span class="page-info">
+                第 {validPage} / {totalPages} 页
+            </span>
+            <a
+                href={pageUrl(validPage + 1)}
+                class={`page-btn ${validPage >= totalPages ? 'disabled' : ''}`}
+                aria-disabled={validPage >= totalPages}
+            >
+                下一页 →
+            </a>
+        </nav>
+    )}
 
     <form method="POST" action="/api/images/clear-all" class="danger-zone"
         onsubmit="return confirm('确定清空全部图片描述？')"
@@ -60,6 +155,30 @@ const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
 </Layout>
 
 <style>
+    .search-bar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+    .search-input {
+        flex: 1;
+        min-width: 200px;
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .search-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .search-input::placeholder {
+        color: var(--text-secondary);
+    }
     .grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -111,5 +230,36 @@ const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
         margin-top: 24px;
         padding-top: 20px;
         border-top: 1px solid var(--border);
+    }
+    .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 16px;
+        margin-top: 24px;
+        padding: 16px;
+    }
+    .page-btn {
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-size: 14px;
+        text-decoration: none;
+        transition: background 0.15s;
+    }
+    .page-btn:hover:not(.disabled) {
+        background: var(--surface-hover);
+        text-decoration: none;
+    }
+    .page-btn.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    .page-info {
+        font-size: 14px;
+        color: var(--text-secondary);
     }
 </style>

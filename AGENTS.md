@@ -61,15 +61,19 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       Layout.astro   -- 暗色主题全局布局
     pages/
       index.astro    -- 群列表
-      group/[id].astro   -- 群消息浏览
-      images.astro   -- 图片管理
-      api/images/... -- 图片文件服务 + 描述管理 API
+      group/[id].astro   -- 群消息浏览（分页）
+      images.astro   -- 图片管理（分页 + 描述搜索）
+      memories.astro -- mem0 记忆管理（增删改查 + 语义搜索）
+      api/
+        images/...   -- 图片文件服务 + 描述管理 API
+        memories/... -- mem0 REST API 封装
 ```
 
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` 暴露给 Astro
+- mem0 配置通过 `globalThis.__mem0_config__` 暴露给 Astro
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
 

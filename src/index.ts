@@ -6,6 +6,7 @@ import { createWebPanel } from './web/server';
 import { DescQueue } from './util/desc-queue';
 import { GroupReplyManager } from './util/reply-manager';
 import { Logger } from '@lib/util/logger';
+import { Memory } from 'mem0ai/oss';
 
 const logger = new Logger(config.onebot.log_level);
 
@@ -16,6 +17,13 @@ const queue = new DescQueue(db);
 // 把 db / queue 挂到 globalThis，让 Astro web 复用同一连接
 (globalThis as any).__db__ = db;
 (globalThis as any).__queue__ = queue;
+
+let memory: Memory | undefined;
+if (config.ai.mem0) {
+    memory = new Memory(config.ai.mem0);
+    (globalThis as any).__memory__ = memory;
+    logger.info('[Mem0] Memory instance created');
+}
 
 const panel = createWebPanel(db, config.web, queue);
 

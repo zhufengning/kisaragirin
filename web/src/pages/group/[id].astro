@@ -1,7 +1,7 @@
 ---
 import Layout from '@layouts/Layout.astro';
 import { db, schema } from '@lib/db';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { StoredMessage } from '../../../../src/message-format';
 import { messagesToString } from '../../../../src/message-format';
 import { getQueue } from '@lib/queue';
@@ -11,11 +11,29 @@ if (!groupId || isNaN(groupId)) {
     return new Response('Invalid group ID', { status: 400 });
 }
 
+const PAGE_SIZE = 50;
+const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
+
+// 先获取总消息数
+const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.messages)
+    .where(eq(schema.messages.groupId, groupId));
+const totalCount = countResult[0]?.count || 0;
+const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const validPage = Math.min(currentPage, totalPages);
+
+// 分页查询消息
 const rows = await db
     .select()
     .from(schema.messages)
     .where(eq(schema.messages.groupId, groupId))
-    .orderBy(schema.messages.time);
+    .orderBy(sql`${schema.messages.time} DESC`)
+    .limit(PAGE_SIZE)
+    .offset((validPage - 1) * PAGE_SIZE);
+
+// 反转回时间正序显示
+rows.reverse();
 
 const queue = getQueue();
 
@@ -30,7 +48,7 @@ const messages: StoredMessage[] = rows.map(r => ({
     segments: r.segments as StoredMessage['segments'],
 }));
 
-// 批量查询图片描述，避免串行 await 导致页面卡死
+// 批量查询图片描述
 const shaSet = new Set<string>();
 for (const msg of messages) {
     for (const seg of msg.segments) {
@@ -42,7 +60,7 @@ const imageRows = shaSet.size > 0
     : [];
 const descMap = new Map(imageRows.map(r => [r.sha256, r.description]));
 
-// 把缺失描述的图片加入队列（不等待）
+// 把缺失描述的图片加入队列
 const missingDesc = new Set<string>();
 for (const sha of shaSet) {
     if (!descMap.get(sha)) missingDesc.add(sha);
@@ -56,10 +74,17 @@ async function resolveDesc(sha256: string): Promise<string | undefined> {
 }
 
 const text = await messagesToString(messages, resolveDesc);
+
+// 构建分页URL
+function pageUrl(page: number) {
+    const url = new URL(Astro.url);
+    url.searchParams.set('page', String(page));
+    return url.pathname + url.search;
+}
 ---
 
 <Layout title={`群 ${groupId} 消息`}>
-    <h1><a href="/">← 群列表</a> · 群 {groupId}</h1>
+    <h1><a href="/">← 群列表</a> · 群 {groupId} <span class="meta">({totalCount} 条消息)</span></h1>
 
     {missingDesc.size > 0 && (
         <div id="queue-progress" class="queue-progress">
@@ -74,6 +99,29 @@ const text = await messagesToString(messages, resolveDesc);
 
     <pre class="messages">{text}</pre>
     {messages.length === 0 && <p class="empty">暂无消息</p>}
+
+    <!-- 分页导航 -->
+    {totalPages > 1 && (
+        <nav class="pagination">
+            <a
+                href={pageUrl(validPage - 1)}
+                class={`page-btn ${validPage <= 1 ? 'disabled' : ''}`}
+                aria-disabled={validPage <= 1}
+            >
+                ← 上一页
+            </a>
+            <span class="page-info">
+                第 {validPage} / {totalPages} 页 · 共 {totalCount} 条
+            </span>
+            <a
+                href={pageUrl(validPage + 1)}
+                class={`page-btn ${validPage >= totalPages ? 'disabled' : ''}`}
+                aria-disabled={validPage >= totalPages}
+            >
+                下一页 →
+            </a>
+        </nav>
+    )}
 </Layout>
 
 <style>
@@ -116,6 +164,37 @@ const text = await messagesToString(messages, resolveDesc);
     @keyframes indeterminate {
         0% { transform: translateX(-100%); }
         100% { transform: translateX(300%); }
+    }
+    .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 16px;
+        margin-top: 24px;
+        padding: 16px;
+    }
+    .page-btn {
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-size: 14px;
+        text-decoration: none;
+        transition: background 0.15s;
+    }
+    .page-btn:hover:not(.disabled) {
+        background: var(--surface-hover);
+        text-decoration: none;
+    }
+    .page-btn.disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    .page-info {
+        font-size: 14px;
+        color: var(--text-secondary);
     }
 </style>
 

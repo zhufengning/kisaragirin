@@ -1,9 +1,37 @@
 import { createServer } from 'node:http';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import type { Db } from '~/db';
 import type { WebPanelConfig } from '~/config';
 import type { DescQueue } from '~/util/desc-queue';
 import { Logger } from '@lib/util/logger';
+
+const STATIC_DIR = resolve('web/dist/client');
+
+function serveStatic(req: any, res: any): boolean {
+    const url = req.url || '';
+    if (!url.startsWith('/_astro/')) return false;
+    const filePath = join(STATIC_DIR, url);
+    if (!existsSync(filePath)) return false;
+    const content = readFileSync(filePath);
+    const ext = filePath.split('.').pop();
+    const mime: Record<string, string> = {
+        css: 'text/css',
+        js: 'application/javascript',
+        svg: 'image/svg+xml',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
+    };
+    res.writeHead(200, {
+        'Content-Type': mime[ext || ''] || 'application/octet-stream',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    res.end(content);
+    return true;
+}
 
 export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueue) {
     const logger = new Logger('info');
@@ -17,8 +45,17 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
             import(handlerPath)
                 .then((mod: any) => {
                     const handler = mod.handler as (req: any, res: any) => void | Promise<void>;
-                    server = createServer((req, res) => {
-                        handler(req, res);
+                    server = createServer(async (req, res) => {
+                        if (serveStatic(req, res)) return;
+                        try {
+                            await handler(req, res);
+                        } catch (err) {
+                            logger.error('[Web] Unhandled error in Astro handler:', err);
+                            if (!res.headersSent) {
+                                res.writeHead(500, { 'Content-Type': 'application/json' });
+                                res.end(JSON.stringify({ error: 'Internal Server Error' }));
+                            }
+                        }
                     });
                     server.listen(config.port, config.host, () => {
                         logger.info(`Web panel listening on http://${config.host}:${config.port}`);

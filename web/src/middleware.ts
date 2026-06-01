@@ -5,6 +5,10 @@ const PASSWORD = process.env.WEB_PASSWORD ?? '';
 const EXPECTED = 'Basic ' + Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 
 export const onRequest = defineMiddleware(async (context, next) => {
+    const url = new URL(context.request.url);
+    if (url.pathname.startsWith('/_astro/')) {
+        return next();
+    }
     const auth = context.request.headers.get('authorization');
     if (auth !== EXPECTED) {
         return new Response('Unauthorized', {
