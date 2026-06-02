@@ -46,7 +46,8 @@ src/
     image-preprocess.ts -- 图片转 jpg、压缩到 6MB 以下、动图切帧
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列）
-    reply-agent.ts      -- 回复Agent（两轮回复 + 深度研究调用）
+    reply-agent.ts      -- 回复Agent（两轮回复 + 深度研究调用，基于 pi-agent-core Agent 的自动 tool loop）
+    mem0-tool.ts        -- mem0 记忆工具（search_memory / add_memory），注册为 AgentTool 供 reply-agent 调用
   prompts.ts         -- 所有 LLM prompt 的统一入口
   web/
     server.ts        -- Node.js HTTP server，加载 Astro handler
@@ -77,6 +78,16 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
 
+### Agent Loop 与记忆机制
+
+- **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `Agent` 类
+- Agent 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
+- **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
+- 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
+- **回复工具** (`reply_first_turn` / `reply_second_turn`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
+- 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）
+- 深度研究使用独立的 `completeSimple` 调用，不经过 Agent loop
+
 ### AI 配置架构
 
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
@@ -103,9 +114,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
-- `src/util/agent-retry.ts` — Agent 调用通用指数退避重试封装
 - `src/util/reply-manager.ts` — 群回复触发管理与队列
-- `src/util/reply-agent.ts` — 回复Agent与深度研究调用
+- `src/util/reply-agent.ts` — 回复Agent（基于 `Agent` 类的自动 tool loop，支持 mem0 记忆工具多轮调用）
+- `src/util/mem0-tool.ts` — mem0 记忆工具（`search_memory` / `add_memory`），注册为 `AgentTool`
 - `src/prompts.ts` — 所有 LLM prompt 的统一入口
 - `src/web/server.ts` — Web 面板 Node adapter
 - `lib/types/messages.ts` — OneBot 消息段类型

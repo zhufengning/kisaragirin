@@ -35,5 +35,5 @@ yarn web:build && yarn start
 ## 技术栈
 
 - **后端**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
-- **AI**: `@earendil-works/pi-agent-core` + mem0ai
+- **AI**: `@earendil-works/pi-agent-core` (Agent tool loop) + mem0ai
 - **前端**: Astro 6.4 SSR (Node middleware模式)
