@@ -28,15 +28,27 @@ const allFiles = listImages();
 const searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
 const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
 
-// 如果有搜索词，先从数据库筛选有描述的sha256
+// 如果有搜索词，按描述或 sha256 筛选
 let filteredFiles = allFiles;
 if (searchQuery) {
+    const matchingSet = new Set<string>();
+
+    // 1. 按描述搜索
     const searchPattern = `%${searchQuery}%`;
     const matchingRows = await db
         .select({ sha256: schema.images.sha256 })
         .from(schema.images)
         .where(like(schema.images.description, searchPattern));
-    const matchingSet = new Set(matchingRows.map(r => r.sha256));
+    for (const r of matchingRows) matchingSet.add(r.sha256);
+
+    // 2. 按 sha256 搜索（包含匹配）
+    const lowerQuery = searchQuery.toLowerCase();
+    for (const f of allFiles) {
+        if (f.sha256.toLowerCase().includes(lowerQuery)) {
+            matchingSet.add(f.sha256);
+        }
+    }
+
     filteredFiles = allFiles.filter(f => matchingSet.has(f.sha256));
 }
 
@@ -91,7 +103,7 @@ function searchUrl(query: string) {
             type="text"
             name="search"
             value={searchQuery}
-            placeholder="按描述搜索图片..."
+            placeholder="按描述或哈希搜索图片..."
             class="search-input"
         />
         <button type="submit" class="btn">🔍 搜索</button>

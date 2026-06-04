@@ -1,9 +1,8 @@
 ---
 import Layout from '@layouts/Layout.astro';
 import { db, schema } from '@lib/db';
-import { eq, inArray, sql } from 'drizzle-orm';
-import type { StoredMessage } from '../../../../src/message-format';
-import { messagesToString } from '../../../../src/message-format';
+import { eq, sql } from 'drizzle-orm';
+import type { StoredMessage, StoredSegment } from '../../../../src/message-format';
 
 const groupId = Number(Astro.params.id);
 if (!groupId || isNaN(groupId)) {
@@ -45,23 +44,53 @@ const messages: StoredMessage[] = rows.map(r => ({
     segments: r.segments as StoredMessage['segments'],
 }));
 
-// 批量查询图片描述
-const shaSet = new Set<string>();
-for (const msg of messages) {
-    for (const seg of msg.segments) {
-        if (seg.type === 'image') shaSet.add(seg.sha256);
+function formatSender(msg: StoredMessage): string {
+    const id = msg.senderId;
+    const name = msg.senderCard || msg.senderName || '';
+    if (id == null) return 'unknown';
+    if (!name) return `(${id})`;
+    if (msg.isBot) return `${name}(me)(${id})`;
+    return `${name}(${id})`;
+}
+
+function segmentToRaw(seg: StoredSegment): string {
+    switch (seg.type) {
+        case 'text': return seg.text;
+        case 'at': return `@${seg.targetName || seg.target}`;
+        case 'image': return `[image:${seg.sha256.slice(0, 16)}...]`;
+        case 'face': return `[face:${seg.name || seg.id}]`;
+        case 'record': return '[record:语音]';
+        case 'video': return `[video:${seg.fileName || '未知'}]`;
+        case 'file': return `[file:${seg.fileName}]`;
+        case 'json': return '[json:...]';
+        case 'poke': return `[poke:${seg.pokeType},${seg.id}]`;
+        case 'dice': return `[dice:${seg.result ?? '?'}]`;
+        case 'rps': return `[rps:${seg.result ?? '?'}]`;
+        case 'reply': return `[reply:${seg.id}]`;
+        case 'forward': return `[forward:${seg.id}]`;
+        default: return `[${(seg as any).type}]`;
     }
 }
-const imageRows = shaSet.size > 0
-    ? await db.select().from(schema.images).where(inArray(schema.images.sha256, Array.from(shaSet)))
-    : [];
-const descMap = new Map(imageRows.map(r => [r.sha256, r.description]));
 
-async function resolveDesc(sha256: string): Promise<string | undefined> {
-    return descMap.get(sha256);
+function formatMessageRaw(msg: StoredMessage): string {
+    const atMark = msg.isAtBot ? '(有人@我) ' : '';
+    const sender = formatSender(msg);
+    const body = msg.segments.map(segmentToRaw).join('');
+    return `${atMark}[${sender}]: ${body}`;
 }
 
-const text = await messagesToString(messages, resolveDesc);
+const lines: string[] = [];
+let lastTime: number | null = null;
+for (const msg of messages) {
+    if (lastTime === null || msg.time - lastTime > 180) {
+        const d = new Date(msg.time * 1000);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        lines.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    }
+    lastTime = msg.time;
+    lines.push(formatMessageRaw(msg));
+}
+const text = lines.join('\n');
 
 // 构建分页URL
 function pageUrl(page: number) {
@@ -72,7 +101,7 @@ function pageUrl(page: number) {
 ---
 
 <Layout title={`群 ${groupId} 消息`}>
-    <h1><a href="/">← 群列表</a> · 群 {groupId} <span class="meta">({totalCount} 条消息)</span></h1>
+    <h1><a href="/">← 群列表</a> · 群 {groupId} <span class="meta">({totalCount} 条消息)</span> · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a></h1>
 
     <pre class="messages">{text}</pre>
     {messages.length === 0 && <p class="empty">暂无消息</p>}
@@ -143,6 +172,14 @@ function pageUrl(page: number) {
     .page-info {
         font-size: 14px;
         color: var(--text-secondary);
+    }
+    .preview-link {
+        font-size: 14px;
+        color: var(--accent);
+        text-decoration: none;
+    }
+    .preview-link:hover {
+        text-decoration: underline;
     }
 </style>
 

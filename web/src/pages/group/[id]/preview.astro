@@ -1,0 +1,121 @@
+---
+import Layout from '@layouts/Layout.astro';
+
+const groupId = Number(Astro.params.id);
+if (!groupId || isNaN(groupId)) {
+    return new Response('Invalid group ID', { status: 400 });
+}
+---
+
+<Layout title={`群 ${groupId} Prompt 预览`}>
+    <h1><a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} Prompt 预览</h1>
+
+    <div class="controls">
+        <label>触发类型：</label>
+        <select id="type-select">
+            <option value="silence" selected>闲时触发</option>
+            <option value="at">@触发</option>
+        </select>
+        <button id="refresh-btn">刷新</button>
+    </div>
+
+    <div id="loading" class="loading" style="display: none;">加载中...</div>
+    <div id="error" class="error" style="display: none;"></div>
+    <pre id="prompt-output" class="prompt-output"></pre>
+
+    <script define:vars={{ groupId }}>
+        const typeSelect = document.getElementById('type-select');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const loading = document.getElementById('loading');
+        const errorEl = document.getElementById('error');
+        const output = document.getElementById('prompt-output');
+
+        async function loadPrompt() {
+            loading.style.display = 'block';
+            errorEl.style.display = 'none';
+            output.textContent = '';
+
+            const type = typeSelect.value;
+            try {
+                const res = await fetch(`/api/preview-prompt?groupId=${groupId}&type=${type}`);
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.error || `HTTP ${res.status}`);
+                }
+                output.textContent = data.prompt;
+            } catch (err) {
+                errorEl.textContent = '加载失败：' + err.message;
+                errorEl.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        refreshBtn.addEventListener('click', loadPrompt);
+        typeSelect.addEventListener('change', loadPrompt);
+
+        // 自动加载一次
+        loadPrompt();
+    </script>
+</Layout>
+
+<style>
+    .controls {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .controls label {
+        font-size: 14px;
+        color: var(--text-secondary);
+    }
+    .controls select {
+        padding: 6px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+    }
+    .controls button {
+        padding: 6px 16px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text);
+        font-size: 14px;
+        cursor: pointer;
+    }
+    .controls button:hover {
+        background: var(--border);
+    }
+    .loading {
+        text-align: center;
+        padding: 40px;
+        color: var(--text-secondary);
+    }
+    .error {
+        padding: 16px;
+        background: rgba(220, 38, 38, 0.1);
+        border: 1px solid rgba(220, 38, 38, 0.3);
+        border-radius: var(--radius);
+        color: #ef4444;
+        margin-bottom: 16px;
+    }
+    .prompt-output {
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+        white-space: pre-wrap;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 14px 18px;
+        min-height: 200px;
+    }
+</style>

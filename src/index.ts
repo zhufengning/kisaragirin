@@ -1,6 +1,6 @@
 import { createBot } from '@lib';
 import { config } from '@/config';
-import { groupMessageEventToStoredMessage } from './message-format';
+import { groupMessageEventToStoredMessage, collectImageSha256FromSegment } from './message-format';
 import { createDb, schema } from './db';
 import { createWebPanel } from './web/server';
 import { DescQueue } from './util/desc-queue';
@@ -33,6 +33,8 @@ bot.init();
 panel.start();
 
 const replyManagers = new Map<number, GroupReplyManager>();
+(globalThis as any).__replyManagers__ = replyManagers;
+
 let botSelfId = 0;
 let botName = '';
 let botInfoReady = false;
@@ -45,6 +47,13 @@ bot.on('meta_event.lifecycle.connect', async () => {
         botName = info.nickname;
         botInfoReady = true;
         logger.debug(`[Bot] login info ready selfId=${botSelfId} name=${botName}`);
+
+        for (const groupId of config.input.group_whitelist) {
+            if (!replyManagers.has(groupId)) {
+                replyManagers.set(groupId, new GroupReplyManager(groupId, bot, db, queue, config, botSelfId, botName));
+                logger.debug(`[Bot] pre-initialized ReplyManager for group ${groupId}`);
+            }
+        }
     } catch (e) {
         logger.error('[Bot] Failed to get login info:', e);
     }
@@ -65,14 +74,16 @@ bot.on('message.group', async e => {
 
     const stored = await groupMessageEventToStoredMessage(e, bot);
 
-    // 图片 sha256 写入 images 表，并加入后台描述队列
+    // 收集所有图片 sha256（包括嵌套在 reply/forward 中的），写入 images 表并加入后台描述队列
+    const shaSet = new Set<string>();
     for (const seg of stored.segments) {
-        if (seg.type === 'image') {
-            await db.insert(schema.images)
-                .values({ sha256: seg.sha256 })
-                .onConflictDoNothing();
-            queue.enqueue(seg.sha256);
-        }
+        collectImageSha256FromSegment(seg, shaSet);
+    }
+    for (const sha256 of shaSet) {
+        await db.insert(schema.images)
+            .values({ sha256 })
+            .onConflictDoNothing();
+        queue.enqueue(sha256);
     }
 
     const rows = await db.insert(schema.messages).values({

@@ -74,18 +74,31 @@ export class DescQueue {
 
             this.processing.add(sha256);
             try {
+                const existing = await this.db
+                    .select()
+                    .from(schema.images)
+                    .where(eq(schema.images.sha256, sha256));
+                if (existing[0]?.description) {
+                    this.logger.info(`[DescQueue] description already exists for ${sha256.slice(0, 16)}, skipping`);
+                    this.notify(sha256, existing[0].description);
+                    continue;
+                }
+
                 const path = findImagePath(sha256);
                 if (!path) {
-                    this.logger.warn(`[DescQueue] Image file not found: ${sha256}`);
+                    this.logger.error(`[DescQueue] Image file not found: ${sha256}`);
                     this.notify(sha256, undefined);
                     continue;
                 }
 
                 const desc = await this.describe(path);
                 if (desc) {
-                    await this.db.update(schema.images)
-                        .set({ description: desc })
-                        .where(eq(schema.images.sha256, sha256));
+                    await this.db.insert(schema.images)
+                        .values({ sha256, description: desc })
+                        .onConflictDoUpdate({
+                            target: schema.images.sha256,
+                            set: { description: desc },
+                        });
                     this.logger.info(`[DescQueue] description saved for ${sha256.slice(0, 16)}`);
                 } else {
                     this.logger.warn(`[DescQueue] describe returned empty for ${sha256.slice(0, 16)}, not saving`);

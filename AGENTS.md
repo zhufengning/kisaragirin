@@ -62,21 +62,32 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       Layout.astro   -- 暗色主题全局布局
     pages/
       index.astro    -- 群列表
-      group/[id].astro   -- 群消息浏览（分页）
-      images.astro   -- 图片管理（分页 + 描述搜索）
-      memories.astro -- mem0 记忆管理（增删改查 + 语义搜索）
+      group/[id].astro       -- 群消息浏览（分页，仅原始数据）
+      group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPrompt）
+      images.astro           -- 图片管理（分页 + 描述搜索）
+      memories.astro         -- mem0 记忆管理（增删改查 + 语义搜索）
       api/
-        images/...   -- 图片文件服务 + 描述管理 API
-        memories/... -- mem0 REST API 封装
+        images/...           -- 图片文件服务 + 描述管理 API
+        memories/...         -- mem0 REST API 封装
+        preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPrompt）
 ```
 
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` 暴露给 Astro
+- `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - mem0 配置通过 `globalThis.__mem0_config__` 暴露给 Astro
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
+
+### Prompt 构建封装
+
+- `ReplyAgent.buildPrompt(groupId, lastTriggerId, task)` 封装了历史消息获取 + `buildUserPrompt`
+- **bot 和 webui 共用同一入口**，避免两边逻辑偏差
+- `generateReply` 内部调用 `buildPrompt`，不再重复写查询逻辑
+- `GroupReplyManager` 在构造时即初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
+- webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPrompt()`，结果与 bot 实际发送给模型的 prompt 完全一致
 
 ### Agent Loop 与记忆机制
 

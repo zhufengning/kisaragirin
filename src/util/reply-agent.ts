@@ -70,9 +70,7 @@ export class ReplyAgent {
         this.logger = new Logger();
     }
 
-    async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string[]> {
-        this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
-        this.taskType = task.type;
+    async buildPrompt(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string> {
         const maxMsgCount = this.config.input.max_msg_count ?? 50;
 
         const rows = await this.db
@@ -105,8 +103,15 @@ export class ReplyAgent {
             }
         }
 
+        return this.buildUserPrompt(history, latest, task);
+    }
+
+    async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string[]> {
+        this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
+        this.taskType = task.type;
+
         this.systemPrompt = this.buildSystemPrompt();
-        const userPrompt = await this.buildUserPrompt(history, latest, task);
+        const userPrompt = await this.buildPrompt(groupId, lastTriggerId, task);
         this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
 
         this.modelEntry = this.config.ai.models[this.config.ai.assignments.reply];

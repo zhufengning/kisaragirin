@@ -175,7 +175,7 @@ function renderBody(segments: StoredSegment[], ctx: RenderContext): string {
     return segments.map(s => renderSegment(s, ctx)).join('');
 }
 
-function collectImageSha256FromSegment(seg: StoredSegment, shaSet: Set<string>): void {
+export function collectImageSha256FromSegment(seg: StoredSegment, shaSet: Set<string>): void {
     switch (seg.type) {
         case 'image':
             shaSet.add(seg.sha256);

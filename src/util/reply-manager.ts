@@ -24,6 +24,7 @@ export class GroupReplyManager {
     private botSelfId: number;
     private botName: string;
     private logger: Logger;
+    private agent: ReplyAgent;
 
     lastTriggerId: number = 0;
     private pendingAtTimeout: NodeJS.Timeout | null = null;
@@ -43,6 +44,11 @@ export class GroupReplyManager {
         this.botSelfId = botSelfId;
         this.botName = botName;
         this.logger = new Logger();
+        this.agent = new ReplyAgent(db, descQueue, config);
+    }
+
+    getAgent(): ReplyAgent {
+        return this.agent;
     }
 
     onMessage(stored: StoredMessage, rowId: number): void {
@@ -216,7 +222,7 @@ export class GroupReplyManager {
             .limit(1);
         const currentLatestId = latestRows[0]?.id ?? 0;
 
-        const agent = new ReplyAgent(this.db, this.descQueue, this.config);
+        const agent = this.agent;
 
         // 获取当前群里的群名片
         let botCard: string | null = null;
