@@ -41,7 +41,7 @@ src/
     schema.ts        -- Drizzle SQLite 表定义
     index.ts         -- Database 连接工厂
   util/
-    desc-queue.ts       -- 图片描述后台队列（单线程轮询）
+    desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个）
     image-store.ts      -- 图片下载 + 本地存储
     image-preprocess.ts -- 图片转 jpg、压缩到 6MB 以下、动图切帧
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
@@ -105,6 +105,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 ### AI 配置架构
 
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
+
+- `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 

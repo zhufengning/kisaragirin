@@ -16,26 +16,30 @@ export class DescQueue {
     private waiters = new Map<string, Array<(desc: string | undefined) => void>>();
     private db: Db;
     private running = false;
-    private agent: Agent;
+    private agents: Agent[];
+    private concurrency: number;
     private logger: Logger;
 
     constructor(db: Db) {
         this.db = db;
         this.logger = new Logger();
+        this.concurrency = config.input.vision_concurrency ?? 5;
         const modelEntry = config.ai.models[config.ai.assignments.vision];
-        this.agent = new Agent({
+        this.agents = Array.from({ length: this.concurrency }, () => new Agent({
             initialState: {
                 systemPrompt: prompts.visionSystem,
                 model: modelEntry.model,
             },
             getApiKey: () => modelEntry.apiKey,
-        });
+        }));
     }
 
     start() {
         if (this.running) return;
         this.running = true;
-        this.loop();
+        for (let i = 0; i < this.concurrency; i++) {
+            this.loop(i);
+        }
     }
 
     enqueue(sha256: string, toFront = false) {
@@ -64,7 +68,8 @@ export class DescQueue {
         });
     }
 
-    private async loop() {
+    private async loop(workerId: number) {
+        const agent = this.agents[workerId];
         while (this.running) {
             const sha256 = this.queue.shift();
             if (!sha256) {
@@ -79,19 +84,19 @@ export class DescQueue {
                     .from(schema.images)
                     .where(eq(schema.images.sha256, sha256));
                 if (existing[0]?.description) {
-                    this.logger.info(`[DescQueue] description already exists for ${sha256.slice(0, 16)}, skipping`);
+                    this.logger.info(`[DescQueue] [w${workerId}] description already exists for ${sha256.slice(0, 16)}, skipping`);
                     this.notify(sha256, existing[0].description);
                     continue;
                 }
 
                 const path = findImagePath(sha256);
                 if (!path) {
-                    this.logger.error(`[DescQueue] Image file not found: ${sha256}`);
+                    this.logger.error(`[DescQueue] [w${workerId}] Image file not found: ${sha256}`);
                     this.notify(sha256, undefined);
                     continue;
                 }
 
-                const desc = await this.describe(path);
+                const desc = await this.describe(path, agent);
                 if (desc) {
                     await this.db.insert(schema.images)
                         .values({ sha256, description: desc })
@@ -99,13 +104,13 @@ export class DescQueue {
                             target: schema.images.sha256,
                             set: { description: desc },
                         });
-                    this.logger.info(`[DescQueue] description saved for ${sha256.slice(0, 16)}`);
+                    this.logger.info(`[DescQueue] [w${workerId}] description saved for ${sha256.slice(0, 16)}`);
                 } else {
-                    this.logger.warn(`[DescQueue] describe returned empty for ${sha256.slice(0, 16)}, not saving`);
+                    this.logger.warn(`[DescQueue] [w${workerId}] describe returned empty for ${sha256.slice(0, 16)}, not saving`);
                 }
                 this.notify(sha256, desc);
             } catch (err) {
-                this.logger.error(`[DescQueue] Failed to describe ${sha256}:`, err);
+                this.logger.error(`[DescQueue] [w${workerId}] Failed to describe ${sha256}:`, err);
                 this.notify(sha256, undefined);
             } finally {
                 this.processing.delete(sha256);
@@ -113,7 +118,7 @@ export class DescQueue {
         }
     }
 
-    private async describe(path: string): Promise<string | undefined> {
+    private async describe(path: string, agent: Agent): Promise<string | undefined> {
         const result = await preprocessImage(path);
         this.logger.debug(`[DescQueue] describe start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
 
@@ -123,14 +128,14 @@ export class DescQueue {
 
         await withRetry(
             async () => {
-                this.agent.reset();
+                agent.reset();
                 this.logger.debug(`[DescQueue] agent reset, prompt length=${inputText.length}, image count=${result.frames.length}`);
-                await this.agent.prompt(
+                await agent.prompt(
                     inputText,
                     result.frames.map(f => ({ type: 'image' as const, data: f.base64, mimeType: f.mimeType })),
                 );
                 this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
-                await this.agent.waitForIdle();
+                await agent.waitForIdle();
                 this.logger.debug(`[DescQueue] agent idle`);
             },
             {
@@ -144,7 +149,7 @@ export class DescQueue {
             },
         );
 
-        const msgs = this.agent.state.messages;
+        const msgs = agent.state.messages;
         const last = msgs[msgs.length - 1];
         const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : undefined;
         this.logger.debug(`[DescQueue] messages count=${msgs.length}, last role=${last?.role}, stopReason=${lastAssistant?.stopReason}`);

@@ -20,6 +20,7 @@ export interface InputConfig {
     reply_probability?: number;
     max_msg_count?: number;
     max_tool_call_rounds?: number;
+    vision_concurrency?: number;
     bot_name?: string;
     bot_persona?: string;
 }

@@ -53,6 +53,7 @@ export const config: AppConfig = {
         reply_probability: 0.1,
         max_msg_count: 50,
         max_tool_call_rounds: 5,
+        vision_concurrency: 5,
         bot_name: '',
         bot_persona: '',
     },
