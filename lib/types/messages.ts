@@ -222,6 +222,16 @@ export interface ForwardMessage {
          * Merge forwarding ID, need to get specifics via `get_forward_msg` API
          */
         id: number;
+        /**
+         * NapCat extension: pre-fetched nested messages array
+         */
+        content?: {
+            time: number;
+            message_id: number;
+            sender: { user_id: number; nickname: string; card?: string };
+            group_id?: number;
+            message: Message[];
+        }[];
     };
 }
 

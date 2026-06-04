@@ -413,27 +413,43 @@ export async function onebotMessageToSegments(
             }
             case 'forward': {
                 let nested: StoredMessage[] | undefined;
-                try {
-                    const res = await bot.getForwardMsg(String(m.data.id));
-                    // 运行时适配：NapCat 返回 { messages: [...] }
-                    const rawMessages = (res as any).messages ?? (res as any).message;
-                    if (Array.isArray(rawMessages)) {
-                        nested = [];
-                        for (const item of rawMessages) {
-                            if (item && Array.isArray(item.message)) {
-                                nested.push({
-                                    time: item.time ?? 0,
-                                    messageId: item.message_id,
-                                    senderId: item.sender?.user_id,
-                                    senderName: item.sender?.nickname ?? '',
-                                    senderCard: item.sender?.card,
-                                    segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
-                                });
-                            }
+                const content = (m as any).data?.content;
+                if (Array.isArray(content)) {
+                    nested = [];
+                    for (const item of content) {
+                        if (item && Array.isArray(item.message)) {
+                            nested.push({
+                                time: item.time ?? 0,
+                                messageId: item.message_id,
+                                senderId: item.sender?.user_id,
+                                senderName: item.sender?.nickname ?? '',
+                                senderCard: item.sender?.card,
+                                segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
+                            });
                         }
                     }
-                } catch {
-                    // API 失败时不阻塞主消息入库
+                } else {
+                    try {
+                        const res = await bot.getForwardMsg(String(m.data.id));
+                        const rawMessages = (res as any).messages ?? (res as any).message;
+                        if (Array.isArray(rawMessages)) {
+                            nested = [];
+                            for (const item of rawMessages) {
+                                if (item && Array.isArray(item.message)) {
+                                    nested.push({
+                                        time: item.time ?? 0,
+                                        messageId: item.message_id,
+                                        senderId: item.sender?.user_id,
+                                        senderName: item.sender?.nickname ?? '',
+                                        senderCard: item.sender?.card,
+                                        segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
+                                    });
+                                }
+                            }
+                        }
+                    } catch {
+                        // API 失败时不阻塞主消息入库
+                    }
                 }
                 out.push({ type: 'forward', id: m.data.id, ...(nested ? { messages: nested } : {}) });
                 break;

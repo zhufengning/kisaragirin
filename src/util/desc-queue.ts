@@ -52,6 +52,15 @@ export class DescQueue {
         }
     }
 
+    enqueueMany(sha256s: string[], toFront = false) {
+        const filtered = sha256s.filter(s => !this.processing.has(s) && !this.queue.includes(s));
+        if (toFront) {
+            this.queue.unshift(...filtered);
+        } else {
+            this.queue.push(...filtered);
+        }
+    }
+
     /** 查询描述；未生成时插到队头并等待 */
     async resolve(sha256: string): Promise<string | undefined> {
         const rows = await this.db

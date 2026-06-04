@@ -74,7 +74,7 @@ bot.on('message.group', async e => {
 
     const stored = await groupMessageEventToStoredMessage(e, bot);
 
-    // 收集所有图片 sha256（包括嵌套在 reply/forward 中的），写入 images 表并加入后台描述队列
+    // 收集所有图片 sha256（包括嵌套在 reply/forward 中的），写入 images 表并插队到描述队列
     const shaSet = new Set<string>();
     for (const seg of stored.segments) {
         collectImageSha256FromSegment(seg, shaSet);
@@ -83,8 +83,8 @@ bot.on('message.group', async e => {
         await db.insert(schema.images)
             .values({ sha256 })
             .onConflictDoNothing();
-        queue.enqueue(sha256);
     }
+    queue.enqueueMany(Array.from(shaSet), true);
 
     const rows = await db.insert(schema.messages).values({
         messageId: stored.messageId!,
