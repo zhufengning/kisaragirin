@@ -15,7 +15,7 @@ export class Client implements Bot {
 
     constructor (config: WsConfig) {
         this.config = config;
-        this.logger = new Logger(config.log_level);
+        this.logger = new Logger();
     }
 
     init () {

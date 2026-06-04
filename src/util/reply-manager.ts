@@ -42,7 +42,7 @@ export class GroupReplyManager {
         this.config = config;
         this.botSelfId = botSelfId;
         this.botName = botName;
-        this.logger = new Logger(config.onebot.log_level);
+        this.logger = new Logger();
     }
 
     onMessage(stored: StoredMessage, rowId: number): void {
@@ -217,8 +217,6 @@ export class GroupReplyManager {
         const currentLatestId = latestRows[0]?.id ?? 0;
 
         const agent = new ReplyAgent(this.db, this.descQueue, this.config);
-        const replyTexts = await agent.generateReply(this.groupId, this.lastTriggerId, task);
-        this.logger.info(`[ReplyManager] [${this.groupId}] reply generated: ${replyTexts.length} message(s)`);
 
         // 获取当前群里的群名片
         let botCard: string | null = null;
@@ -229,9 +227,14 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        for (let i = 0; i < replyTexts.length; i++) {
-            const replyText = replyTexts[i];
-            this.logger.info(`[ReplyManager] [${this.groupId}] sending reply ${i + 1}/${replyTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+        const firstTurnTexts = await agent.generateReply(this.groupId, this.lastTriggerId, task);
+        this.logger.info(`[ReplyManager] [${this.groupId}] first turn reply: ${firstTurnTexts.length} message(s)`);
+
+        let firstTurnMessageId: number | undefined;
+
+        for (let i = 0; i < firstTurnTexts.length; i++) {
+            const replyText = firstTurnTexts[i];
+            this.logger.info(`[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${firstTurnTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
             const segments: Message[] = [];
             if (task.type === 'at' && i === 0) {
@@ -241,6 +244,7 @@ export class GroupReplyManager {
 
             // 发送
             const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+            firstTurnMessageId = sendResult.message_id;
 
             // 写入数据库
             const now = Math.floor(Date.now() / 1000);
@@ -260,6 +264,45 @@ export class GroupReplyManager {
             // 通知自己 bot 消息已发送
             if (insertRows[0]) {
                 this.onBotMessage(insertRows[0].id);
+            }
+        }
+
+        const secondTurnTexts = await agent.generateSecondTurn(this.groupId);
+        if (secondTurnTexts.length > 0) {
+            this.logger.info(`[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
+
+            for (let i = 0; i < secondTurnTexts.length; i++) {
+                const replyText = secondTurnTexts[i];
+                this.logger.info(`[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+
+                const segments: Message[] = [];
+                if (firstTurnMessageId) {
+                    segments.push({ type: 'reply', data: { id: firstTurnMessageId } });
+                }
+                segments.push({ type: 'text', data: { text: replyText } });
+
+                // 发送
+                const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+
+                // 写入数据库
+                const now = Math.floor(Date.now() / 1000);
+                const insertRows = await this.db.insert(schema.messages).values({
+                    messageId: sendResult.message_id,
+                    groupId: this.groupId,
+                    userId: this.botSelfId,
+                    time: now,
+                    senderName: this.botName,
+                    senderCard: botCard,
+                    isBot: true,
+                    isAtBot: false,
+                    segments: [{ type: 'text', text: replyText }] as any,
+                    rawMessage: replyText,
+                }).returning({ id: schema.messages.id });
+
+                // 通知自己 bot 消息已发送
+                if (insertRows[0]) {
+                    this.onBotMessage(insertRows[0].id);
+                }
             }
         }
 

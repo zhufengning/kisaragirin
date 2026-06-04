@@ -34,7 +34,7 @@ function serveStatic(req: any, res: any): boolean {
 }
 
 export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueue) {
-    const logger = new Logger('info');
+    const logger = new Logger();
     let server: ReturnType<typeof createServer> | undefined;
     return {
         start() {

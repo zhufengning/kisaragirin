@@ -57,16 +57,22 @@ export class ReplyAgent {
     private descQueue: DescQueue;
     private config: any;
     private logger: Logger;
+    private firstTurnArgs: ReplyFirstTurnArgs | null = null;
+    private systemPrompt: string = '';
+    private modelEntry: any = null;
+    private mem0Tools: AgentTool<any>[] = [];
+    private taskType: 'at' | 'silence' = 'silence';
 
     constructor(db: Db, descQueue: DescQueue, config: any) {
         this.db = db;
         this.descQueue = descQueue;
         this.config = config;
-        this.logger = new Logger(config.onebot.log_level);
+        this.logger = new Logger();
     }
 
     async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string[]> {
         this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
+        this.taskType = task.type;
         const maxMsgCount = this.config.input.max_msg_count ?? 50;
 
         const rows = await this.db
@@ -99,15 +105,15 @@ export class ReplyAgent {
             }
         }
 
-        const systemPrompt = this.buildSystemPrompt();
+        this.systemPrompt = this.buildSystemPrompt();
         const userPrompt = await this.buildUserPrompt(history, latest, task);
         this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
 
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
-        if (!modelEntry) throw new Error('Reply model not configured');
+        this.modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
+        if (!this.modelEntry) throw new Error('Reply model not configured');
 
-        const mem0Tools = this.config.ai.mem0
-            ? createMem0Tools(this.config.ai.mem0, this.config.onebot.log_level, groupId)
+        this.mem0Tools = this.config.ai.mem0
+            ? createMem0Tools(this.config.ai.mem0, this.config.log.level, groupId)
             : [];
 
         // 第一轮：决策 FINISH 或 DEEP_RESEARCH
@@ -128,20 +134,33 @@ export class ReplyAgent {
             },
         };
 
-        const firstTurnTools: AgentTool<any>[] = [replyFirstTurnTool, ...mem0Tools];
+        const firstTurnTools: AgentTool<any>[] = [replyFirstTurnTool, ...this.mem0Tools];
+
+        const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
+        let turnCount = 0;
 
         const agent = new Agent({
             initialState: {
-                systemPrompt,
-                model: modelEntry.model,
+                systemPrompt: this.systemPrompt,
+                model: this.modelEntry.model,
                 tools: firstTurnTools,
             },
-            getApiKey: () => modelEntry.apiKey,
+            getApiKey: () => this.modelEntry.apiKey,
+            afterToolCall: async () => {
+                if (turnCount >= maxToolCallRounds) {
+                    this.logger.warn(`[ReplyAgent] [${groupId}] tool call rounds exceeded ${maxToolCallRounds}, forcing termination`);
+                    return { terminate: true };
+                }
+            },
+            prepareNextTurn: async () => {
+                turnCount++;
+            },
         });
 
         this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
         agent.reset();
         firstTurnResult = null;
+        turnCount = 0;
         await agent.prompt(userPrompt);
         await agent.waitForIdle();
 
@@ -151,6 +170,7 @@ export class ReplyAgent {
         while (!firstTurnResult && reminderCount < maxReminders) {
             reminderCount++;
             this.logger.info(`[ReplyAgent] [${groupId}] first turn no toolCall, sending reminder ${reminderCount}/${maxReminders}...`);
+            turnCount = 0;
             await agent.prompt(prompts.replyReminderFirstTurn);
             await agent.waitForIdle();
         }
@@ -159,7 +179,10 @@ export class ReplyAgent {
             const lastAssistant = getLastAssistant(agent);
             const text = lastAssistant ? extractText(lastAssistant) : '';
             this.logger.info(`[ReplyAgent] [${groupId}] first turn no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            return [text || '（沉默）'];
+            if (this.taskType === 'at') {
+                return ['@响应失败'];
+            }
+            return [];
         }
 
         const firstTurnArgs = firstTurnResult as ReplyFirstTurnArgs;
@@ -170,10 +193,34 @@ export class ReplyAgent {
             return [firstTurnArgs.immediate_reply];
         }
 
+        this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH immediate_reply=${firstTurnArgs.immediate_reply.slice(0, 80)}${firstTurnArgs.immediate_reply.length > 80 ? '...' : ''}`);
+
+        this.firstTurnArgs = firstTurnArgs;
+
+        return [firstTurnArgs.immediate_reply];
+    }
+
+    async generateSecondTurn(groupId: number): Promise<string[]> {
+        if (!this.firstTurnArgs || this.firstTurnArgs.action !== 'DEEP_RESEARCH') {
+            return [];
+        }
+
+        const firstTurnArgs = this.firstTurnArgs;
+
         // 深度研究
         this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH keyword=${firstTurnArgs.deep_research_keyword || '(empty)'}`);
-        const researchResult = await this.doDeepResearch(firstTurnArgs.deep_research_keyword || '');
-        this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
+        let researchResult: string;
+        try {
+            researchResult = await this.doDeepResearch(firstTurnArgs.deep_research_keyword || '');
+            this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
+            if (!researchResult) {
+                this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
+                researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
+            }
+        } catch (err) {
+            this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
+            researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
+        }
 
         // 第二轮：基于研究结果生成最终回复
         let secondTurnResult: ReplySecondTurnArgs | null = null;
@@ -193,15 +240,27 @@ export class ReplyAgent {
             },
         };
 
-        const secondTurnTools: AgentTool<any>[] = [replySecondTurnTool, ...mem0Tools];
+        const secondTurnTools: AgentTool<any>[] = [replySecondTurnTool, ...this.mem0Tools];
+
+        const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
+        let turnCount = 0;
 
         const secondAgent = new Agent({
             initialState: {
-                systemPrompt,
-                model: modelEntry.model,
+                systemPrompt: this.systemPrompt,
+                model: this.modelEntry.model,
                 tools: secondTurnTools,
             },
-            getApiKey: () => modelEntry.apiKey,
+            getApiKey: () => this.modelEntry.apiKey,
+            afterToolCall: async () => {
+                if (turnCount >= maxToolCallRounds) {
+                    this.logger.warn(`[ReplyAgent] [${groupId}] second turn tool call rounds exceeded ${maxToolCallRounds}, forcing termination`);
+                    return { terminate: true };
+                }
+            },
+            prepareNextTurn: async () => {
+                turnCount++;
+            },
         });
 
         const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
@@ -209,14 +268,17 @@ export class ReplyAgent {
         this.logger.debug(`[ReplyAgent] [${groupId}] second turn agent prompt...`);
         secondAgent.reset();
         secondTurnResult = null;
+        turnCount = 0;
         await secondAgent.prompt(secondUserPrompt);
         await secondAgent.waitForIdle();
 
         let reminderCount2 = 0;
+        const maxReminders = 2;
 
         while (!secondTurnResult && reminderCount2 < maxReminders) {
             reminderCount2++;
             this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall, sending reminder ${reminderCount2}/${maxReminders}...`);
+            turnCount = 0;
             await secondAgent.prompt(prompts.replyReminderSecondTurn);
             await secondAgent.waitForIdle();
         }
@@ -225,12 +287,15 @@ export class ReplyAgent {
             const lastAssistant = getLastAssistant(secondAgent);
             const text = lastAssistant ? extractText(lastAssistant) : '';
             this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            return [firstTurnArgs.immediate_reply, text || '（沉思）'];
+            if (this.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
         }
 
         const secondTurnArgs = secondTurnResult as ReplySecondTurnArgs;
         this.logger.info(`[ReplyAgent] [${groupId}] second turn final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
-        return [firstTurnArgs.immediate_reply, secondTurnArgs.final_reply];
+        return [secondTurnArgs.final_reply];
     }
 
     private buildSystemPrompt(): string {
@@ -271,6 +336,11 @@ export class ReplyAgent {
             systemPrompt: prompts.deepResearchSystem,
             messages: [{ role: 'user', content: `请深度研究以下主题：\n${keyword}`, timestamp: Date.now() }],
         }, { apiKey: modelEntry.apiKey });
+        this.logger.debug(`[ReplyAgent] doDeepResearch response content blocks: ${
+            JSON.stringify(response.content.map(c => ({ type: c.type, len: 'text' in c ? c.text?.length : 'thinking' in c ? c.thinking?.length : 'N/A', preview: 'text' in c ? c.text?.slice(0, 100) : 'thinking' in c ? c.thinking?.slice(0, 100) : 'N/A' })))
+        }`);
+        this.logger.debug(`[ReplyAgent] doDeepResearch stopReason=${response.stopReason} contentLength=${response.content.length}`);
+
         if (response.stopReason === 'error') {
             throw new Error(response.errorMessage || 'Deep research model returned error');
         }

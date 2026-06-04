@@ -5,10 +5,11 @@ import { createDb, schema } from './db';
 import { createWebPanel } from './web/server';
 import { DescQueue } from './util/desc-queue';
 import { GroupReplyManager } from './util/reply-manager';
-import { Logger } from '@lib/util/logger';
+import { Logger, configureLogger } from '@lib/util/logger';
 import { Memory } from 'mem0ai/oss';
 
-const logger = new Logger(config.onebot.log_level);
+configureLogger(config.log.level, config.log.file);
+const logger = new Logger();
 
 const bot = createBot(config.onebot);
 const db = createDb();

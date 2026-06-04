@@ -5,8 +5,12 @@ export interface OneBotConfig {
     host: string;
     port: number;
     access_token?: string;
-    log_level: 'debug' | 'info' | 'warn' | 'error';
     mode: 'ws' | 'ws-reverse';
+}
+
+export interface LogConfig {
+    level: 'debug' | 'info' | 'warn' | 'error';
+    file?: string;
 }
 
 export interface InputConfig {
@@ -15,6 +19,7 @@ export interface InputConfig {
     silence_wait_time?: number;
     reply_probability?: number;
     max_msg_count?: number;
+    max_tool_call_rounds?: number;
     bot_name?: string;
     bot_persona?: string;
 }
@@ -43,6 +48,7 @@ export interface AiConfig {
 
 export interface AppConfig {
     onebot: OneBotConfig;
+    log: LogConfig;
     input: InputConfig;
     web: WebPanelConfig;
     ai: AiConfig;

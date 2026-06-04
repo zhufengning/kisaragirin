@@ -21,7 +21,7 @@ export class DescQueue {
 
     constructor(db: Db) {
         this.db = db;
-        this.logger = new Logger(config.onebot.log_level);
+        this.logger = new Logger();
         const modelEntry = config.ai.models[config.ai.assignments.vision];
         this.agent = new Agent({
             initialState: {

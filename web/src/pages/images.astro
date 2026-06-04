@@ -76,6 +76,15 @@ function searchUrl(query: string) {
 <Layout title="图片管理">
     <h1>图片管理 <span class="meta">({totalCount} 张{searchQuery ? ` · 搜索: "${searchQuery}"` : ''})</span></h1>
 
+    <div id="queue-progress" class="queue-progress" style="display: none;">
+        <div class="progress-text">
+            图片描述生成中，还剩 <span id="queue-remaining">0</span> 张…
+        </div>
+        <div class="progress-track">
+            <div class="progress-bar"></div>
+        </div>
+    </div>
+
     <!-- 搜索栏 -->
     <form class="search-bar" method="GET" action="/images">
         <input
@@ -154,6 +163,30 @@ function searchUrl(query: string) {
     </form>
 </Layout>
 
+<script is:inline>
+    (function () {
+        const progressEl = document.getElementById('queue-progress');
+        const remainingEl = document.getElementById('queue-remaining');
+        if (!progressEl || !remainingEl) return;
+
+        const evtSource = new EventSource('/api/queue-progress');
+        evtSource.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            const remaining = data.pending + data.processing;
+
+            if (remaining === 0) {
+                progressEl.style.display = 'none';
+            } else {
+                progressEl.style.display = 'block';
+                remainingEl.textContent = String(remaining);
+            }
+        };
+        evtSource.onerror = () => {
+            evtSource.close();
+        };
+    })();
+</script>
+
 <style>
     .search-bar {
         display: flex;
@@ -230,6 +263,35 @@ function searchUrl(query: string) {
         margin-top: 24px;
         padding-top: 20px;
         border-top: 1px solid var(--border);
+    }
+    .queue-progress {
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .progress-text {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-bottom: 8px;
+    }
+    .progress-track {
+        height: 6px;
+        background: var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+    }
+    .progress-bar {
+        height: 100%;
+        width: 40%;
+        background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+        border-radius: 3px;
+        animation: indeterminate 1.2s infinite ease-in-out;
+    }
+    @keyframes indeterminate {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(300%); }
     }
     .pagination {
         display: flex;

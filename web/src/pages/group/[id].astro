@@ -4,7 +4,6 @@ import { db, schema } from '@lib/db';
 import { eq, inArray, sql } from 'drizzle-orm';
 import type { StoredMessage } from '../../../../src/message-format';
 import { messagesToString } from '../../../../src/message-format';
-import { getQueue } from '@lib/queue';
 
 const groupId = Number(Astro.params.id);
 if (!groupId || isNaN(groupId)) {
@@ -35,8 +34,6 @@ const rows = await db
 // 反转回时间正序显示
 rows.reverse();
 
-const queue = getQueue();
-
 const messages: StoredMessage[] = rows.map(r => ({
     time: r.time,
     messageId: r.messageId,
@@ -60,15 +57,6 @@ const imageRows = shaSet.size > 0
     : [];
 const descMap = new Map(imageRows.map(r => [r.sha256, r.description]));
 
-// 把缺失描述的图片加入队列
-const missingDesc = new Set<string>();
-for (const sha of shaSet) {
-    if (!descMap.get(sha)) missingDesc.add(sha);
-}
-for (const sha of missingDesc) {
-    queue.enqueue(sha, true);
-}
-
 async function resolveDesc(sha256: string): Promise<string | undefined> {
     return descMap.get(sha256);
 }
@@ -85,17 +73,6 @@ function pageUrl(page: number) {
 
 <Layout title={`群 ${groupId} 消息`}>
     <h1><a href="/">← 群列表</a> · 群 {groupId} <span class="meta">({totalCount} 条消息)</span></h1>
-
-    {missingDesc.size > 0 && (
-        <div id="queue-progress" class="queue-progress">
-            <div class="progress-text">
-                图片描述生成中，还剩 <span id="queue-remaining">{missingDesc.size}</span> 张…
-            </div>
-            <div class="progress-track">
-                <div class="progress-bar"></div>
-            </div>
-        </div>
-    )}
 
     <pre class="messages">{text}</pre>
     {messages.length === 0 && <p class="empty">暂无消息</p>}
@@ -136,35 +113,6 @@ function pageUrl(page: number) {
         padding: 14px 18px;
     }
     .empty { color: var(--text-secondary); text-align: center; padding: 40px; }
-    .queue-progress {
-        margin-bottom: 16px;
-        padding: 12px 16px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-    }
-    .progress-text {
-        font-size: 13px;
-        color: var(--text-secondary);
-        margin-bottom: 8px;
-    }
-    .progress-track {
-        height: 6px;
-        background: var(--border);
-        border-radius: 3px;
-        overflow: hidden;
-    }
-    .progress-bar {
-        height: 100%;
-        width: 40%;
-        background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-        border-radius: 3px;
-        animation: indeterminate 1.2s infinite ease-in-out;
-    }
-    @keyframes indeterminate {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(300%); }
-    }
     .pagination {
         display: flex;
         justify-content: center;
@@ -198,28 +146,4 @@ function pageUrl(page: number) {
     }
 </style>
 
-{missingDesc.size > 0 && (
-    <script is:inline>
-        (function () {
-            const progressEl = document.getElementById('queue-progress');
-            const remainingEl = document.getElementById('queue-remaining');
-            if (!progressEl || !remainingEl) return;
 
-            const evtSource = new EventSource('/api/queue-progress');
-            evtSource.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                const remaining = data.pending + data.processing;
-
-                if (remaining === 0) {
-                    progressEl.style.display = 'none';
-                    evtSource.close();
-                } else {
-                    remainingEl.textContent = String(remaining);
-                }
-            };
-            evtSource.onerror = () => {
-                evtSource.close();
-            };
-        })();
-    </script>
-)}

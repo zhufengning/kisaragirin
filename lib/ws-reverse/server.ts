@@ -14,7 +14,7 @@ export class Server implements Bot {
 
     constructor (config: WsReverseConfig) {
         this.config = config;
-        this.logger = new Logger(config.log_level);
+        this.logger = new Logger();
     }
 
     init () {

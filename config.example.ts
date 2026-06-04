@@ -40,8 +40,11 @@ export const config: AppConfig = {
         host: '127.0.0.1',
         port: 6102,
         access_token: '',
-        log_level: 'debug',
         mode: 'ws',
+    },
+    log: {
+        level: 'debug',
+        file: 'data/app.log',
     },
     input: {
         group_whitelist: [],
@@ -49,6 +52,7 @@ export const config: AppConfig = {
         silence_wait_time: 30,
         reply_probability: 0.1,
         max_msg_count: 50,
+        max_tool_call_rounds: 5,
         bot_name: '',
         bot_persona: '',
     },

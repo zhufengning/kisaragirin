@@ -4,7 +4,6 @@ import {Message} from './messages';
 export interface BaseConfig {
     host: string;
     port: number;
-    log_level: 'debug' | 'info' | 'warn' | 'error';
 }
 
 type GetEventDetail<T> = T extends { message_type: infer M extends string } ? `message.${M}` :
