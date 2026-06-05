@@ -25,7 +25,7 @@ yarn
 - 对于任何库，先阅读相关文档，再写代码
 - 优先阅读文档，无法找到答案的，再阅读源代码
 - 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码。在此之前求助于文档，而不是你的记忆和想象
-- 未经允许严禁私自运行服务和测试
+- 未经允许严禁私自运行服务和测试，禁止运行任何package.json中未定义的编译、打包、测试、类型检查指令
 
 ## 架构设计
 
@@ -99,7 +99,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的工具调用轮数。超过上限后通过 `afterToolCall` hook 强制 terminate，然后发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）
 - **失败回退**：所有尝试（初始 prompt + 最多 2 次 reminder）均失败后，@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
-- 深度研究使用独立的 `completeSimple` 调用，不经过 Agent loop
+- 深度研究使用 `openai` SDK 的非流式 `chat.completions.create` 调用 Hermes，不经过 Agent loop
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
 
 ### AI 配置架构
