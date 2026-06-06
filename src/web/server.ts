@@ -1,14 +1,14 @@
-import { createServer } from 'node:http';
-import { resolve, join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
-import type { Db } from '~/db';
-import type { WebPanelConfig } from '~/config';
-import type { DescQueue } from '~/util/desc-queue';
-import { Logger } from '@lib/util/logger';
+import {createServer} from 'node:http';
+import {resolve, join} from 'node:path';
+import {existsSync, readFileSync} from 'node:fs';
+import type {Db} from '~/db';
+import type {WebPanelConfig} from '~/config';
+import type {DescQueue} from '~/util/desc-queue';
+import {Logger} from '@lib/util/logger';
 
 const STATIC_DIR = resolve('web/dist/client');
 
-function serveStatic(req: any, res: any): boolean {
+function serveStatic (req: any, res: any): boolean {
     const url = req.url || '';
     if (!url.startsWith('/_astro/')) return false;
     const filePath = join(STATIC_DIR, url);
@@ -23,21 +23,22 @@ function serveStatic(req: any, res: any): boolean {
         jpg: 'image/jpeg',
         jpeg: 'image/jpeg',
         gif: 'image/gif',
-        webp: 'image/webp',
+        webp: 'image/webp'
     };
     res.writeHead(200, {
         'Content-Type': mime[ext || ''] || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Cache-Control': 'public, max-age=31536000, immutable'
     });
     res.end(content);
     return true;
 }
 
-export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueue) {
+export function createWebPanel (_db: Db, config: WebPanelConfig, _queue: DescQueue) {
+    // _db and _queue are reserved for future use
     const logger = new Logger();
     let server: ReturnType<typeof createServer> | undefined;
     return {
-        start() {
+        start () {
             process.env.WEB_USERNAME = config.username;
             process.env.WEB_PASSWORD = config.password;
 
@@ -52,8 +53,8 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
                         } catch (err) {
                             logger.error('[Web] Unhandled error in Astro handler:', err);
                             if (!res.headersSent) {
-                                res.writeHead(500, { 'Content-Type': 'application/json' });
-                                res.end(JSON.stringify({ error: 'Internal Server Error' }));
+                                res.writeHead(500, {'Content-Type': 'application/json'});
+                                res.end(JSON.stringify({error: 'Internal Server Error'}));
                             }
                         }
                     });
@@ -61,15 +62,15 @@ export function createWebPanel(_db: Db, config: WebPanelConfig, _queue: DescQueu
                         logger.info(`Web panel listening on http://${config.host}:${config.port}`);
                     });
                 })
-                .catch((err) => {
+                .catch(err => {
                     logger.error('Failed to load Astro handler:', err);
                 });
         },
-        stop() {
+        stop () {
             if (server) {
                 server.close();
                 logger.info('Web panel server closed.');
             }
-        },
+        }
     };
 }

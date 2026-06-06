@@ -1,12 +1,12 @@
-import { createBot } from '@lib';
-import { config } from '@/config';
-import { groupMessageEventToStoredMessage, collectImageSha256FromSegment } from './message-format';
-import { createDb, schema } from './db';
-import { createWebPanel } from './web/server';
-import { DescQueue } from './util/desc-queue';
-import { GroupReplyManager } from './util/reply-manager';
-import { Logger, configureLogger } from '@lib/util/logger';
-import { Memory } from 'mem0ai/oss';
+import {createBot} from '@lib';
+import {config} from '@/config';
+import {groupMessageEventToStoredMessage, collectImageSha256FromSegment} from './message-format';
+import {createDb, schema} from './db';
+import {createWebPanel} from './web/server';
+import {DescQueue} from './util/desc-queue';
+import {GroupReplyManager} from './util/reply-manager';
+import {Logger, configureLogger} from '@lib/util/logger';
+import {Memory} from 'mem0ai/oss';
 
 configureLogger(config.log.level, config.log.file);
 const logger = new Logger();
@@ -59,10 +59,10 @@ bot.on('meta_event.lifecycle.connect', async () => {
     }
 });
 
-function getReplyManager(groupId: number): GroupReplyManager | undefined {
+function getReplyManager (groupId: number): GroupReplyManager | undefined {
     logger.debug(`[Bot] getReplyManager group=${groupId} botInfoReady=${botInfoReady}`);
-    if (!botInfoReady) return undefined;
-    if (!config.input.group_whitelist.includes(groupId)) return undefined;
+    if (!botInfoReady) return;
+    if (!config.input.group_whitelist.includes(groupId)) return;
     if (!replyManagers.has(groupId)) {
         replyManagers.set(groupId, new GroupReplyManager(groupId, bot, db, queue, config, botSelfId, botName));
     }
@@ -81,7 +81,7 @@ bot.on('message.group', async e => {
     }
     for (const sha256 of shaSet) {
         await db.insert(schema.images)
-            .values({ sha256 })
+            .values({sha256})
             .onConflictDoNothing();
     }
     queue.enqueueMany(Array.from(shaSet), true);
@@ -96,8 +96,9 @@ bot.on('message.group', async e => {
         isBot: stored.isBot ?? false,
         isAtBot: stored.isAtBot ?? false,
         segments: stored.segments as any,
-        rawMessage: e.raw_message,
-    }).returning({ id: schema.messages.id });
+        rawMessage: e.raw_message
+    })
+        .returning({id: schema.messages.id});
 
     logger.info(`[Bot] [${e.group_id}] msg ${stored.messageId} from ${stored.senderId} atBot=${stored.isAtBot}`);
 

@@ -1,5 +1,5 @@
-import type { Model, Api } from '@earendil-works/pi-ai';
-import type { MemoryConfig } from 'mem0ai/oss';
+import type {Model, Api} from '@earendil-works/pi-ai';
+import type {MemoryConfig} from 'mem0ai/oss';
 
 export interface OneBotConfig {
     host: string;

@@ -6,7 +6,7 @@ import type { ReplyTask } from '~/util/reply-manager';
 import type { GroupReplyManager } from '~/util/reply-manager';
 
 function getReplyManagers(): Map<number, GroupReplyManager> {
-    const m = (globalThis as any).__replyManagers__;
+    const m = globalThis.__replyManagers__;
     if (!m) throw new Error('ReplyManagers not initialized');
     return m;
 }
@@ -55,7 +55,7 @@ export const GET: APIRoute = async ({ url }) => {
             senderCard: row.senderCard ?? undefined,
             isBot: row.isBot,
             isAtBot: row.isAtBot,
-            segments: row.segments as any,
+            segments: row.segments as StoredMessage['segments'],
         };
 
         const task: ReplyTask = {
@@ -72,9 +72,9 @@ export const GET: APIRoute = async ({ url }) => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error('[Preview API] GET /api/preview-prompt error:', err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });

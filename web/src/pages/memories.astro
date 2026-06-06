@@ -2,6 +2,18 @@
 import Layout from '@layouts/Layout.astro';
 import { config } from '@/config';
 import { Memory } from 'mem0ai/oss';
+import type { MemoryItem, SearchResult, GetAllMemoryOptions } from 'mem0ai/oss';
+
+// mem0 OSS 返回的数据可能包含额外字段
+interface WebMemoryItem extends MemoryItem {
+    text?: string;
+    user_id?: string;
+    categories?: string[];
+}
+
+interface WebSearchResult extends SearchResult {
+    count?: number;
+}
 
 const PAGE_SIZE = 20;
 const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
@@ -10,28 +22,30 @@ const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
 const defaultUserId = allGroups[0] || '';
 const userId = Astro.url.searchParams.get('user_id')?.trim() || defaultUserId;
 
-let memories: any[] = [];
+let memories: WebMemoryItem[] = [];
 let totalCount = 0;
 let totalPages = 1;
 let error = '';
 
 try {
-    const memory = (globalThis as any).__memory__ as Memory | undefined;
+    const memory = globalThis.__memory__;
     if (!memory) {
         error = 'Memory not initialized';
     } else if (searchQuery) {
-        const result = await memory.search(searchQuery, { topK: PAGE_SIZE, filters: { user_id: userId } });
-        memories = result.results || [];
+        const result = await memory.search(searchQuery, { topK: PAGE_SIZE, filters: { user_id: userId } }) as WebSearchResult;
+        memories = (result.results || []) as WebMemoryItem[];
         totalCount = memories.length;
     } else {
-        const result = await memory.getAll({ page: currentPage, pageSize: PAGE_SIZE, filters: { user_id: userId } });
-        memories = result.results || [];
+        const result = await memory.getAll(
+            { page: currentPage, pageSize: PAGE_SIZE, filters: { user_id: userId } } as GetAllMemoryOptions,
+        ) as WebSearchResult;
+        memories = (result.results || []) as WebMemoryItem[];
         totalCount = result.count || 0;
         totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
     }
-} catch (e: any) {
+} catch (e: unknown) {
     console.error('[Mem0 Page] Error:', e);
-    error = e.message;
+    error = e instanceof Error ? e.message : String(e);
 }
 
 function pageUrl(page: number) {

@@ -1,12 +1,11 @@
-import type { Bot } from '@lib/types';
-import type { Message } from '@lib/types/messages';
-import type { Db } from '~/db';
-import { schema } from '~/db';
-import { eq, desc } from 'drizzle-orm';
-import type { DescQueue } from './desc-queue';
-import type { StoredMessage } from '~/message-format';
-import { ReplyAgent } from './reply-agent';
-import { Logger } from '@lib/util/logger';
+import type {Bot} from '@lib/types';
+import type {Message} from '@lib/types/messages';
+import {schema, type Db} from '~/db';
+import {eq, desc} from 'drizzle-orm';
+import type {DescQueue} from './desc-queue';
+import type {StoredMessage} from '~/message-format';
+import {ReplyAgent} from './reply-agent';
+import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
     type: 'at' | 'silence';
@@ -35,7 +34,10 @@ export class GroupReplyManager {
     private replyQueue: ReplyTask[] = [];
     private processingQueue: boolean = false;
 
-    constructor(groupId: number, bot: Bot, db: Db, descQueue: DescQueue, config: any, botSelfId: number, botName: string) {
+    constructor (
+        groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
+        config: any, botSelfId: number, botName: string,
+    ) {
         this.groupId = groupId;
         this.bot = bot;
         this.db = db;
@@ -47,11 +49,11 @@ export class GroupReplyManager {
         this.agent = new ReplyAgent(db, descQueue, config);
     }
 
-    getAgent(): ReplyAgent {
+    getAgent (): ReplyAgent {
         return this.agent;
     }
 
-    onMessage(stored: StoredMessage, rowId: number): void {
+    onMessage (stored: StoredMessage, _rowId: number): void {
         // 任何消息打破沉默
         this.clearSilenceTimeout();
 
@@ -69,7 +71,7 @@ export class GroupReplyManager {
                 this.triggerAtReply(this.pendingAtMessage!, this.pendingAtRowId!);
             }
             this.pendingAtMessage = stored;
-            this.pendingAtRowId = rowId;
+            this.pendingAtRowId = _rowId;
             this.startAtMergeWindow();
         } else if (this.pendingAtTimeout) {
             // 非 @ 消息，重新计时
@@ -78,12 +80,12 @@ export class GroupReplyManager {
         }
     }
 
-    onBotMessage(rowId: number): void {
+    onBotMessage (_rowId: number): void {
         this.clearSilenceTimeout();
         // bot 消息不启动沉默定时器
     }
 
-    private startAtMergeWindow(): void {
+    private startAtMergeWindow (): void {
         const ms = (this.config.input.merge_window ?? 30) * 1000;
         this.logger.debug(`[ReplyManager] [${this.groupId}] merge window started (${ms}ms)`);
         this.pendingAtTimeout = setTimeout(() => {
@@ -92,36 +94,36 @@ export class GroupReplyManager {
             this.pendingAtTimeout = null;
             this.pendingAtMessage = null;
             this.pendingAtRowId = null;
-            if (msg && rowId != null) {
+            if (msg && rowId !== null) {
                 this.triggerAtReply(msg, rowId);
             }
         }, ms);
     }
 
-    private clearPendingAt(): void {
+    private clearPendingAt (): void {
         if (this.pendingAtTimeout) {
             clearTimeout(this.pendingAtTimeout);
             this.pendingAtTimeout = null;
         }
     }
 
-    private triggerAtReply(stored: StoredMessage, rowId: number): void {
+    private triggerAtReply (stored: StoredMessage, rowId: number): void {
         this.logger.info(`[ReplyManager] [${this.groupId}] triggerAtReply msg ${stored.messageId}`);
         this.enqueueTask({
             type: 'at',
             triggerDbId: rowId,
             triggerMessageId: stored.messageId!,
-            triggerMessage: stored,
+            triggerMessage: stored
         });
     }
 
-    private startSilenceTimer(): void {
+    private startSilenceTimer (): void {
         const minutes = this.config.input.silence_wait_time ?? 30;
         this.logger.debug(`[ReplyManager] [${this.groupId}] silence timer started (${minutes}min)`);
         this.silenceTimeout = setTimeout(() => this.onSilenceTimeout(), minutes * 60 * 1000);
     }
 
-    private clearSilenceTimeout(): void {
+    private clearSilenceTimeout (): void {
         if (this.silenceTimeout) {
             this.logger.debug(`[ReplyManager] [${this.groupId}] silence timer cleared`);
             clearTimeout(this.silenceTimeout);
@@ -129,7 +131,7 @@ export class GroupReplyManager {
         }
     }
 
-    private async onSilenceTimeout(): Promise<void> {
+    private async onSilenceTimeout (): Promise<void> {
         this.silenceTimeout = null;
         this.logger.debug(`[ReplyManager] [${this.groupId}] silence timeout fired`);
 
@@ -169,37 +171,41 @@ export class GroupReplyManager {
             messageId: row.messageId,
             senderId: row.userId,
             senderName: row.senderName,
-            senderCard: row.senderCard ?? undefined,
+            senderCard: row.senderCard ?? void 0,
             isBot: row.isBot,
             isAtBot: row.isAtBot,
-            segments: row.segments as any,
+            segments: row.segments as StoredMessage['segments']
         };
 
         this.enqueueTask({
             type: 'silence',
             triggerDbId: row.id,
             triggerMessageId: row.messageId,
-            triggerMessage: stored,
+            triggerMessage: stored
         });
     }
 
-    private enqueueTask(task: ReplyTask): void {
-        this.logger.debug(`[ReplyManager] [${this.groupId}] enqueueTask type=${task.type} msg=${task.triggerMessageId} queueLen=${this.replyQueue.length + 1}`);
+    private enqueueTask (task: ReplyTask): void {
+        this.logger.debug(
+            `[ReplyManager] [${this.groupId}] enqueueTask type=${task.type} ` +
+            `msg=${task.triggerMessageId} queueLen=${this.replyQueue.length + 1}`);
         this.replyQueue.push(task);
         if (!this.processingQueue) {
             this.processQueue();
         }
     }
 
-    private async processQueue(): Promise<void> {
+    private async processQueue (): Promise<void> {
         if (this.processingQueue) return;
         this.processingQueue = true;
         this.isReplying = true;
-        this.logger.debug(`[ReplyManager] [${this.groupId}] processQueue start tasks=${this.replyQueue.length}`);
+        this.logger.debug(
+            `[ReplyManager] [${this.groupId}] processQueue start tasks=${this.replyQueue.length}`);
 
         while (this.replyQueue.length > 0) {
             const task = this.replyQueue.shift()!;
-            this.logger.debug(`[ReplyManager] [${this.groupId}] executeTask type=${task.type} msg=${task.triggerMessageId}`);
+            this.logger.debug(
+                `[ReplyManager] [${this.groupId}] executeTask type=${task.type} msg=${task.triggerMessageId}`);
             try {
                 await this.executeTask(task);
             } catch (err) {
@@ -212,10 +218,10 @@ export class GroupReplyManager {
         this.logger.debug(`[ReplyManager] [${this.groupId}] processQueue done`);
     }
 
-    private async executeTask(task: ReplyTask): Promise<void> {
+    private async executeTask (task: ReplyTask): Promise<void> {
         // 获取当前最新消息的 id（用于更新 lastTriggerId）
         const latestRows = await this.db
-            .select({ id: schema.messages.id })
+            .select({id: schema.messages.id})
             .from(schema.messages)
             .where(eq(schema.messages.groupId, this.groupId))
             .orderBy(desc(schema.messages.id))
@@ -229,31 +235,37 @@ export class GroupReplyManager {
         try {
             const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
             botCard = memberInfo.card || null;
-        } catch (e) {
+        } catch {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
         const firstTurnTexts = await agent.generateReply(this.groupId, this.lastTriggerId, task);
-        this.logger.info(`[ReplyManager] [${this.groupId}] first turn reply: ${firstTurnTexts.length} message(s)`);
+        this.logger.info(
+            `[ReplyManager] [${this.groupId}] first turn reply: ${firstTurnTexts.length} message(s)`);
 
         let firstTurnMessageId: number | undefined;
 
         for (let i = 0; i < firstTurnTexts.length; i++) {
             const replyText = firstTurnTexts[i];
-            this.logger.info(`[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${firstTurnTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${firstTurnTexts.length}: ` +
+                `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
             const segments: Message[] = [];
             if (task.type === 'at' && i === 0) {
-                segments.push({ type: 'reply', data: { id: task.triggerMessageId } });
+                segments.push({type: 'reply', data: {id: task.triggerMessageId}});
             }
-            segments.push({ type: 'text', data: { text: replyText } });
+            segments.push({type: 'text', data: {text: replyText}});
 
             // 发送
             const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
             firstTurnMessageId = sendResult.message_id;
 
-            // 写入数据库
             const now = Math.floor(Date.now() / 1000);
+            const dbSegments: any[] = [{type: 'text', text: replyText}];
+            if (task.type === 'at' && i === 0) {
+                dbSegments.unshift({type: 'reply', id: task.triggerMessageId});
+            }
             const insertRows = await this.db.insert(schema.messages).values({
                 messageId: sendResult.message_id,
                 groupId: this.groupId,
@@ -263,9 +275,10 @@ export class GroupReplyManager {
                 senderCard: botCard,
                 isBot: true,
                 isAtBot: false,
-                segments: [{ type: 'text', text: replyText }] as any,
-                rawMessage: replyText,
-            }).returning({ id: schema.messages.id });
+                segments: dbSegments as any,
+                rawMessage: replyText
+            })
+                .returning({id: schema.messages.id});
 
             // 通知自己 bot 消息已发送
             if (insertRows[0]) {
@@ -275,23 +288,29 @@ export class GroupReplyManager {
 
         const secondTurnTexts = await agent.generateSecondTurn(this.groupId);
         if (secondTurnTexts.length > 0) {
-            this.logger.info(`[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
 
             for (let i = 0; i < secondTurnTexts.length; i++) {
                 const replyText = secondTurnTexts[i];
-                this.logger.info(`[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+                this.logger.info(
+                    `[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ` +
+                    `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
                 const segments: Message[] = [];
                 if (firstTurnMessageId) {
-                    segments.push({ type: 'reply', data: { id: firstTurnMessageId } });
+                    segments.push({type: 'reply', data: {id: firstTurnMessageId}});
                 }
-                segments.push({ type: 'text', data: { text: replyText } });
+                segments.push({type: 'text', data: {text: replyText}});
 
                 // 发送
                 const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
 
-                // 写入数据库
                 const now = Math.floor(Date.now() / 1000);
+                const dbSegments2: any[] = [{type: 'text', text: replyText}];
+                if (firstTurnMessageId) {
+                    dbSegments2.unshift({type: 'reply', id: firstTurnMessageId});
+                }
                 const insertRows = await this.db.insert(schema.messages).values({
                     messageId: sendResult.message_id,
                     groupId: this.groupId,
@@ -301,9 +320,10 @@ export class GroupReplyManager {
                     senderCard: botCard,
                     isBot: true,
                     isAtBot: false,
-                    segments: [{ type: 'text', text: replyText }] as any,
-                    rawMessage: replyText,
-                }).returning({ id: schema.messages.id });
+                    segments: dbSegments2 as any,
+                    rawMessage: replyText
+                })
+                    .returning({id: schema.messages.id});
 
                 // 通知自己 bot 消息已发送
                 if (insertRows[0]) {

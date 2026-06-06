@@ -2,7 +2,7 @@ import type { APIRoute } from 'astro';
 import { Memory } from 'mem0ai/oss';
 
 function getMemory(): Memory {
-    const m = (globalThis as any).__memory__;
+    const m = globalThis.__memory__;
     if (!m) throw new Error('Memory not initialized');
     return m;
 }
@@ -16,9 +16,9 @@ export const GET: APIRoute = async ({ params }) => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error(`[Mem0 API] GET /api/memories/${params.id} error:`, err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -36,9 +36,9 @@ export const PUT: APIRoute = async ({ params, request }) => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error(`[Mem0 API] PUT /api/memories/${params.id} error:`, err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -54,9 +54,9 @@ export const DELETE: APIRoute = async ({ params }) => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error(`[Mem0 API] DELETE /api/memories/${params.id} error:`, err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });

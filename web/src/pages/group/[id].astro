@@ -38,7 +38,7 @@ const messages: StoredMessage[] = rows.map(r => ({
     messageId: r.messageId,
     senderId: r.userId,
     senderName: r.senderName,
-    senderCard: r.senderCard,
+    senderCard: r.senderCard ?? undefined,
     isBot: r.isBot,
     isAtBot: r.isAtBot,
     segments: r.segments as StoredMessage['segments'],
@@ -68,7 +68,7 @@ function segmentToRaw(seg: StoredSegment): string {
         case 'rps': return `[rps:${seg.result ?? '?'}]`;
         case 'reply': return `[reply:${seg.id}]`;
         case 'forward': return `[forward:${seg.id}]`;
-        default: return `[${(seg as any).type}]`;
+        default: return `[${(seg as { type: string }).type}]`;
     }
 }
 

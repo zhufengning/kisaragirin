@@ -1,6 +1,5 @@
-import type { Message, GroupMessageEvent } from '@lib/types';
-import type { Bot } from '@lib/types';
-import { downloadAndStoreImage } from './util/image-store';
+import type {Message, GroupMessageEvent, Bot} from '@lib/types';
+import {downloadAndStoreImage} from './util/image-store';
 
 /**
  * 群成员昵称缓存
@@ -9,7 +8,7 @@ import { downloadAndStoreImage } from './util/image-store';
  */
 const memberNameCache = new Map<string, string>();
 
-async function resolveAtTargetName(
+async function resolveAtTargetName (
     bot: Bot,
     groupId: number,
     target: string,
@@ -28,7 +27,7 @@ async function resolveAtTargetName(
         }
         return memberNameCache.get(cacheKey);
     } catch {
-        return undefined;
+        return;
     }
 }
 
@@ -157,82 +156,82 @@ interface RenderContext {
     descCache: Map<string, string | undefined>;
 }
 
-function indentStr(level: number): string {
+function indentStr (level: number): string {
     return '  '.repeat(level);
 }
 
 /** 格式化发送者名称 */
-export function formatSender(msg: StoredMessage): string {
+export function formatSender (msg: StoredMessage): string {
     const id = msg.senderId;
     const name = msg.senderCard || msg.senderName || '';
-    if (id == null) return 'unknown';
+    if (id === null || typeof id === 'undefined') return 'unknown';
     if (!name) return `(${id})`;
     if (msg.isBot) return `${name}(me)(${id})`;
     return `${name}(${id})`;
 }
 
-function renderBody(segments: StoredSegment[], ctx: RenderContext): string {
+function renderBody (segments: StoredSegment[], ctx: RenderContext): string {
     return segments.map(s => renderSegment(s, ctx)).join('');
 }
 
-export function collectImageSha256FromSegment(seg: StoredSegment, shaSet: Set<string>): void {
+export function collectImageSha256FromSegment (seg: StoredSegment, shaSet: Set<string>): void {
     switch (seg.type) {
-        case 'image':
-            shaSet.add(seg.sha256);
-            break;
-        case 'reply':
-            if (seg.message) {
-                for (const s of seg.message.segments) {
+    case 'image':
+        shaSet.add(seg.sha256);
+        break;
+    case 'reply':
+        if (seg.message) {
+            for (const s of seg.message.segments) {
+                collectImageSha256FromSegment(s, shaSet);
+            }
+        }
+        break;
+    case 'forward':
+        if (seg.messages) {
+            for (const msg of seg.messages) {
+                for (const s of msg.segments) {
                     collectImageSha256FromSegment(s, shaSet);
                 }
             }
-            break;
-        case 'forward':
-            if (seg.messages) {
-                for (const msg of seg.messages) {
-                    for (const s of msg.segments) {
-                        collectImageSha256FromSegment(s, shaSet);
-                    }
-                }
-            }
-            break;
+        }
+        break;
     }
 }
 
-function renderSegment(seg: StoredSegment, ctx: RenderContext): string {
+function renderSegment (seg: StoredSegment, ctx: RenderContext): string {
     switch (seg.type) {
-        case 'text':
-            return seg.text;
-        case 'at':
-            return `@${seg.targetName || '未知用户'}`;
-        case 'image':
-            return `[image: ${ctx.descCache.get(seg.sha256) || '未知图片'}]`;
-        case 'face':
-            return `[face: ${seg.name || seg.id}]`;
-        case 'record':
-            return '[record: 语音]';
-        case 'video':
-            return `[video: ${seg.fileName || '未知视频'}]`;
-        case 'file':
-            return `[file: ${seg.fileName}]`;
-        case 'json':
-            return '[json: ...]';
-        case 'poke':
-            return `[poke: ${seg.pokeType},${seg.id}]`;
-        case 'dice':
-            return `[dice: ${seg.result ?? '未知结果'}]`;
-        case 'rps':
-            return `[rps: ${seg.result ?? '未知结果'}]`;
-        case 'reply':
-            return renderReply(seg, ctx);
-        case 'forward':
-            return renderForward(seg, ctx);
-        default:
-            return '';
+    case 'text':
+        return seg.text;
+    case 'at':
+        return `@${seg.targetName || '未知用户'}`;
+    case 'image':
+        return `[image: ${ctx.descCache.get(seg.sha256) || '未知图片'}]`;
+    case 'face':
+        return `[face: ${seg.name || seg.id}]`;
+    case 'record':
+        return '[record: 语音]';
+    case 'video':
+        return `[video: ${seg.fileName || '未知视频'}]`;
+    case 'file':
+        return `[file: ${seg.fileName}]`;
+    case 'json':
+        return '[json: ...]';
+    case 'poke':
+        return `[poke: ${seg.pokeType},${seg.id}]`;
+    case 'dice':
+        return `[dice: ${seg.result ?? '未知结果'}]`;
+    case 'rps':
+        return `[rps: ${seg.result ?? '未知结果'}]`;
+    case 'reply':
+        return renderReply(seg, ctx);
+    case 'forward':
+        return renderForward(seg, ctx);
+    default:
+        return '';
     }
 }
 
-function renderReply(seg: StoredReplySegment, ctx: RenderContext): string {
+function renderReply (seg: StoredReplySegment, ctx: RenderContext): string {
     const refMsg = seg.message;
     if (!refMsg) {
         return `[ref:reply-${seg.id}]`;
@@ -243,14 +242,14 @@ function renderReply(seg: StoredReplySegment, ctx: RenderContext): string {
             indent: ctx.indent + 1,
             replyDepth: 1,
             inForward: ctx.inForward,
-            descCache: ctx.descCache,
+            descCache: ctx.descCache
         });
         return `\n${indentStr(ctx.indent + 1)}[ref ${sender}]: ${body}\n`;
     }
     return `[ref ${sender}]`;
 }
 
-function renderForward(seg: StoredForwardSegment, ctx: RenderContext): string {
+function renderForward (seg: StoredForwardSegment, ctx: RenderContext): string {
     if (!seg.messages || seg.messages.length === 0) {
         return `[forward:${seg.id}]`;
     }
@@ -261,7 +260,7 @@ function renderForward(seg: StoredForwardSegment, ctx: RenderContext): string {
             indent: ctx.indent + 1,
             replyDepth: 0,
             inForward: true,
-            descCache: ctx.descCache,
+            descCache: ctx.descCache
         });
         lines.push(`\n${indentStr(ctx.indent + 1)}[forward ${sender}]: ${body}`);
     }
@@ -269,7 +268,7 @@ function renderForward(seg: StoredForwardSegment, ctx: RenderContext): string {
 }
 
 /** 单条消息 toString（异步，支持通过 resolveDesc 查询图片描述） */
-export async function singleMessageToString(
+export async function singleMessageToString (
     msg: StoredMessage,
     resolveDesc?: (sha256: string) => Promise<string | undefined>
 ): Promise<string> {
@@ -286,14 +285,14 @@ export async function singleMessageToString(
 
     const atMark = msg.isAtBot ? '(有人@我)' : '';
     const sender = formatSender(msg);
-    const body = renderBody(msg.segments, { indent: 0, replyDepth: 0, inForward: false, descCache });
+    const body = renderBody(msg.segments, {indent: 0, replyDepth: 0, inForward: false, descCache});
     if (!body) return `${atMark}[${sender}]:`;
     if (body.startsWith('\n')) return `${atMark}[${sender}]:${body}`;
     return `${atMark}[${sender}]: ${body}`;
 }
 
 /** 消息数组 toString（异步，单次渲染内部缓存描述） */
-export async function messagesToString(
+export async function messagesToString (
     messages: StoredMessage[],
     resolveDesc?: (sha256: string) => Promise<string | undefined>
 ): Promise<string> {
@@ -320,7 +319,8 @@ export async function messagesToString(
         if (lastTime === null || msg.time - lastTime > 180) {
             const d = new Date(msg.time * 1000);
             const pad = (n: number) => String(n).padStart(2, '0');
-            const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}` +
+                `-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
             parts.push(ts);
             parts.push('---');
         }
@@ -328,7 +328,7 @@ export async function messagesToString(
 
         const atMark = msg.isAtBot ? '(有人@我)' : '';
         const sender = formatSender(msg);
-        const body = renderBody(msg.segments, { indent: 0, replyDepth: 0, inForward: false, descCache });
+        const body = renderBody(msg.segments, {indent: 0, replyDepth: 0, inForward: false, descCache});
         if (!body) {
             parts.push(`${atMark}[${sender}]:`);
         } else if (body.startsWith('\n')) {
@@ -340,11 +340,11 @@ export async function messagesToString(
         parts.push('---');
     }
 
-    return parts.join('\n') + '\n';
+    return `${parts.join('\n')}\n`;
 }
 
 /** 将 OneBot Message 数组转换为 StoredSegment 数组（不生成描述） */
-export async function onebotMessageToSegments(
+export async function onebotMessageToSegments (
     bot: Bot,
     groupId: number,
     msgs: Message[],
@@ -352,117 +352,117 @@ export async function onebotMessageToSegments(
     const out: StoredSegment[] = [];
     for (const m of msgs) {
         switch (m.type) {
-            case 'text':
-                out.push({ type: 'text', text: m.data.text });
-                break;
-            case 'at': {
-                const targetName = await resolveAtTargetName(bot, groupId, m.data.qq);
-                out.push({ type: 'at', target: m.data.qq, targetName });
-                break;
+        case 'text':
+            out.push({type: 'text', text: m.data.text});
+            break;
+        case 'at': {
+            const targetName = await resolveAtTargetName(bot, groupId, m.data.qq);
+            out.push({type: 'at', target: m.data.qq, targetName});
+            break;
+        }
+        case 'image': {
+            const {sha256} = await downloadAndStoreImage(m.data.url);
+            out.push({type: 'image', sha256});
+            break;
+        }
+        case 'face': {
+            const name = m.data.raw?.faceText as string | undefined;
+            out.push({type: 'face', id: m.data.id, ...(name ? {name} : {})});
+            break;
+        }
+        case 'record':
+            out.push({type: 'record'});
+            break;
+        case 'video':
+            out.push({type: 'video', fileName: m.data.file});
+            break;
+        case 'file':
+            out.push({type: 'file', fileName: m.data.file});
+            break;
+        case 'json':
+            out.push({type: 'json'});
+            break;
+        case 'poke':
+            out.push({type: 'poke', pokeType: m.data.type, id: m.data.id});
+            break;
+        case 'dice':
+            out.push({type: 'dice'});
+            break;
+        case 'rps':
+            out.push({type: 'rps'});
+            break;
+        case 'reply': {
+            let nested: StoredMessage | undefined;
+            try {
+                const res = await bot.getMsg(m.data.id);
+                const nestedMsgs = typeof res.message === 'string' ? [] : res.message;
+                const nestedGroupId = 'group_id' in res ? (res as { group_id: number }).group_id : 0;
+                nested = {
+                    time: res.time,
+                    messageId: res.message_id,
+                    senderId: res.sender.user_id,
+                    senderName: res.sender.nickname,
+                    senderCard: 'card' in res.sender ? res.sender.card : void 0,
+                    segments: await onebotMessageToSegments(bot, nestedGroupId, nestedMsgs)
+                };
+            } catch {
+                // API 失败时不阻塞主消息入库
             }
-            case 'image': {
-                const { sha256 } = await downloadAndStoreImage(m.data.url);
-                out.push({ type: 'image', sha256 });
-                break;
-            }
-            case 'face': {
-                const name = m.data.raw?.faceText as string | undefined;
-                out.push({ type: 'face', id: m.data.id, ...(name ? { name } : {}) });
-                break;
-            }
-            case 'record':
-                out.push({ type: 'record' });
-                break;
-            case 'video':
-                out.push({ type: 'video', fileName: m.data.file });
-                break;
-            case 'file':
-                out.push({ type: 'file', fileName: m.data.file });
-                break;
-            case 'json':
-                out.push({ type: 'json' });
-                break;
-            case 'poke':
-                out.push({ type: 'poke', pokeType: m.data.type, id: m.data.id });
-                break;
-            case 'dice':
-                out.push({ type: 'dice' });
-                break;
-            case 'rps':
-                out.push({ type: 'rps' });
-                break;
-            case 'reply': {
-                let nested: StoredMessage | undefined;
+            out.push({type: 'reply', id: m.data.id, ...(nested ? {message: nested} : {})});
+            break;
+        }
+        case 'forward': {
+            let nested: StoredMessage[] | undefined;
+            const content = (m as any).data?.content;
+            if (Array.isArray(content)) {
+                nested = [];
+                for (const item of content) {
+                    if (item && Array.isArray(item.message)) {
+                        nested.push({
+                            time: item.time ?? 0,
+                            messageId: item.message_id,
+                            senderId: item.sender?.user_id,
+                            senderName: item.sender?.nickname ?? '',
+                            senderCard: item.sender?.card,
+                            segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message)
+                        });
+                    }
+                }
+            } else {
                 try {
-                    const res = await bot.getMsg(m.data.id);
-                    const nestedMsgs = typeof res.message === 'string' ? [] : res.message;
-                    const groupId = 'group_id' in res ? (res as any).group_id as number : 0;
-                    nested = {
-                        time: res.time,
-                        messageId: res.message_id,
-                        senderId: res.sender.user_id,
-                        senderName: res.sender.nickname,
-                        senderCard: 'card' in res.sender ? res.sender.card : undefined,
-                        segments: await onebotMessageToSegments(bot, groupId, nestedMsgs),
-                    };
+                    const res = await bot.getForwardMsg(String(m.data.id));
+                    const rawMessages = (res as any).messages ?? (res as any).message;
+                    if (Array.isArray(rawMessages)) {
+                        nested = [];
+                        for (const item of rawMessages) {
+                            if (item && Array.isArray(item.message)) {
+                                nested.push({
+                                    time: item.time ?? 0,
+                                    messageId: item.message_id,
+                                    senderId: item.sender?.user_id,
+                                    senderName: item.sender?.nickname ?? '',
+                                    senderCard: item.sender?.card,
+                                    segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message)
+                                });
+                            }
+                        }
+                    }
                 } catch {
                     // API 失败时不阻塞主消息入库
                 }
-                out.push({ type: 'reply', id: m.data.id, ...(nested ? { message: nested } : {}) });
-                break;
             }
-            case 'forward': {
-                let nested: StoredMessage[] | undefined;
-                const content = (m as any).data?.content;
-                if (Array.isArray(content)) {
-                    nested = [];
-                    for (const item of content) {
-                        if (item && Array.isArray(item.message)) {
-                            nested.push({
-                                time: item.time ?? 0,
-                                messageId: item.message_id,
-                                senderId: item.sender?.user_id,
-                                senderName: item.sender?.nickname ?? '',
-                                senderCard: item.sender?.card,
-                                segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
-                            });
-                        }
-                    }
-                } else {
-                    try {
-                        const res = await bot.getForwardMsg(String(m.data.id));
-                        const rawMessages = (res as any).messages ?? (res as any).message;
-                        if (Array.isArray(rawMessages)) {
-                            nested = [];
-                            for (const item of rawMessages) {
-                                if (item && Array.isArray(item.message)) {
-                                    nested.push({
-                                        time: item.time ?? 0,
-                                        messageId: item.message_id,
-                                        senderId: item.sender?.user_id,
-                                        senderName: item.sender?.nickname ?? '',
-                                        senderCard: item.sender?.card,
-                                        segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message),
-                                    });
-                                }
-                            }
-                        }
-                    } catch {
-                        // API 失败时不阻塞主消息入库
-                    }
-                }
-                out.push({ type: 'forward', id: m.data.id, ...(nested ? { messages: nested } : {}) });
-                break;
-            }
-            default:
-                out.push({ type: 'text', text: `[${(m as Message).type}]` });
+            out.push({type: 'forward', id: m.data.id, ...(nested ? {messages: nested} : {})});
+            break;
+        }
+        default:
+            out.push({type: 'text', text: `[${(m as Message).type}]`});
         }
     }
     return out;
 }
 
 /** 将 OneBot 群消息事件转换为 StoredMessage */
-export async function groupMessageEventToStoredMessage(
+export async function groupMessageEventToStoredMessage (
     event: GroupMessageEvent,
     bot: Bot,
 ): Promise<StoredMessage> {
@@ -479,6 +479,6 @@ export async function groupMessageEventToStoredMessage(
         senderCard: event.sender.card,
         isBot: event.user_id === event.self_id,
         isAtBot,
-        segments,
+        segments
     };
 }

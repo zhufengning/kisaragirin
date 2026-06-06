@@ -5,8 +5,8 @@ import type { Db } from '~/db';
 
 let db: Db;
 
-if ((globalThis as any).__db__) {
-    db = (globalThis as any).__db__;
+if (globalThis.__db__) {
+    db = globalThis.__db__;
 } else {
     // fallback：独立运行时（如 astro dev）自建连接
     const sqlite = new Database('./data.db');

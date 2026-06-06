@@ -1,8 +1,9 @@
 import type { APIRoute } from 'astro';
 import { Memory } from 'mem0ai/oss';
+import type { GetAllMemoryOptions } from 'mem0ai/oss';
 
 function getMemory(): Memory {
-    const m = (globalThis as any).__memory__;
+    const m = globalThis.__memory__;
     if (!m) throw new Error('Memory not initialized');
     return m;
 }
@@ -14,16 +15,16 @@ export const GET: APIRoute = async ({ url }) => {
         const pageSize = parseInt(url.searchParams.get('page_size') || '50', 10);
         const userId = url.searchParams.get('user_id') || 'default';
 
-        const options: any = { page, pageSize, filters: { user_id: userId } };
+        const options: GetAllMemoryOptions & { page?: number; pageSize?: number } = { page, pageSize, filters: { user_id: userId } };
 
         const result = await memory.getAll(options);
         return new Response(JSON.stringify(result), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error('[Mem0 API] GET /api/memories error:', err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });
@@ -53,9 +54,9 @@ export const POST: APIRoute = async ({ request }) => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error('[Mem0 API] POST /api/memories error:', err);
-        return new Response(JSON.stringify({ error: err.message }), {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
         });

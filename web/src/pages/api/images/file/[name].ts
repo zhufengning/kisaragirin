@@ -29,7 +29,7 @@ export const GET: APIRoute = async ({ params }) => {
     }
     const buf = readFileSync(filePath);
     const mime = extToMime(extname(filePath));
-    return new Response(buf, {
+    return new Response(new Uint8Array(buf), {
         headers: {
             'Content-Type': mime,
             'Cache-Control': 'public, max-age=86400',

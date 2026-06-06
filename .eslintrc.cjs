@@ -137,12 +137,12 @@ module.exports = {
         'prefer-spread': [2],
         'prefer-template': [2],
         'require-atomic-updates': [2],
-        'require-await': [2],
         'rest-spread-spacing': [2, 'never'],
         'symbol-description': [2],
         'template-curly-spacing': [2, 'never'],
 
         '@typescript-eslint/no-explicit-any': [0],
-        '@typescript-eslint/no-empty-object-type': [0]
+        '@typescript-eslint/no-empty-object-type': [0],
+        '@typescript-eslint/no-unused-vars': [2, {argsIgnorePattern: '^_'}]
     }
 };
