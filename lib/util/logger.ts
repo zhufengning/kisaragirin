@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const logLevels = ['debug', 'info', 'warn', 'error'];
@@ -14,10 +14,34 @@ enum LogLevel {
 let globalLevel: LogLevel = LogLevel.INFO;
 let globalFile: string | undefined;
 
+function rotateLogFile(file: string) {
+    try {
+        if (!existsSync(file)) return;
+        for (let i = 10; i >= 1; i--) {
+            const backup = `${file}.${i}`;
+            if (existsSync(backup)) {
+                if (i >= 10) {
+                    unlinkSync(backup);
+                } else {
+                    renameSync(backup, `${file}.${i + 1}`);
+                }
+            }
+        }
+        renameSync(file, `${file}.1`);
+    } catch {
+        // silently ignore rotation errors
+    }
+}
+
 export function configureLogger(level: 'debug' | 'info' | 'warn' | 'error', file?: string) {
     globalLevel = logLevels.indexOf(level);
+    if (file) {
+        rotateLogFile(file);
+    }
     globalFile = file;
 }
+
+const MAX_CONSOLE_LINE_LENGTH = 500;
 
 function formatTimestamp(): string {
     const now = new Date();
@@ -33,6 +57,11 @@ function writeToFile(line: string) {
     } catch {
         // silently ignore file write errors to avoid recursion
     }
+}
+
+function truncateConsoleLine(line: string): string {
+    if (line.length <= MAX_CONSOLE_LINE_LENGTH) return line;
+    return line.slice(0, MAX_CONSOLE_LINE_LENGTH) + ' ...';
 }
 
 export class Logger {
@@ -56,7 +85,7 @@ export class Logger {
                 return String(m);
             }
         }).join(' ');
-        return [`${coloredPrefix} ${text}`, `${prefix} ${text}`];
+        return [truncateConsoleLine(`${coloredPrefix} ${text}`), `${prefix} ${text}`];
     }
 
     debug (...messages: unknown[]) {
