@@ -47,7 +47,15 @@ export class Logger {
         const ts = formatTimestamp();
         const prefix = `[${ts}] [${levelName}]`;
         const coloredPrefix = colorFn(prefix);
-        const text = messages.map(m => typeof m === 'string' ? m : JSON.stringify(m)).join(' ');
+        const text = messages.map(m => {
+            if (typeof m === 'string') return m;
+            if (m instanceof Error) return m.stack || m.message || String(m);
+            try {
+                return JSON.stringify(m);
+            } catch {
+                return String(m);
+            }
+        }).join(' ');
         return [`${coloredPrefix} ${text}`, `${prefix} ${text}`];
     }
 

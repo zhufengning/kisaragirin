@@ -4,7 +4,7 @@ import {schema, type Db} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage} from '~/message-format';
-import {ReplyAgent} from './reply-agent';
+import {ReplyAgent, type FirstTurnResult} from './reply-agent';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
@@ -239,16 +239,16 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        const firstTurnTexts = await agent.generateReply(this.groupId, this.lastTriggerId, task);
+        const result = await agent.generateReply(this.groupId, this.lastTriggerId, task);
         this.logger.info(
-            `[ReplyManager] [${this.groupId}] first turn reply: ${firstTurnTexts.length} message(s)`);
+            `[ReplyManager] [${this.groupId}] first turn reply: ${result.texts.length} message(s)`);
 
         let firstTurnMessageId: number | undefined;
 
-        for (let i = 0; i < firstTurnTexts.length; i++) {
-            const replyText = firstTurnTexts[i];
+        for (let i = 0; i < result.texts.length; i++) {
+            const replyText = result.texts[i];
             this.logger.info(
-                `[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${firstTurnTexts.length}: ` +
+                `[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${result.texts.length}: ` +
                 `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
             const segments: Message[] = [];
@@ -257,7 +257,6 @@ export class GroupReplyManager {
             }
             segments.push({type: 'text', data: {text: replyText}});
 
-            // 发送
             const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
             firstTurnMessageId = sendResult.message_id;
 
@@ -280,59 +279,61 @@ export class GroupReplyManager {
             })
                 .returning({id: schema.messages.id});
 
-            // 通知自己 bot 消息已发送
             if (insertRows[0]) {
                 this.onBotMessage(insertRows[0].id);
             }
         }
 
-        const secondTurnTexts = await agent.generateSecondTurn(this.groupId);
-        if (secondTurnTexts.length > 0) {
-            this.logger.info(
-                `[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
+        if (result.secondTurnPromise) {
+            this.logger.info(`[ReplyManager] [${this.groupId}] starting second turn in background`);
+            result.secondTurnPromise.then(async (secondTurnTexts) => {
+                if (secondTurnTexts.length === 0) return;
 
-            for (let i = 0; i < secondTurnTexts.length; i++) {
-                const replyText = secondTurnTexts[i];
                 this.logger.info(
-                    `[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ` +
-                    `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+                    `[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
 
-                const segments: Message[] = [];
-                if (firstTurnMessageId) {
-                    segments.push({type: 'reply', data: {id: firstTurnMessageId}});
+                for (let i = 0; i < secondTurnTexts.length; i++) {
+                    const replyText = secondTurnTexts[i];
+                    this.logger.info(
+                        `[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ` +
+                        `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+
+                    const segments: Message[] = [];
+                    if (firstTurnMessageId) {
+                        segments.push({type: 'reply', data: {id: firstTurnMessageId}});
+                    }
+                    segments.push({type: 'text', data: {text: replyText}});
+
+                    const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+
+                    const now = Math.floor(Date.now() / 1000);
+                    const dbSegments2: any[] = [{type: 'text', text: replyText}];
+                    if (firstTurnMessageId) {
+                        dbSegments2.unshift({type: 'reply', id: firstTurnMessageId});
+                    }
+                    const insertRows = await this.db.insert(schema.messages).values({
+                        messageId: sendResult.message_id,
+                        groupId: this.groupId,
+                        userId: this.botSelfId,
+                        time: now,
+                        senderName: this.botName,
+                        senderCard: botCard,
+                        isBot: true,
+                        isAtBot: false,
+                        segments: dbSegments2 as any,
+                        rawMessage: replyText
+                    })
+                        .returning({id: schema.messages.id});
+
+                    if (insertRows[0]) {
+                        this.onBotMessage(insertRows[0].id);
+                    }
                 }
-                segments.push({type: 'text', data: {text: replyText}});
-
-                // 发送
-                const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
-
-                const now = Math.floor(Date.now() / 1000);
-                const dbSegments2: any[] = [{type: 'text', text: replyText}];
-                if (firstTurnMessageId) {
-                    dbSegments2.unshift({type: 'reply', id: firstTurnMessageId});
-                }
-                const insertRows = await this.db.insert(schema.messages).values({
-                    messageId: sendResult.message_id,
-                    groupId: this.groupId,
-                    userId: this.botSelfId,
-                    time: now,
-                    senderName: this.botName,
-                    senderCard: botCard,
-                    isBot: true,
-                    isAtBot: false,
-                    segments: dbSegments2 as any,
-                    rawMessage: replyText
-                })
-                    .returning({id: schema.messages.id});
-
-                // 通知自己 bot 消息已发送
-                if (insertRows[0]) {
-                    this.onBotMessage(insertRows[0].id);
-                }
-            }
+            }).catch((err) => {
+                this.logger.error(`[ReplyManager] [${this.groupId}] second turn background error:`, err);
+            });
         }
 
-        // 更新 lastTriggerId
         this.lastTriggerId = currentLatestId;
     }
 }

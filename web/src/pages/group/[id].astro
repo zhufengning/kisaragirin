@@ -62,7 +62,7 @@ function segmentToRaw(seg: StoredSegment): string {
         case 'record': return '[record:语音]';
         case 'video': return `[video:${seg.fileName || '未知'}]`;
         case 'file': return `[file:${seg.fileName}]`;
-        case 'json': return '[json:...]';
+        case 'json': return `[json:${seg.data ?? '未知json'}]`;
         case 'poke': return `[poke:${seg.pokeType},${seg.id}]`;
         case 'dice': return `[dice:${seg.result ?? '?'}]`;
         case 'rps': return `[rps:${seg.result ?? '?'}]`;

@@ -76,6 +76,8 @@ export interface StoredFileSegment {
 
 export interface StoredJsonSegment {
     type: 'json';
+    /** 原始 JSON 字符串（QQ 小程序/卡片消息内容） */
+    data?: string;
 }
 
 export interface StoredPokeSegment {
@@ -215,7 +217,7 @@ function renderSegment (seg: StoredSegment, ctx: RenderContext): string {
     case 'file':
         return `[file: ${seg.fileName}]`;
     case 'json':
-        return '[json: ...]';
+        return `[json: ${seg.data ?? '未知json'}]`;
     case 'poke':
         return `[poke: ${seg.pokeType},${seg.id}]`;
     case 'dice':
@@ -380,7 +382,7 @@ export async function onebotMessageToSegments (
             out.push({type: 'file', fileName: m.data.file});
             break;
         case 'json':
-            out.push({type: 'json'});
+            out.push({type: 'json', data: m.data.data});
             break;
         case 'poke':
             out.push({type: 'poke', pokeType: m.data.type, id: m.data.id});

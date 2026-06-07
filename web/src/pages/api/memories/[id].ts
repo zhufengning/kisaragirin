@@ -30,8 +30,17 @@ export const PUT: APIRoute = async ({ params, request }) => {
         const memory = getMemory();
         const id = params.id!;
         const body = await request.json();
-        
-        const result = await memory.update(id, body);
+
+        const text = typeof body === 'string' ? body : body?.text;
+        if (!text || typeof text !== 'string') {
+            return new Response(JSON.stringify({ error: 'text is required and must be a string' }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        console.log(`[Mem0 API] PUT /api/memories/${id} text="${text.substring(0, 80)}${text.length > 80 ? '...' : ''}"`);
+        const result = await memory.update(id, text);
         return new Response(JSON.stringify(result), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
