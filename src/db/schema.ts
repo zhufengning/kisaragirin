@@ -12,6 +12,9 @@ export const messages = sqliteTable('messages', {
         .default(false),
     isAtBot: integer('is_at_bot', {mode: 'boolean'}).notNull()
         .default(false),
+    /** 消息类型：normal | compact | system */
+    specialType: text('special_type').$type<'normal' | 'compact' | 'system'>().notNull()
+        .default('normal'),
     /** 存储为 JSON 字符串的 segments 数组；image segment 只含 sha256，不含 description */
     segments: text('segments', {mode: 'json'}).notNull(),
     rawMessage: text('raw_message'),
@@ -23,7 +26,15 @@ export const images = sqliteTable('images', {
     description: text('description')
 });
 
+export const kvStore = sqliteTable('kv_store', {
+    key: text('key').primaryKey(),
+    value: text('value').notNull(),
+    updatedAt: integer('updated_at', {mode: 'timestamp'}).$defaultFn(() => new Date())
+});
+
 export type MessageRow = typeof messages.$inferSelect;
 export type NewMessageRow = typeof messages.$inferInsert;
 export type ImageRow = typeof images.$inferSelect;
 export type NewImageRow = typeof images.$inferInsert;
+export type KvStoreRow = typeof kvStore.$inferSelect;
+export type NewKvStoreRow = typeof kvStore.$inferInsert;

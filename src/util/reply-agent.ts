@@ -1,11 +1,11 @@
 import {Agent, type AgentTool} from '@earendil-works/pi-agent-core';
-import {Type, type AssistantMessage} from '@earendil-works/pi-ai';
+import {Type, type AssistantMessage, completeSimple, complete} from '@earendil-works/pi-ai';
 import OpenAI from 'openai';
-import {schema, type Db} from '~/db';
-import {eq, desc} from 'drizzle-orm';
+import {schema, type Db, kvGet, kvSet} from '~/db';
+import {eq, desc, and, gte} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
-import {messagesToString, type StoredMessage} from '~/message-format';
+import {messagesToString, type StoredMessage, type StoredSegment} from '~/message-format';
 import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
 import {createMem0Tools} from './mem0-tool';
@@ -82,33 +82,250 @@ export class ReplyAgent {
         this.logger = new Logger();
     }
 
-    async buildPrompt (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string> {
-        const maxMsgCount = this.config.input.max_msg_count ?? 50;
+    // ==================== Auto Compact ====================
+
+    private estimateSegmentTokens (seg: StoredSegment): number {
+        switch (seg.type) {
+        case 'text':
+            return Math.ceil(seg.text.length / 4);
+        case 'at':
+            return Math.ceil((seg.targetName || seg.target).length / 4) + 2;
+        case 'image':
+            return 1200;
+        case 'face':
+            return 3;
+        case 'record':
+            return 5;
+        case 'video':
+            return Math.ceil((seg.fileName || '').length / 4) + 5;
+        case 'file':
+            return Math.ceil(seg.fileName.length / 4) + 5;
+        case 'json':
+            return Math.ceil((seg.data || '').length / 4);
+        case 'poke':
+            return 5;
+        case 'dice':
+        case 'rps':
+            return 3;
+        case 'reply':
+            if (seg.message) {
+                return this.estimateMessageTokens(seg.message);
+            }
+            return 5;
+        case 'forward':
+            if (seg.messages) {
+                return seg.messages.reduce((sum, m) => sum + this.estimateMessageTokens(m), 0);
+            }
+            return 5;
+        case 'compact':
+        case 'system':
+            return Math.ceil(seg.text.length / 4) + 5;
+        default:
+            return 0;
+        }
+    }
+
+    private estimateMessageTokens (msg: StoredMessage): number {
+        const segmentTokens = msg.segments.reduce((sum, seg) => sum + this.estimateSegmentTokens(seg), 0);
+        const senderName = msg.senderCard || msg.senderName || '';
+        const senderTokens = Math.ceil(senderName.length / 4) + 4;
+        return segmentTokens + senderTokens + 4;
+    }
+
+    private estimateMessagesTokens (messages: StoredMessage[]): number {
+        return messages.reduce((sum, msg) => sum + this.estimateMessageTokens(msg), 0);
+    }
+
+    private shouldCompact (messages: StoredMessage[], contextWindow: number): boolean {
+        const threshold = this.config.input.auto_compact_threshold ?? 0.7;
+        const reserveTokens = this.config.input.auto_compact_reserve_tokens ?? 8000;
+        const tokens = this.estimateMessagesTokens(messages);
+        const limit = Math.floor((contextWindow - reserveTokens) * threshold);
+        this.logger.debug(`[ReplyAgent] compact check: ${tokens} tokens vs limit ${limit} (window ${contextWindow}, threshold ${threshold})`);
+        return tokens > limit;
+    }
+
+    private async generateCompactSummary (messages: StoredMessage[]): Promise<string> {
+        // Direct DB query for image descriptions, bypassing DescQueue to avoid hanging
+        const prompt = await messagesToString(messages, async (sha256: string) => {
+            const rows = await this.db
+                .select()
+                .from(schema.images)
+                .where(eq(schema.images.sha256, sha256));
+            return rows[0]?.description ?? undefined;
+        });
+        const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
+        if (!modelEntry) throw new Error('Deep research model not configured');
+
+        this.logger.info(`[ReplyAgent] generating compact summary, prompt length=${prompt.length}, messages=${messages.length}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 300000);
+
+        try {
+            const response = await complete(
+                modelEntry.model,
+                {
+                    systemPrompt: prompts.compactSummarySystem,
+                    messages: [{role: 'user', content: prompt, timestamp: Date.now()}]
+                },
+                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 300000}
+            );
+
+            clearTimeout(timeoutId);
+
+            const text = response.content
+                .filter((c): c is {type: 'text'; text: string} => c.type === 'text')
+                .map(c => c.text)
+                .join('\n')
+                .trim();
+
+            this.logger.info(`[ReplyAgent] compact summary generated, length=${text.length}`);
+            return text;
+        } catch (err) {
+            clearTimeout(timeoutId);
+            this.logger.error(`[ReplyAgent] compact summary failed:`, err);
+            throw err;
+        }
+    }
+
+    private async insertCompactMessage (
+        groupId: number, summary: string, time: number,
+    ): Promise<number> {
+        const rows = await this.db.insert(schema.messages).values({
+            messageId: 0,
+            groupId,
+            userId: 0,
+            time,
+            senderName: '系统',
+            senderCard: null,
+            isBot: true,
+            isAtBot: false,
+            specialType: 'compact',
+            segments: [{type: 'compact', text: summary}] as any,
+            rawMessage: summary
+        }).returning({id: schema.messages.id});
+
+        const compactId = rows[0].id;
+        await kvSet(this.db, `group:${groupId}:lastCompactId`, String(compactId));
+        this.logger.info(`[ReplyAgent] [${groupId}] compact message inserted, id=${compactId}`);
+        return compactId;
+    }
+
+    private async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
+        const keepRecent = this.config.input.auto_compact_keep_recent ?? 20000;
+
+        let accumulated = 0;
+        let cutIndex = 0;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const tokens = this.estimateMessageTokens(messages[i]);
+            accumulated += tokens;
+            if (accumulated >= keepRecent) {
+                cutIndex = i + 1;
+                break;
+            }
+        }
+
+        const toSummarize = messages.slice(0, cutIndex);
+        const toKeep = messages.slice(cutIndex);
+
+        if (toSummarize.length === 0) {
+            this.logger.warn(`[ReplyAgent] [${groupId}] compact skipped: no messages to summarize`);
+            return messages;
+        }
+
+        this.logger.info(`[ReplyAgent] [${groupId}] compacting ${toSummarize.length} messages, keeping ${toKeep.length}`);
+
+        const summary = await this.generateCompactSummary(toSummarize);
+        if (!summary) {
+            this.logger.error(`[ReplyAgent] [${groupId}] compact summary generation failed`);
+            return messages;
+        }
+
+        let compactTime: number;
+        if (toKeep.length > 0) {
+            compactTime = toKeep[0].time - 1;
+        } else if (toSummarize.length > 0) {
+            compactTime = toSummarize[toSummarize.length - 1].time - 1;
+        } else {
+            compactTime = Math.floor(Date.now() / 1000);
+        }
+        await this.insertCompactMessage(groupId, summary, compactTime);
+
+        const compactMsg: StoredMessage = {
+            time: compactTime,
+            messageId: 0,
+            senderId: 0,
+            senderName: '系统',
+            senderCard: undefined,
+            isBot: true,
+            isAtBot: false,
+            segments: [{type: 'compact', text: summary}]
+        };
+
+        return [compactMsg, ...toKeep];
+    }
+
+    // ==================== Compact ====================
+
+    private async getAllMessages (groupId: number): Promise<StoredMessage[]> {
+        const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
+        const conditions = [eq(schema.messages.groupId, groupId)];
+        if (lastCompactIdStr) {
+            conditions.push(gte(schema.messages.id, parseInt(lastCompactIdStr, 10)));
+        }
 
         const rows = await this.db
             .select()
             .from(schema.messages)
-            .where(eq(schema.messages.groupId, groupId))
-            .orderBy(desc(schema.messages.id))
-            .limit(maxMsgCount);
-        this.logger.debug(`[ReplyAgent] [${groupId}] fetched ${rows.length} rows`);
+            .where(and(...conditions))
+            .orderBy(desc(schema.messages.id));
 
         rows.reverse();
 
+        return rows.map(row => ({
+            time: row.time,
+            messageId: row.messageId,
+            senderId: row.userId,
+            senderName: row.senderName,
+            senderCard: row.senderCard ?? void 0,
+            isBot: row.isBot,
+            isAtBot: row.isAtBot,
+            segments: row.segments as StoredMessage['segments']
+        }));
+    }
+
+    async triggerCompact (groupId: number, force = false): Promise<boolean> {
+        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
+        const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
+
+        const messages = await this.getAllMessages(groupId);
+
+        if (force || this.shouldCompact(messages, contextWindow)) {
+            await this.doCompact(groupId, messages);
+            return true;
+        }
+
+        return false;
+    }
+
+    // ==================== Build Prompt ====================
+
+    async buildPrompt (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string> {
+        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
+        const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
+
+        let allMessages = await this.getAllMessages(groupId);
+        this.logger.debug(`[ReplyAgent] [${groupId}] fetched ${allMessages.length} total messages`);
+
+        if (this.shouldCompact(allMessages, contextWindow)) {
+            allMessages = await this.doCompact(groupId, allMessages);
+        }
+
         const history: StoredMessage[] = [];
         const latest: StoredMessage[] = [];
-        for (const row of rows) {
-            const msg: StoredMessage = {
-                time: row.time,
-                messageId: row.messageId,
-                senderId: row.userId,
-                senderName: row.senderName,
-                senderCard: row.senderCard ?? void 0,
-                isBot: row.isBot,
-                isAtBot: row.isAtBot,
-                segments: row.segments as StoredMessage['segments']
-            };
-            if (lastTriggerId > 0 && row.id <= lastTriggerId) {
+        for (const msg of allMessages) {
+            if (lastTriggerId > 0 && msg.messageId !== undefined && msg.messageId <= lastTriggerId) {
                 history.push(msg);
             } else {
                 latest.push(msg);

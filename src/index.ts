@@ -1,7 +1,7 @@
 import {createBot} from '@lib';
 import {config} from '@/config';
 import {groupMessageEventToStoredMessage, collectImageSha256FromSegment} from './message-format';
-import {createDb, schema} from './db';
+import {createDb, schema, runMigrations, runFullCompaction} from './db';
 import {createWebPanel} from './web/server';
 import {DescQueue} from './util/desc-queue';
 import {GroupReplyManager} from './util/reply-manager';
@@ -13,11 +13,13 @@ const logger = new Logger();
 
 const bot = createBot(config.onebot);
 const db = createDb();
+await runMigrations(db);
 const queue = new DescQueue(db);
 
-// 把 db / queue 挂到 globalThis，让 Astro web 复用同一连接
+// 把 db / queue / config 挂到 globalThis，让 Astro web 复用
 (globalThis as any).__db__ = db;
 (globalThis as any).__queue__ = queue;
+(globalThis as any).__config__ = config;
 
 let memory: Memory | undefined;
 if (config.ai.mem0) {

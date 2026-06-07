@@ -68,11 +68,18 @@ function segmentToRaw(seg: StoredSegment): string {
         case 'rps': return `[rps:${seg.result ?? '?'}]`;
         case 'reply': return `[reply:${seg.id}]`;
         case 'forward': return `[forward:${seg.id}]`;
+        case 'compact': return `**前情提要**: ${seg.text}`;
+        case 'system': return `**系统消息**: ${seg.text}`;
         default: return `[${(seg as { type: string }).type}]`;
     }
 }
 
 function formatMessageRaw(msg: StoredMessage): string {
+    const isSpecial = msg.segments.length === 1 &&
+        (msg.segments[0].type === 'compact' || msg.segments[0].type === 'system');
+    if (isSpecial) {
+        return msg.segments.map(segmentToRaw).join('');
+    }
     const atMark = msg.isAtBot ? '(有人@我) ' : '';
     const sender = formatSender(msg);
     const body = msg.segments.map(segmentToRaw).join('');
@@ -101,7 +108,36 @@ function pageUrl(page: number) {
 ---
 
 <Layout title={`群 ${groupId} 消息`}>
-    <h1><a href="/">← 群列表</a> · 群 {groupId} <span class="meta">({totalCount} 条消息)</span> · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a></h1>
+    <h1>
+    <a href="/">← 群列表</a> · 群 {groupId}
+    <span class="meta">({totalCount} 条消息)</span>
+    · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a>
+    · <button id="compact-btn" class="compact-btn">手动 Compact</button>
+</h1>
+
+<script define:vars={{ groupId }}>
+    const compactBtn = document.getElementById('compact-btn');
+    compactBtn.addEventListener('click', async () => {
+        if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;
+        compactBtn.disabled = true;
+        compactBtn.textContent = 'Compacting...';
+        try {
+            const res = await fetch(`/api/compact?groupId=${groupId}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.compacted ? `Compact 成功！${data.beforeCount} 条 → ${data.afterCount} 条` : '无需 compact');
+                location.reload();
+            } else {
+                alert('Compact 失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('Compact 失败：' + err.message);
+        } finally {
+            compactBtn.disabled = false;
+            compactBtn.textContent = '手动 Compact';
+        }
+    });
+</script>
 
     <pre class="messages">{text}</pre>
     {messages.length === 0 && <p class="empty">暂无消息</p>}
@@ -180,6 +216,23 @@ function pageUrl(page: number) {
     }
     .preview-link:hover {
         text-decoration: underline;
+    }
+    .compact-btn {
+        padding: 4px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        vertical-align: middle;
+    }
+    .compact-btn:hover:not(:disabled) {
+        background: var(--border);
+    }
+    .compact-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
     }
 </style>
 

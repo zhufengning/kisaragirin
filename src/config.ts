@@ -23,6 +23,12 @@ export interface InputConfig {
     vision_concurrency?: number;
     bot_name?: string;
     bot_persona?: string;
+    /** 触发 auto compact 的 context window 使用百分比阈值 (0.0-1.0)，默认 0.7 */
+    auto_compact_threshold?: number;
+    /** compact 后保留的最近消息估算 token 数，默认 20000 */
+    auto_compact_keep_recent?: number;
+    /** 为 LLM 响应预留的 token 数，默认 8000 */
+    auto_compact_reserve_tokens?: number;
 }
 
 export interface WebPanelConfig {

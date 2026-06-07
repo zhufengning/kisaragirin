@@ -56,6 +56,9 @@ export const config: AppConfig = {
         vision_concurrency: 5,
         bot_name: '',
         bot_persona: '',
+        auto_compact_threshold: 0.7,
+        auto_compact_keep_recent: 20000,
+        auto_compact_reserve_tokens: 8000,
     },
     web: {
         host: '0.0.0.0',

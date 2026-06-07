@@ -112,6 +112,16 @@ export interface StoredForwardSegment {
     messages?: StoredMessage[];
 }
 
+export interface StoredCompactSegment {
+    type: 'compact';
+    text: string;
+}
+
+export interface StoredSystemSegment {
+    type: 'system';
+    text: string;
+}
+
 export type StoredSegment =
     | StoredTextSegment
     | StoredAtSegment
@@ -125,7 +135,9 @@ export type StoredSegment =
     | StoredDiceSegment
     | StoredRpsSegment
     | StoredReplySegment
-    | StoredForwardSegment;
+    | StoredForwardSegment
+    | StoredCompactSegment
+    | StoredSystemSegment;
 
 export interface StoredMessage {
     /** Unix 时间戳（秒） */
@@ -228,6 +240,10 @@ function renderSegment (seg: StoredSegment, ctx: RenderContext): string {
         return renderReply(seg, ctx);
     case 'forward':
         return renderForward(seg, ctx);
+    case 'compact':
+        return `**前情提要**: ${seg.text}`;
+    case 'system':
+        return `**系统消息**: ${seg.text}`;
     default:
         return '';
     }
@@ -331,7 +347,13 @@ export async function messagesToString (
         const atMark = msg.isAtBot ? '(有人@我)' : '';
         const sender = formatSender(msg);
         const body = renderBody(msg.segments, {indent: 0, replyDepth: 0, inForward: false, descCache});
-        if (!body) {
+
+        // 特殊消息类型直接渲染内容，不显示发送者
+        const isSpecial = msg.segments.length === 1 &&
+            (msg.segments[0].type === 'compact' || msg.segments[0].type === 'system');
+        if (isSpecial) {
+            parts.push(body);
+        } else if (!body) {
             parts.push(`${atMark}[${sender}]:`);
         } else if (body.startsWith('\n')) {
             parts.push(`${atMark}[${sender}]:${body}`);

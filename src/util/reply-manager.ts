@@ -1,6 +1,6 @@
 import type {Bot} from '@lib/types';
 import type {Message} from '@lib/types/messages';
-import {schema, type Db} from '~/db';
+import {schema, type Db, kvGet, kvSet} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage} from '~/message-format';
@@ -25,7 +25,7 @@ export class GroupReplyManager {
     private logger: Logger;
     private agent: ReplyAgent;
 
-    lastTriggerId: number = 0;
+    private _lastTriggerId: number = 0;
     private pendingAtTimeout: NodeJS.Timeout | null = null;
     private pendingAtMessage: StoredMessage | null = null;
     private pendingAtRowId: number | null = null;
@@ -33,6 +33,16 @@ export class GroupReplyManager {
     private isReplying: boolean = false;
     private replyQueue: ReplyTask[] = [];
     private processingQueue: boolean = false;
+
+    get lastTriggerId (): number {
+        return this._lastTriggerId;
+    }
+
+    set lastTriggerId (value: number) {
+        this._lastTriggerId = value;
+        kvSet(this.db, `group:${this.groupId}:lastTriggerId`, String(value))
+            .catch(err => this.logger.error(`[ReplyManager] failed to save lastTriggerId:`, err));
+    }
 
     constructor (
         groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
@@ -47,6 +57,14 @@ export class GroupReplyManager {
         this.botName = botName;
         this.logger = new Logger();
         this.agent = new ReplyAgent(db, descQueue, config);
+
+        // Load lastTriggerId from kvStore
+        kvGet(db, `group:${groupId}:lastTriggerId`).then(value => {
+            if (value) {
+                this._lastTriggerId = parseInt(value, 10);
+                this.logger.debug(`[ReplyManager] [${groupId}] loaded lastTriggerId=${this._lastTriggerId}`);
+            }
+        }).catch(err => this.logger.error(`[ReplyManager] failed to load lastTriggerId:`, err));
     }
 
     getAgent (): ReplyAgent {

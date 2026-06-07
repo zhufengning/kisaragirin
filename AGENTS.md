@@ -8,6 +8,9 @@
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 两轮回复（支持深度研究agent）
+- Auto Compact（自动摘要历史消息，优化缓存命中率）
+- 特殊消息类型（前情提要、系统消息）
+- KV Store（持久化群元数据）
 
 ## 包管理
 
@@ -25,7 +28,7 @@ yarn
 - 对于任何库，先阅读相关文档，再写代码
 - 优先阅读文档，无法找到答案的，再阅读源代码
 - 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码。在此之前求助于文档，而不是你的记忆和想象
-- 未经允许严禁私自运行服务和测试，禁止运行任何package.json中未定义的编译、打包、测试、类型检查指令
+- 未经允许严禁私自运行服务和测试，禁止运行任何package.json中未定义的编译、打包、测试、类型检查指令.运行时必须通过yarn运行，禁止手动编写命令。
 
 ## 架构设计
 
@@ -38,8 +41,8 @@ src/
   web/server.ts       -- Node.js HTTP server，加载 Astro handler
   message-format.ts  -- OneBot 消息 ↔ 存储格式转换 + 渲染
   db/
-    schema.ts        -- Drizzle SQLite 表定义
-    index.ts         -- Database 连接工厂
+    schema.ts        -- Drizzle SQLite 表定义（messages / images / kv_store）
+    index.ts         -- Database 连接工厂 + KV Store 工具 + 迁移逻辑
   util/
     desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个）
     image-store.ts      -- 图片下载 + 本地存储
@@ -70,12 +73,13 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         images/...           -- 图片文件服务 + 描述管理 API
         memories/...         -- mem0 REST API 封装
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPrompt）
+        compact.ts           -- 手动触发群消息 compact API
 ```
 
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
-- 启动时通过 `globalThis.__db__` / `globalThis.__queue__` 暴露给 Astro
+- 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - mem0 配置通过 `globalThis.__mem0_config__` 暴露给 Astro
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
@@ -84,10 +88,12 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 ### Prompt 构建封装
 
 - `ReplyAgent.buildPrompt(groupId, lastTriggerId, task)` 封装了历史消息获取 + `buildUserPrompt`
+- `ReplyAgent.triggerCompact(groupId, force?)` 提供手动/自动 compact 的统一入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
 - `generateReply` 内部调用 `buildPrompt`，不再重复写查询逻辑
 - `GroupReplyManager` 在构造时即初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPrompt()`，结果与 bot 实际发送给模型的 prompt 完全一致
+- webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact(groupId, true)` 强制 compact
 
 ### Agent Loop 与记忆机制
 
@@ -101,12 +107,27 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **失败回退**：所有尝试（初始 prompt + 最多 2 次 reminder）均失败后，@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
 - 深度研究使用 `openai` SDK 的非流式 `chat.completions.create` 调用 Hermes，不经过 Agent loop
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
+- 除深度研究外，严禁在任何地方使用openai sdk
+
+### Auto Compact 机制
+
+- **触发条件**：`buildPrompt` / `triggerCompact` 获取全部消息后，估算总 token（chars/4 启发式），若超过 `(contextWindow - reserveTokens) * threshold` 则触发
+- **消息过滤**：查询时会检查 `kv_store` 中的 `lastCompactId`，过滤掉已被 compact 的原始消息，只保留最新的 compact 消息及其之后的消息
+- **切割算法**：从最新消息反向遍历，累积 token 直到 `keepRecentTokens`，在该处切割
+- **摘要生成**：调用 reply 模型通过 `complete()` 生成结构化摘要（`prompts.compactSummarySystem`），保留关键话题、决策、人名
+- **时间戳**：compact 消息时间设为被保留的第一条消息时间减 1 秒，确保排序时出现在保留消息之前
+- **存储**：摘要作为 `special_type='compact'` 的消息插入数据库，渲染为 `**前情提要**: (内容)`
+- **系统消息**：`special_type='system'` 的消息渲染为 `**系统消息**: (内容)`
+- **KV Store**：`kv_store` 表持久化 `lastTriggerId` 和 `lastCompactId`，重启后不丢失上下文边界
 
 ### AI 配置架构
 
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
 - `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
+- `input.auto_compact_threshold`：触发 compact 的 context window 使用百分比，默认 0.7
+- `input.auto_compact_keep_recent`：compact 后保留的最近 token 数，默认 20000
+- `input.auto_compact_reserve_tokens`：为 LLM 响应预留的 token 数，默认 8000
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
@@ -126,7 +147,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 - `src/index.ts` — 入口
 - `src/message-format.ts` — 消息数据结构 + simple-id 序列化
-- `src/db/schema.ts` — Drizzle 表定义
+- `src/db/schema.ts` — Drizzle 表定义（messages / images / kv_store）
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
