@@ -2,7 +2,7 @@
 import Layout from '@layouts/Layout.astro';
 import { db, schema } from '@lib/db';
 import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
+
 import { like, sql } from 'drizzle-orm';
 
 const IMAGE_DIR = './data/images';
@@ -73,16 +73,6 @@ function pageUrl(page: number) {
     return url.pathname + url.search;
 }
 
-function searchUrl(query: string) {
-    const url = new URL(Astro.url);
-    if (query) {
-        url.searchParams.set('search', query);
-    } else {
-        url.searchParams.delete('search');
-    }
-    url.searchParams.delete('page');
-    return url.pathname + url.search;
-}
 ---
 
 <Layout title="图片管理">
@@ -175,28 +165,26 @@ function searchUrl(query: string) {
     </form>
 </Layout>
 
-<script is:inline>
-    (function () {
-        const progressEl = document.getElementById('queue-progress');
-        const remainingEl = document.getElementById('queue-remaining');
-        if (!progressEl || !remainingEl) return;
+<script>
+    const progressEl = document.getElementById('queue-progress');
+    const remainingEl = document.getElementById('queue-remaining');
+    if (!progressEl || !remainingEl) throw new Error('Elements not found');
 
-        const evtSource = new EventSource('/api/queue-progress');
-        evtSource.onmessage = (e) => {
-            const data = JSON.parse(e.data);
-            const remaining = data.pending + data.processing;
+    const evtSource = new EventSource('/api/queue-progress');
+    evtSource.onmessage = (e) => {
+        const data = JSON.parse(e.data);
+        const remaining = data.pending + data.processing;
 
-            if (remaining === 0) {
-                progressEl.style.display = 'none';
-            } else {
-                progressEl.style.display = 'block';
-                remainingEl.textContent = String(remaining);
-            }
-        };
-        evtSource.onerror = () => {
-            evtSource.close();
-        };
-    })();
+        if (remaining === 0) {
+            progressEl.style.display = 'none';
+        } else {
+            progressEl.style.display = 'block';
+            remainingEl.textContent = String(remaining);
+        }
+    };
+    evtSource.onerror = () => {
+        evtSource.close();
+    };
 </script>
 
 <style>

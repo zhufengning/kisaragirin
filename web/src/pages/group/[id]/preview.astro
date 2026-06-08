@@ -23,7 +23,7 @@ if (!groupId || isNaN(groupId)) {
     <div id="error" class="error" style="display: none;"></div>
     <pre id="prompt-output" class="prompt-output"></pre>
 
-    <script define:vars={{ groupId }}>
+    <script is:inline define:vars={{ groupId }}>
         const typeSelect = document.getElementById('type-select');
         const refreshBtn = document.getElementById('refresh-btn');
         const loading = document.getElementById('loading');

@@ -18,11 +18,13 @@ yarn
 
 ## 约束
 
+- 遵循指令，而不是越俎代庖。对非代码文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
 - `src/prompts.ts` 统一管理所有 LLM prompt，禁止在业务代码中硬编码 prompt
 - 打日志必须用`lib/utl/logger.ts`
 - `lib/` 是上游 SDK，不写业务逻辑
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
 - 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
+- 完成修改后，bot部分的修改运行以下yarn任务：type:check, lint，webui部分非修改运行web:check, web:lint。所有warning、hint视同error处理。
 - pi ai和pi agent的文档和源码保存在~/repos/pi
 - 其余库可通过context7查询文档
 - 对于任何库，先阅读相关文档，再写代码

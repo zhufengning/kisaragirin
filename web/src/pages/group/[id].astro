@@ -115,7 +115,7 @@ function pageUrl(page: number) {
     · <button id="compact-btn" class="compact-btn">手动 Compact</button>
 </h1>
 
-<script define:vars={{ groupId }}>
+<script is:inline define:vars={{ groupId }}>
     const compactBtn = document.getElementById('compact-btn');
     compactBtn.addEventListener('click', async () => {
         if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;

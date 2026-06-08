@@ -1,7 +1,6 @@
 ---
 import Layout from '@layouts/Layout.astro';
 import { config } from '@/config';
-import { Memory } from 'mem0ai/oss';
 import type { MemoryItem, SearchResult, GetAllMemoryOptions } from 'mem0ai/oss';
 
 // mem0 OSS 返回的数据可能包含额外字段
@@ -17,10 +16,25 @@ interface WebSearchResult extends SearchResult {
 
 const PAGE_SIZE = 20;
 const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
-const searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
 const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
 const defaultUserId = allGroups[0] || '';
-const userId = Astro.url.searchParams.get('user_id')?.trim() || defaultUserId;
+
+// 支持 POST 搜索，避免 URL 过长导致浏览器崩溃
+let searchQuery = '';
+let userId = Astro.url.searchParams.get('user_id')?.trim() || defaultUserId;
+
+if (Astro.request.method === 'POST') {
+    try {
+        const formData = await Astro.request.formData();
+        searchQuery = (formData.get('search')?.toString() || '').trim();
+        const formUserId = formData.get('user_id')?.toString() || '';
+        if (formUserId) userId = formUserId;
+    } catch {
+        // formData 解析失败时保持默认值
+    }
+} else {
+    searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
+}
 
 let memories: WebMemoryItem[] = [];
 let totalCount = 0;
@@ -54,16 +68,6 @@ function pageUrl(page: number) {
     return url.pathname + url.search;
 }
 
-function searchUrl(query: string, uid: string) {
-    const url = new URL(Astro.url);
-    url.pathname = '/memories';
-    if (query) url.searchParams.set('search', query);
-    else url.searchParams.delete('search');
-    if (uid) url.searchParams.set('user_id', uid);
-    else url.searchParams.delete('user_id');
-    url.searchParams.delete('page');
-    return url.pathname + url.search;
-}
 ---
 
 <Layout title="记忆管理">
@@ -73,8 +77,8 @@ function searchUrl(query: string, uid: string) {
         <div class="error-banner">⚠️ {error}</div>
     )}
 
-    <!-- 搜索栏 -->
-    <form class="search-bar" method="GET" action="/memories">
+    <!-- 搜索栏 (POST 避免 URL 过长) -->
+    <form class="search-bar" method="POST" action="/memories">
         <input
             type="text"
             name="search"
@@ -89,16 +93,16 @@ function searchUrl(query: string, uid: string) {
         </select>
         <button type="submit" class="btn">🔍 搜索</button>
         {searchQuery && (
-            <a href="/memories" class="btn btn-secondary">清除</a>
+            <button type="submit" name="search" value="" class="btn btn-secondary">清除</button>
         )}
     </form>
 
     <!-- 添加记忆表单 -->
     <div class="add-section">
-        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('add-form').classList.toggle('hidden')">
+        <button class="btn btn-secondary btn-sm" id="toggle-add-form">
             ➕ 添加记忆
         </button>
-        <form id="add-form" class="hidden add-form" onsubmit="return addMemory(event)">
+        <form id="add-form" class="hidden add-form">
             <textarea name="text" placeholder="记忆内容..." required class="input-textarea"></textarea>
             <select name="user_id" class="input-text">
                 <option value="">选择用户</option>
@@ -109,7 +113,7 @@ function searchUrl(query: string, uid: string) {
             <input type="text" name="metadata" placeholder='元数据 JSON (可选，如 {"key":"value"})' class="input-text" />
             <div class="form-actions">
                 <button type="submit" class="btn">保存</button>
-                <button type="button" class="btn btn-secondary" onclick="document.getElementById('add-form').classList.add('hidden')">取消</button>
+                <button type="button" class="btn btn-secondary" id="cancel-add-form">取消</button>
             </div>
         </form>
     </div>
@@ -136,8 +140,8 @@ function searchUrl(query: string, uid: string) {
                     </div>
                 )}
                 <div class="memory-actions">
-                    <button class="btn btn-sm btn-secondary" onclick={`editMemory('${m.id}', '${(m.memory || m.text || '').replace(/'/g, "\\'")}')`}>编辑</button>
-                    <button class="btn btn-sm btn-danger" onclick={`deleteMemory('${m.id}')`}>删除</button>
+                    <button class="btn btn-sm btn-secondary" data-action="edit" data-id={m.id} data-text={m.memory || m.text || ''}>编辑</button>
+                    <button class="btn btn-sm btn-danger" data-action="delete" data-id={m.id}>删除</button>
                 </div>
             </div>
         ))}
@@ -173,91 +177,106 @@ function searchUrl(query: string, uid: string) {
             <input type="hidden" id="edit-id" />
             <textarea id="edit-text" class="input-textarea"></textarea>
             <div class="form-actions">
-                <button class="btn" onclick="saveEdit()">保存</button>
-                <button class="btn btn-secondary" onclick="closeEdit()">取消</button>
+                <button class="btn" id="save-edit">保存</button>
+                <button class="btn btn-secondary" id="close-edit">取消</button>
             </div>
         </div>
     </div>
 </Layout>
 
-<script is:inline>
-    async function addMemory(e) {
-        e.preventDefault();
-        const form = e.target;
-        const text = form.text.value.trim();
-        const userId = form.user_id.value.trim();
-        const metadataStr = form.metadata.value.trim();
-        
-        if (!text) return alert('请输入记忆内容');
-        
-        const messages = [{ role: 'user', content: text }];
-        const body = { messages };
-        if (userId) body.user_id = userId;
-        if (metadataStr) {
-            try { body.metadata = JSON.parse(metadataStr); } catch {
-                return alert('元数据必须是有效的 JSON');
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // 添加记忆表单
+        document.getElementById('toggle-add-form')?.addEventListener('click', () => {
+            document.getElementById('add-form')?.classList.toggle('hidden');
+        });
+        document.getElementById('cancel-add-form')?.addEventListener('click', () => {
+            document.getElementById('add-form')?.classList.add('hidden');
+        });
+        document.getElementById('add-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target as HTMLFormElement;
+            const text = (form.querySelector('[name="text"]') as HTMLTextAreaElement)?.value.trim();
+            const userId = (form.querySelector('[name="user_id"]') as HTMLSelectElement)?.value.trim();
+            const metadataStr = (form.querySelector('[name="metadata"]') as HTMLInputElement)?.value.trim();
+            
+            if (!text) return alert('请输入记忆内容');
+            
+            const messages = [{ role: 'user', content: text }];
+            const body: Record<string, unknown> = { messages };
+            if (userId) body.user_id = userId;
+            if (metadataStr) {
+                try { body.metadata = JSON.parse(metadataStr); } catch {
+                    return alert('元数据必须是有效的 JSON');
+                }
             }
-        }
+            
+            try {
+                const res = await fetch('/api/memories', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) throw new Error(await res.text());
+                alert('记忆添加成功！');
+                location.reload();
+            } catch (err) {
+                alert('添加失败: ' + (err as Error).message);
+            }
+        });
         
-        try {
-            const res = await fetch('/api/memories', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-                credentials: 'same-origin',
-            });
-            if (!res.ok) throw new Error(await res.text());
-            alert('记忆添加成功！');
-            location.reload();
-        } catch (err) {
-            alert('添加失败: ' + err.message);
-        }
-        return false;
-    }
-    
-    function editMemory(id, text) {
-        document.getElementById('edit-id').value = id;
-        document.getElementById('edit-text').value = text;
-        document.getElementById('edit-modal').classList.remove('hidden');
-    }
-    
-    function closeEdit() {
-        document.getElementById('edit-modal').classList.add('hidden');
-    }
-    
-    async function saveEdit() {
-        const id = document.getElementById('edit-id').value;
-        const text = document.getElementById('edit-text').value.trim();
+        // 记忆列表事件委托
+        document.querySelector('.memory-list')?.addEventListener('click', (e) => {
+            const btn = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null;
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'edit') {
+                const id = btn.dataset.id || '';
+                const text = btn.dataset.text || '';
+                const editIdEl = document.getElementById('edit-id') as HTMLInputElement;
+                const editTextEl = document.getElementById('edit-text') as HTMLTextAreaElement;
+                if (editIdEl) editIdEl.value = id;
+                if (editTextEl) editTextEl.value = text;
+                document.getElementById('edit-modal')?.classList.remove('hidden');
+            } else if (action === 'delete') {
+                const id = btn.dataset.id || '';
+                if (!confirm('确定删除这条记忆？')) return;
+                fetch(`/api/memories/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+                    .then(res => {
+                        if (!res.ok) throw new Error();
+                        alert('删除成功！');
+                        location.reload();
+                    })
+                    .catch(() => alert('删除失败'));
+            }
+        });
         
-        if (!text) return alert('记忆内容不能为空');
-        
-        try {
-            const res = await fetch(`/api/memories/${id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text }),
-                credentials: 'same-origin',
-            });
-            if (!res.ok) throw new Error(await res.text());
-            alert('更新成功！');
-            location.reload();
-        } catch (err) {
-            alert('更新失败: ' + err.message);
-        }
-    }
-    
-    async function deleteMemory(id) {
-        if (!confirm('确定删除这条记忆？')) return;
-        
-        try {
-            const res = await fetch(`/api/memories/${id}`, { method: 'DELETE', credentials: 'same-origin' });
-            if (!res.ok) throw new Error(await res.text());
-            alert('删除成功！');
-            location.reload();
-        } catch (err) {
-            alert('删除失败: ' + err.message);
-        }
-    }
+        // 编辑弹窗
+        document.getElementById('close-edit')?.addEventListener('click', () => {
+            document.getElementById('edit-modal')?.classList.add('hidden');
+        });
+        document.getElementById('save-edit')?.addEventListener('click', async () => {
+            const id = (document.getElementById('edit-id') as HTMLInputElement)?.value;
+            const text = (document.getElementById('edit-text') as HTMLTextAreaElement)?.value.trim();
+            
+            if (!text) return alert('记忆内容不能为空');
+            
+            try {
+                const res = await fetch(`/api/memories/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text }),
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) throw new Error(await res.text());
+                alert('更新成功！');
+                location.reload();
+            } catch (err) {
+                alert('更新失败: ' + (err as Error).message);
+            }
+        });
+    });
 </script>
 
 <style>
