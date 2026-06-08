@@ -1,7 +1,8 @@
-import {Agent, type AgentTool} from '@earendil-works/pi-agent-core';
-import {Type, type AssistantMessage, completeSimple, complete} from '@earendil-works/pi-ai';
+import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
+import {Type, type AssistantMessage, complete} from '@earendil-works/pi-ai';
 import OpenAI from 'openai';
 import {schema, type Db, kvGet, kvSet} from '~/db';
+import type {AppConfig, ModelEntry} from '~/config';
 import {eq, desc, and, gte} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
@@ -36,11 +37,11 @@ export interface FirstTurnResult {
 }
 
 interface SecondTurnContext {
-    messages: any[];
+    messages: AgentMessage[];
     firstTurnArgs: ReplyFirstTurnArgs;
     systemPrompt: string;
-    modelEntry: any;
-    mem0Tools: AgentTool<any>[];
+    modelEntry: ModelEntry;
+    mem0Tools: AgentTool[];
     taskType: 'at' | 'silence';
 }
 
@@ -66,16 +67,16 @@ function getLastAssistant (agent: Agent): AssistantMessage | undefined {
 export class ReplyAgent {
     private db: Db;
     private descQueue: DescQueue;
-    private config: any;
+    private config: AppConfig;
     private logger: Logger;
     private firstTurnArgs: ReplyFirstTurnArgs | null = null;
     private systemPrompt: string = '';
-    private modelEntry: any = null;
-    private mem0Tools: AgentTool<any>[] = [];
+    private modelEntry: ModelEntry | null = null;
+    private mem0Tools: AgentTool[] = [];
     private taskType: 'at' | 'silence' = 'silence';
     private agent: Agent | null = null;
 
-    constructor (db: Db, descQueue: DescQueue, config: any) {
+    constructor (db: Db, descQueue: DescQueue, config: AppConfig) {
         this.db = db;
         this.descQueue = descQueue;
         this.config = config;
@@ -141,7 +142,9 @@ export class ReplyAgent {
         const reserveTokens = this.config.input.auto_compact_reserve_tokens ?? 8000;
         const tokens = this.estimateMessagesTokens(messages);
         const limit = Math.floor((contextWindow - reserveTokens) * threshold);
-        this.logger.debug(`[ReplyAgent] compact check: ${tokens} tokens vs limit ${limit} (window ${contextWindow}, threshold ${threshold})`);
+        this.logger.debug(
+            `[ReplyAgent] compact check: ${tokens} tokens vs limit ${limit} ` +
+            `(window ${contextWindow}, threshold ${threshold})`);
         return tokens > limit;
     }
 
@@ -152,12 +155,14 @@ export class ReplyAgent {
                 .select()
                 .from(schema.images)
                 .where(eq(schema.images.sha256, sha256));
-            return rows[0]?.description ?? undefined;
+            return rows[0]?.description ?? void 0;
         });
         const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
         if (!modelEntry) throw new Error('Deep research model not configured');
 
-        this.logger.info(`[ReplyAgent] generating compact summary, prompt length=${prompt.length}, messages=${messages.length}`);
+        this.logger.info(
+            `[ReplyAgent] generating compact summary, ` +
+            `prompt length=${prompt.length}, messages=${messages.length}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 300000);
@@ -202,9 +207,10 @@ export class ReplyAgent {
             isBot: true,
             isAtBot: false,
             specialType: 'compact',
-            segments: [{type: 'compact', text: summary}] as any,
+            segments: [{type: 'compact', text: summary}] as StoredSegment[],
             rawMessage: summary
-        }).returning({id: schema.messages.id});
+        })
+            .returning({id: schema.messages.id});
 
         const compactId = rows[0].id;
         await kvSet(this.db, `group:${groupId}:lastCompactId`, String(compactId));
@@ -212,7 +218,7 @@ export class ReplyAgent {
         return compactId;
     }
 
-    private async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
+    async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
         const keepRecent = this.config.input.auto_compact_keep_recent ?? 20000;
 
         let accumulated = 0;
@@ -234,7 +240,9 @@ export class ReplyAgent {
             return messages;
         }
 
-        this.logger.info(`[ReplyAgent] [${groupId}] compacting ${toSummarize.length} messages, keeping ${toKeep.length}`);
+        this.logger.info(
+            `[ReplyAgent] [${groupId}] compacting ${toSummarize.length} messages, ` +
+            `keeping ${toKeep.length}`);
 
         const summary = await this.generateCompactSummary(toSummarize);
         if (!summary) {
@@ -257,7 +265,7 @@ export class ReplyAgent {
             messageId: 0,
             senderId: 0,
             senderName: '系统',
-            senderCard: undefined,
+            senderCard: void 0,
             isBot: true,
             isAtBot: false,
             segments: [{type: 'compact', text: summary}]
@@ -325,7 +333,7 @@ export class ReplyAgent {
         const history: StoredMessage[] = [];
         const latest: StoredMessage[] = [];
         for (const msg of allMessages) {
-            if (lastTriggerId > 0 && msg.messageId !== undefined && msg.messageId <= lastTriggerId) {
+            if (lastTriggerId > 0 && typeof msg.messageId !== 'undefined' && msg.messageId <= lastTriggerId) {
                 history.push(msg);
             } else {
                 latest.push(msg);
@@ -368,7 +376,7 @@ export class ReplyAgent {
             }
         };
 
-        const firstTurnTools: AgentTool<any>[] = [replyFirstTurnTool, ...this.mem0Tools];
+        const firstTurnTools: AgentTool[] = [replyFirstTurnTool, ...this.mem0Tools];
 
         const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
         let turnCount = 0;
@@ -376,10 +384,10 @@ export class ReplyAgent {
         this.agent = new Agent({
             initialState: {
                 systemPrompt: this.systemPrompt,
-                model: this.modelEntry.model,
+                model: this.modelEntry!.model,
                 tools: firstTurnTools
             },
-            getApiKey: () => this.modelEntry.apiKey,
+            getApiKey: () => this.modelEntry!.apiKey,
             afterToolCall: async () => {
                 if (turnCount >= maxToolCallRounds) {
                     this.logger.warn(
@@ -444,7 +452,7 @@ export class ReplyAgent {
             messages: [...this.agent!.state.messages],
             firstTurnArgs: {...firstTurnArgs},
             systemPrompt: this.systemPrompt,
-            modelEntry: this.modelEntry,
+            modelEntry: this.modelEntry!,
             mem0Tools: [...this.mem0Tools],
             taskType: this.taskType
         };
@@ -608,6 +616,7 @@ export class ReplyAgent {
         let reminderCount = 0;
         const maxReminders = 2;
 
+        // eslint-disable-next-line no-unmodified-loop-condition
         while (!secondTurnResult && reminderCount < maxReminders) {
             reminderCount++;
             this.logger.info(

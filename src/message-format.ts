@@ -1,4 +1,4 @@
-import type {Message, GroupMessageEvent, Bot} from '@lib/types';
+import type {Message, GroupMessageEvent, Bot, ForwardMessage} from '@lib/types';
 import {downloadAndStoreImage} from './util/image-store';
 
 /**
@@ -437,7 +437,7 @@ export async function onebotMessageToSegments (
         }
         case 'forward': {
             let nested: StoredMessage[] | undefined;
-            const content = (m as any).data?.content;
+            const content = (m as ForwardMessage).data?.content;
             if (Array.isArray(content)) {
                 nested = [];
                 for (const item of content) {
@@ -455,7 +455,9 @@ export async function onebotMessageToSegments (
             } else {
                 try {
                     const res = await bot.getForwardMsg(String(m.data.id));
-                    const rawMessages = (res as any).messages ?? (res as any).message;
+                    type ForwardResponse = {messages?: unknown; message?: unknown};
+                    const rawMessages = (res as ForwardResponse).messages ??
+                        (res as ForwardResponse).message;
                     if (Array.isArray(rawMessages)) {
                         nested = [];
                         for (const item of rawMessages) {

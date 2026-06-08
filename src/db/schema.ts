@@ -13,7 +13,9 @@ export const messages = sqliteTable('messages', {
     isAtBot: integer('is_at_bot', {mode: 'boolean'}).notNull()
         .default(false),
     /** 消息类型：normal | compact | system */
-    specialType: text('special_type').$type<'normal' | 'compact' | 'system'>().notNull()
+    specialType: text('special_type')
+        .$type<'normal' | 'compact' | 'system'>()
+        .notNull()
         .default('normal'),
     /** 存储为 JSON 字符串的 segments 数组；image segment 只含 sha256，不含 description */
     segments: text('segments', {mode: 'json'}).notNull(),

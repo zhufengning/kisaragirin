@@ -11,7 +11,7 @@ const addMemorySchema = Type.Object({
     content: Type.String({description: '要记录的记忆内容，用简洁中文描述事实或偏好'})
 });
 
-export function createMem0Tools (config: MemoryConfig, _logLevel: string, groupId: number): AgentTool<any>[] {
+export function createMem0Tools (config: MemoryConfig, _logLevel: string, groupId: number): AgentTool[] {
     const logger = new Logger();
     const userId = `group-${groupId}`;
     const memory = new Memory(config);

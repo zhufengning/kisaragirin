@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import type { GroupReplyManager } from '~/util/reply-manager';
+import type { AppConfig } from '~/config';
 
 function getReplyManagers(): Map<number, GroupReplyManager> {
     const m = globalThis.__replyManagers__;
@@ -7,8 +8,8 @@ function getReplyManagers(): Map<number, GroupReplyManager> {
     return m;
 }
 
-function getConfig(): any {
-    return (globalThis as any).__config__;
+function getConfig(): AppConfig {
+    return globalThis.__config__!;
 }
 
 export const POST: APIRoute = async ({ request }) => {

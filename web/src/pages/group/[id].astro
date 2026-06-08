@@ -125,7 +125,7 @@ function pageUrl(page: number) {
             const res = await fetch(`/api/compact?groupId=${groupId}`, { method: 'POST' });
             const data = await res.json();
             if (data.success) {
-                alert(data.compacted ? `Compact 成功！${data.beforeCount} 条 → ${data.afterCount} 条` : '无需 compact');
+                alert(data.compacted ? 'Compact 成功！' : '无需 compact');
                 location.reload();
             } else {
                 alert('Compact 失败：' + (data.error || '未知错误'));

@@ -3,8 +3,9 @@ import type {Message} from '@lib/types/messages';
 import {schema, type Db, kvGet, kvSet} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
-import type {StoredMessage} from '~/message-format';
-import {ReplyAgent, type FirstTurnResult} from './reply-agent';
+import type {StoredMessage, StoredSegment} from '~/message-format';
+import type {AppConfig} from '~/config';
+import {ReplyAgent} from './reply-agent';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
@@ -19,7 +20,7 @@ export class GroupReplyManager {
     private bot: Bot;
     private db: Db;
     private descQueue: DescQueue;
-    private config: any;
+    private config: AppConfig;
     private botSelfId: number;
     private botName: string;
     private logger: Logger;
@@ -46,7 +47,7 @@ export class GroupReplyManager {
 
     constructor (
         groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
-        config: any, botSelfId: number, botName: string,
+        config: AppConfig, botSelfId: number, botName: string,
     ) {
         this.groupId = groupId;
         this.bot = bot;
@@ -64,7 +65,8 @@ export class GroupReplyManager {
                 this._lastTriggerId = parseInt(value, 10);
                 this.logger.debug(`[ReplyManager] [${groupId}] loaded lastTriggerId=${this._lastTriggerId}`);
             }
-        }).catch(err => this.logger.error(`[ReplyManager] failed to load lastTriggerId:`, err));
+        })
+            .catch(err => this.logger.error(`[ReplyManager] failed to load lastTriggerId:`, err));
     }
 
     getAgent (): ReplyAgent {
@@ -279,7 +281,7 @@ export class GroupReplyManager {
             firstTurnMessageId = sendResult.message_id;
 
             const now = Math.floor(Date.now() / 1000);
-            const dbSegments: any[] = [{type: 'text', text: replyText}];
+            const dbSegments: StoredSegment[] = [{type: 'text', text: replyText}];
             if (task.type === 'at' && i === 0) {
                 dbSegments.unshift({type: 'reply', id: task.triggerMessageId});
             }
@@ -292,7 +294,7 @@ export class GroupReplyManager {
                 senderCard: botCard,
                 isBot: true,
                 isAtBot: false,
-                segments: dbSegments as any,
+                segments: dbSegments as StoredSegment[],
                 rawMessage: replyText
             })
                 .returning({id: schema.messages.id});
@@ -304,7 +306,7 @@ export class GroupReplyManager {
 
         if (result.secondTurnPromise) {
             this.logger.info(`[ReplyManager] [${this.groupId}] starting second turn in background`);
-            result.secondTurnPromise.then(async (secondTurnTexts) => {
+            result.secondTurnPromise.then(async secondTurnTexts => {
                 if (secondTurnTexts.length === 0) return;
 
                 this.logger.info(
@@ -313,7 +315,8 @@ export class GroupReplyManager {
                 for (let i = 0; i < secondTurnTexts.length; i++) {
                     const replyText = secondTurnTexts[i];
                     this.logger.info(
-                        `[ReplyManager] [${this.groupId}] sending second turn reply ${i + 1}/${secondTurnTexts.length}: ` +
+                        `[ReplyManager] [${this.groupId}] sending second turn reply ` +
+                        `${i + 1}/${secondTurnTexts.length}: ` +
                         `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
                     const segments: Message[] = [];
@@ -325,7 +328,7 @@ export class GroupReplyManager {
                     const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
 
                     const now = Math.floor(Date.now() / 1000);
-                    const dbSegments2: any[] = [{type: 'text', text: replyText}];
+                    const dbSegments2: StoredSegment[] = [{type: 'text', text: replyText}];
                     if (firstTurnMessageId) {
                         dbSegments2.unshift({type: 'reply', id: firstTurnMessageId});
                     }
@@ -338,7 +341,7 @@ export class GroupReplyManager {
                         senderCard: botCard,
                         isBot: true,
                         isAtBot: false,
-                        segments: dbSegments2 as any,
+                        segments: dbSegments2 as StoredSegment[],
                         rawMessage: replyText
                     })
                         .returning({id: schema.messages.id});
@@ -347,7 +350,7 @@ export class GroupReplyManager {
                         this.onBotMessage(insertRows[0].id);
                     }
                 }
-            }).catch((err) => {
+            }).catch(err => {
                 this.logger.error(`[ReplyManager] [${this.groupId}] second turn background error:`, err);
             });
         }

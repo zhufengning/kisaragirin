@@ -1,4 +1,4 @@
-import {createServer} from 'node:http';
+import {createServer, type IncomingMessage, type ServerResponse} from 'node:http';
 import {resolve, join} from 'node:path';
 import {existsSync, readFileSync} from 'node:fs';
 import type {Db} from '~/db';
@@ -8,7 +8,7 @@ import {Logger} from '@lib/util/logger';
 
 const STATIC_DIR = resolve('web/dist/client');
 
-function serveStatic (req: any, res: any): boolean {
+function serveStatic (req: IncomingMessage, res: ServerResponse): boolean {
     const url = req.url || '';
     if (!url.startsWith('/_astro/')) return false;
     const filePath = join(STATIC_DIR, url);
@@ -44,8 +44,8 @@ export function createWebPanel (_db: Db, config: WebPanelConfig, _queue: DescQue
 
             const handlerPath = resolve('web/dist/server/entry.mjs');
             import(handlerPath)
-                .then((mod: any) => {
-                    const handler = mod.handler as (req: any, res: any) => void | Promise<void>;
+                .then((mod: {handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>}) => {
+                    const handler = mod.handler;
                     server = createServer(async (req, res) => {
                         if (serveStatic(req, res)) return;
                         try {

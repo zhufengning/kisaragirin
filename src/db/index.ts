@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
 import {drizzle} from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
-import {eq, desc, sql, and} from 'drizzle-orm';
+import {eq, desc} from 'drizzle-orm';
 import {Logger} from '@lib/util/logger';
 import {ReplyAgent} from '~/util/reply-agent';
 import type {DescQueue} from '~/util/desc-queue';
 import type {StoredMessage} from '~/message-format';
+import type {AppConfig} from '~/config';
 
 export {schema};
 
@@ -18,7 +19,10 @@ export type Db = ReturnType<typeof createDb>;
 
 /** KV Store helpers */
 export async function kvGet (db: Db, key: string): Promise<string | undefined> {
-    const rows = await db.select().from(schema.kvStore).where(eq(schema.kvStore.key, key)).limit(1);
+    const rows = await db.select()
+        .from(schema.kvStore)
+        .where(eq(schema.kvStore.key, key))
+        .limit(1);
     return rows[0]?.value;
 }
 
@@ -36,11 +40,11 @@ export async function kvDelete (db: Db, key: string): Promise<void> {
 }
 
 export async function runMigrations (db: Db): Promise<void> {
-    const sqlite = (db as any).$client as Database.Database;
+    const sqlite = (db as {$client: Database.Database}).$client;
 
     // Check if messages table has special_type column
     const messagesColumns = sqlite.prepare(
-        "PRAGMA table_info(messages)"
+        'PRAGMA table_info(messages)'
     ).all() as Array<{ name: string }>;
     const hasSpecialType = messagesColumns.some(c => c.name === 'special_type');
     if (!hasSpecialType) {
@@ -69,18 +73,18 @@ export async function runMigrations (db: Db): Promise<void> {
  * This should be called once after migration.
  */
 export async function runFullCompaction (
-    db: Db, config: any, descQueue: DescQueue,
+    db: Db, config: AppConfig, descQueue: DescQueue,
 ): Promise<void> {
     const logger = new Logger();
     logger.info('[Migration] Running full compaction for all groups...');
 
     const groups = await db
-        .selectDistinct({ groupId: schema.messages.groupId })
+        .selectDistinct({groupId: schema.messages.groupId})
         .from(schema.messages);
 
     logger.info(`[Migration] Found ${groups.length} groups with messages`);
 
-    for (const { groupId } of groups) {
+    for (const {groupId} of groups) {
         try {
             const agent = new ReplyAgent(db, descQueue, config);
             const allRows = await db
@@ -96,13 +100,13 @@ export async function runFullCompaction (
                 messageId: row.messageId,
                 senderId: row.userId,
                 senderName: row.senderName,
-                senderCard: row.senderCard ?? undefined,
+                senderCard: row.senderCard ?? void 0,
                 isBot: row.isBot,
                 isAtBot: row.isAtBot,
                 segments: row.segments as StoredMessage['segments']
             }));
 
-            await (agent as any).doCompact(groupId, messages);
+            await agent.doCompact(groupId, messages);
             logger.info(`[Migration] [${groupId}] compact done`);
         } catch (err) {
             logger.error(`[Migration] [${groupId}] compact failed:`, err);
