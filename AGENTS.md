@@ -1,6 +1,6 @@
-# Philia OneBot
+# Kisaragirin OneBot
 
-基于OneBot V11的QQ机器人
+基于OneBot V11(Philia)的QQ机器人
 
 已实现的功能：
 - 群消息采集
@@ -113,11 +113,13 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### Auto Compact 机制
 
-- **触发条件**：`buildPrompt` / `triggerCompact` 获取全部消息后，估算总 token（chars/4 启发式），若超过 `(contextWindow - reserveTokens) * threshold` 则触发
+- **触发条件**：`buildPrompt` / `triggerCompact` 获取全部消息后，计算总 token 数。优先使用上一次模型返回的真实 `usage`（`input + cacheRead + cacheWrite`）作为锚点，对锚点之后的新消息再用 chars/4 启发式增量估算；没有可用锚点时回退到全量估算。若超过 `(contextWindow - reserveTokens) * threshold` 则触发
+- **Usage 锚点**：每次成功回复后，将 `{totalTokens, time, compactId}` 写入 `kv_store` 的 `group:{id}:lastUsageAnchor`。`compactId` 用于校验锚点是否仍位于当前 compact 窗口内；`time` 用于在消息列表中定位锚点位置
 - **消息过滤**：查询时会检查 `kv_store` 中的 `lastCompactId`，过滤掉已被 compact 的原始消息，只保留最新的 compact 消息及其之后的消息
 - **切割算法**：从最新消息反向遍历，累积 token 直到 `keepRecentTokens`，在该处切割
 - **摘要生成**：调用 reply 模型通过 `complete()` 生成结构化摘要（`prompts.compactSummarySystem`），保留关键话题、决策、人名
 - **时间戳**：compact 消息时间设为被保留的第一条消息时间减 1 秒，确保排序时出现在保留消息之前
+- **Overflow 恢复**：如果 LLM 返回 context overflow 错误（覆盖 Anthropic、OpenAI、Google、Groq、OpenRouter、Together AI、xAI、Mistral、Ollama、Kimi 等常见错误文案），`generateReply` 会移除错误回复、强制 compact 并重试一次；若重试仍 overflow 则按正常失败回退。第二、三轮回复检测到 overflow 时直接按失败回退
 - **存储**：摘要作为 `special_type='compact'` 的消息插入数据库，渲染为 `**前情提要**: (内容)`
 - **系统消息**：`special_type='system'` 的消息渲染为 `**系统消息**: (内容)`
 - **KV Store**：`kv_store` 表持久化 `lastTriggerId` 和 `lastCompactId`，重启后不丢失上下文边界

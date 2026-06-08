@@ -1,6 +1,6 @@
-# Philia OneBot
+# Kisaragirin OneBot
 
-基于OneBot V11的QQ机器人
+基于OneBot V11(Philia)的QQ机器人
 
 ## 功能
 
@@ -51,12 +51,14 @@ input: {
 }
 ```
 
-- 当历史消息的估算 token 数超过 `(contextWindow - reserveTokens) * threshold` 时自动触发 compact
+- 当历史消息的 token 数超过 `(contextWindow - reserveTokens) * threshold` 时自动触发 compact
+- Token 计算优先使用上一次回复模型返回的真实 `usage` 作为锚点，对锚点之后的新消息再用启发式（chars/4）增量估算，比纯估算更准确
+- 如果 LLM 返回 context overflow 错误（覆盖 Anthropic/OpenAI/Google/Groq/OpenRouter 等常见文案），会自动移除错误回复、强制 compact 并重试一次
 - Compact 会将旧消息摘要为一条「前情提要」消息插入数据库
 - Web 面板支持手动触发 compact
 
 ## 技术栈
 
-- **后端**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
-- **AI**: `@earendil-works/pi-agent-core` (Agent tool loop) + mem0ai
-- **前端**: Astro 6.4 SSR (Node middleware模式)
+- **Bot Harness**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
+- **LLM**: `@earendil-works/pi-agent-core` (Agent tool loop) + mem0ai
+- **Web UI前后端**: Astro 6.4 SSR (Node middleware模式)

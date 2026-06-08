@@ -1,5 +1,5 @@
 import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
-import {Type, type AssistantMessage, complete} from '@earendil-works/pi-ai';
+import {Type, type AssistantMessage, type Usage, complete} from '@earendil-works/pi-ai';
 import OpenAI from 'openai';
 import {schema, type Db, kvGet, kvSet} from '~/db';
 import type {AppConfig, ModelEntry} from '~/config';
@@ -36,6 +36,12 @@ export interface FirstTurnResult {
     secondTurnPromise?: Promise<string[]>;
 }
 
+interface UsageAnchor {
+    totalTokens: number;
+    time: number;
+    compactId?: number;
+}
+
 interface SecondTurnContext {
     messages: AgentMessage[];
     firstTurnArgs: ReplyFirstTurnArgs;
@@ -53,6 +59,40 @@ function extractText (response: AssistantMessage): string {
         .trim();
 }
 
+function calculateCacheStats (messages: AgentMessage[]) {
+    let input = 0;
+    let output = 0;
+    let cacheRead = 0;
+    let cacheWrite = 0;
+    let totalTokens = 0;
+
+    for (const msg of messages) {
+        if (msg.role === 'assistant') {
+            const usage = msg.usage;
+            if (usage) {
+                input += usage.input;
+                output += usage.output;
+                cacheRead += usage.cacheRead;
+                cacheWrite += usage.cacheWrite;
+                totalTokens += usage.totalTokens;
+            }
+        }
+    }
+
+    const promptTokens = input + cacheRead + cacheWrite;
+    const cacheHitRate = promptTokens > 0 ? (cacheRead / promptTokens * 100).toFixed(2) : '0.00';
+
+    return {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        totalTokens,
+        promptTokens,
+        cacheHitRate
+    };
+}
+
 function getLastAssistant (agent: Agent): AssistantMessage | undefined {
     const messages = agent.state.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -62,6 +102,64 @@ function getLastAssistant (agent: Agent): AssistantMessage | undefined {
         }
     }
     return;
+}
+
+const OVERFLOW_PATTERNS = [
+    /prompt is too long/i,
+    /request_too_large/i,
+    /input is too long for requested model/i,
+    /exceeds the context window/i,
+    /exceeds (?:the )?(?:model'?s )?maximum context length of [\d,]+ tokens?/i,
+    /input token count.*exceeds the maximum/i,
+    /maximum prompt length is \d+/i,
+    /reduce the length of the messages/i,
+    /maximum context length is \d+ tokens/i,
+    /exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i,
+    /input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i,
+    /exceeds the limit of \d+/i,
+    /exceeds the available context size/i,
+    /greater than the context length/i,
+    /context window exceeds limit/i,
+    /exceeded model token limit/i,
+    /too large for model with \d+ maximum context length/i,
+    /model_context_window_exceeded/i,
+    /prompt too long; exceeded (?:max )?context length/i,
+    /context[_ ]length[_ ]exceeded/i,
+    /too many tokens/i,
+    /token limit exceeded/i,
+    /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i
+];
+
+const NON_OVERFLOW_PATTERNS = [
+    /^(Throttling error|Service unavailable):/i,
+    /rate limit/i,
+    /too many requests/i
+];
+
+function calculateBaselineTokens (usage: Usage): number {
+    return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
+function isContextOverflow (message: AssistantMessage, contextWindow?: number): boolean {
+    if (message.stopReason === 'error' && message.errorMessage) {
+        const isNonOverflow = NON_OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!));
+        if (!isNonOverflow && OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!))) {
+            return true;
+        }
+    }
+    if (contextWindow && message.stopReason === 'stop') {
+        const inputTokens = message.usage.input + message.usage.cacheRead;
+        if (inputTokens > contextWindow) {
+            return true;
+        }
+    }
+    if (contextWindow && message.stopReason === 'length' && message.usage.output === 0) {
+        const inputTokens = message.usage.input + message.usage.cacheRead;
+        if (inputTokens >= contextWindow * 0.99) {
+            return true;
+        }
+    }
+    return false;
 }
 
 export class ReplyAgent {
@@ -137,10 +235,55 @@ export class ReplyAgent {
         return messages.reduce((sum, msg) => sum + this.estimateMessageTokens(msg), 0);
     }
 
-    private shouldCompact (messages: StoredMessage[], contextWindow: number): boolean {
+    private async loadUsageAnchor (groupId: number): Promise<UsageAnchor | undefined> {
+        const raw = await kvGet(this.db, `group:${groupId}:lastUsageAnchor`);
+        if (!raw) return;
+        try {
+            return JSON.parse(raw) as UsageAnchor;
+        } catch {
+            return;
+        }
+    }
+
+    private async saveUsageAnchor (groupId: number, anchor: UsageAnchor): Promise<void> {
+        await kvSet(this.db, `group:${groupId}:lastUsageAnchor`, JSON.stringify(anchor));
+    }
+
+    private async estimateContextTokens (groupId: number, messages: StoredMessage[]): Promise<number> {
+        const anchor = await this.loadUsageAnchor(groupId);
+        if (!anchor) {
+            return this.estimateMessagesTokens(messages);
+        }
+
+        const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
+        const lastCompactId = lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : void 0;
+        if (typeof anchor.compactId !== 'undefined' && anchor.compactId !== lastCompactId) {
+            return this.estimateMessagesTokens(messages);
+        }
+
+        let anchorIndex = -1;
+        for (let i = 0; i < messages.length; i++) {
+            if (messages[i].time >= anchor.time) {
+                anchorIndex = i;
+                break;
+            }
+        }
+        if (anchorIndex === -1) {
+            return this.estimateMessagesTokens(messages);
+        }
+
+        let trailingTokens = 0;
+        for (let i = anchorIndex + 1; i < messages.length; i++) {
+            trailingTokens += this.estimateMessageTokens(messages[i]);
+        }
+
+        return anchor.totalTokens + trailingTokens;
+    }
+
+    private async shouldCompact (messages: StoredMessage[], contextWindow: number, groupId: number): Promise<boolean> {
         const threshold = this.config.input.auto_compact_threshold ?? 0.7;
         const reserveTokens = this.config.input.auto_compact_reserve_tokens ?? 8000;
-        const tokens = this.estimateMessagesTokens(messages);
+        const tokens = await this.estimateContextTokens(groupId, messages);
         const limit = Math.floor((contextWindow - reserveTokens) * threshold);
         this.logger.debug(
             `[ReplyAgent] compact check: ${tokens} tokens vs limit ${limit} ` +
@@ -185,7 +328,14 @@ export class ReplyAgent {
                 .join('\n')
                 .trim();
 
-            this.logger.info(`[ReplyAgent] compact summary generated, length=${text.length}`);
+            const usage = response.usage;
+            const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+            const cacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens * 100).toFixed(2) : '0.00';
+            this.logger.info(
+                `[ReplyAgent] compact summary generated, length=${text.length}, ` +
+                `cacheHitRate=${cacheHitRate}%, promptTokens=${promptTokens}, ` +
+                `outputTokens=${usage.output}, cacheRead=${usage.cacheRead}, ` +
+                `cacheWrite=${usage.cacheWrite}, totalTokens=${usage.totalTokens}`);
             return text;
         } catch (err) {
             clearTimeout(timeoutId);
@@ -309,7 +459,7 @@ export class ReplyAgent {
 
         const messages = await this.getAllMessages(groupId);
 
-        if (force || this.shouldCompact(messages, contextWindow)) {
+        if (force || await this.shouldCompact(messages, contextWindow, groupId)) {
             await this.doCompact(groupId, messages);
             return true;
         }
@@ -319,14 +469,16 @@ export class ReplyAgent {
 
     // ==================== Build Prompt ====================
 
-    async buildPrompt (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<string> {
+    async buildPrompt (
+        groupId: number, lastTriggerId: number, task: ReplyTask,
+    ): Promise<{userPrompt: string; anchorTime: number}> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
         const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
 
         let allMessages = await this.getAllMessages(groupId);
         this.logger.debug(`[ReplyAgent] [${groupId}] fetched ${allMessages.length} total messages`);
 
-        if (this.shouldCompact(allMessages, contextWindow)) {
+        if (await this.shouldCompact(allMessages, contextWindow, groupId)) {
             allMessages = await this.doCompact(groupId, allMessages);
         }
 
@@ -340,7 +492,9 @@ export class ReplyAgent {
             }
         }
 
-        return this.buildUserPrompt(history, latest, task);
+        const anchorTime = allMessages.length > 0 ? allMessages[allMessages.length - 1].time : 0;
+        const userPrompt = await this.buildUserPrompt(history, latest, task);
+        return {userPrompt, anchorTime};
     }
 
     async generateReply (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<FirstTurnResult> {
@@ -348,8 +502,6 @@ export class ReplyAgent {
         this.taskType = task.type;
 
         this.systemPrompt = this.buildSystemPrompt();
-        const userPrompt = await this.buildPrompt(groupId, lastTriggerId, task);
-        this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
 
         this.modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
         if (!this.modelEntry) throw new Error('Reply model not configured');
@@ -358,8 +510,10 @@ export class ReplyAgent {
             createMem0Tools(this.config.ai.mem0, this.config.log.level, groupId) :
             [];
 
-        // 第一轮：决策 FINISH 或 DEEP_RESEARCH
+        const maxAttempts = 2;
+        let attempt = 0;
         let firstTurnResult: ReplyFirstTurnArgs | null = null;
+        let anchorTime = 0;
 
         const replyFirstTurnTool: AgentTool<typeof replyFirstTurnSchema> = {
             name: 'reply_first_turn',
@@ -376,58 +530,119 @@ export class ReplyAgent {
             }
         };
 
-        const firstTurnTools: AgentTool[] = [replyFirstTurnTool, ...this.mem0Tools];
+        while (attempt < maxAttempts) {
+            attempt++;
+            const promptResult = await this.buildPrompt(groupId, lastTriggerId, task);
+            const userPrompt = promptResult.userPrompt;
+            anchorTime = promptResult.anchorTime;
+            this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
 
-        const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
-        let turnCount = 0;
+            firstTurnResult = null;
+            const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
+            let turnCount = 0;
 
-        this.agent = new Agent({
-            initialState: {
-                systemPrompt: this.systemPrompt,
-                model: this.modelEntry!.model,
-                tools: firstTurnTools
-            },
-            getApiKey: () => this.modelEntry!.apiKey,
-            afterToolCall: async () => {
-                if (turnCount >= maxToolCallRounds) {
-                    this.logger.warn(
-                        `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
-                        `${maxToolCallRounds}, forcing termination`);
-                    return {terminate: true};
+            this.agent = new Agent({
+                initialState: {
+                    systemPrompt: this.systemPrompt,
+                    model: this.modelEntry!.model,
+                    tools: [replyFirstTurnTool, ...this.mem0Tools]
+                },
+                getApiKey: () => this.modelEntry!.apiKey,
+                afterToolCall: async () => {
+                    if (turnCount >= maxToolCallRounds) {
+                        this.logger.warn(
+                            `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
+                            `${maxToolCallRounds}, forcing termination`);
+                        return {terminate: true};
+                    }
+                },
+                prepareNextTurn: async () => {
+                    turnCount++;
                 }
-            },
-            prepareNextTurn: async () => {
-                turnCount++;
-            }
-        });
+            });
 
-        this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
-        this.agent.reset();
-        firstTurnResult = null;
-        turnCount = 0;
-        await this.agent.prompt(userPrompt);
-        await this.agent.waitForIdle();
-
-        let reminderCount = 0;
-        const maxReminders = 2;
-
-        // eslint-disable-next-line no-unmodified-loop-condition
-        while (!firstTurnResult && reminderCount < maxReminders) {
-            reminderCount++;
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] first turn no toolCall, ` +
-                `sending reminder ${reminderCount}/${maxReminders}...`);
+            this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
+            this.agent.reset();
             turnCount = 0;
-            await this.agent!.prompt(prompts.replyReminderFirstTurn);
-            await this.agent!.waitForIdle();
+            await this.agent.prompt(userPrompt);
+            await this.agent.waitForIdle();
+
+            let reminderCount = 0;
+            const maxReminders = 2;
+
+            // eslint-disable-next-line no-unmodified-loop-condition
+            while (!firstTurnResult && reminderCount < maxReminders) {
+                reminderCount++;
+                this.logger.info(
+                    `[ReplyAgent] [${groupId}] first turn no toolCall, ` +
+                    `sending reminder ${reminderCount}/${maxReminders}...`);
+                turnCount = 0;
+                await this.agent!.prompt(prompts.replyReminderFirstTurn);
+                await this.agent!.waitForIdle();
+            }
+
+            const lastAssistant = getLastAssistant(this.agent);
+            const contextWindow = this.modelEntry.model.contextWindow ?? 128000;
+
+            if (lastAssistant && isContextOverflow(lastAssistant, contextWindow)) {
+                if (attempt >= maxAttempts) {
+                    this.logger.error(`[ReplyAgent] [${groupId}] overflow recovery failed after retry`);
+                    if (this.taskType === 'at') {
+                        return {texts: ['@响应失败']};
+                    }
+                    return {texts: []};
+                }
+                const msgs = this.agent.state.messages;
+                if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+                    this.agent.state.messages = msgs.slice(0, -1);
+                }
+                const allMessages = await this.getAllMessages(groupId);
+                const compacted = await this.doCompact(groupId, allMessages);
+                if (compacted.length === allMessages.length) {
+                    this.logger.error(`[ReplyAgent] [${groupId}] compact failed during overflow recovery`);
+                    if (this.taskType === 'at') {
+                        return {texts: ['@响应失败']};
+                    }
+                    return {texts: []};
+                }
+                this.logger.info(`[ReplyAgent] [${groupId}] overflow recovery: compact done, retrying...`);
+                continue;
+            }
+
+            if (lastAssistant && lastAssistant.stopReason !== 'error' && lastAssistant.stopReason !== 'aborted') {
+                const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
+                await this.saveUsageAnchor(groupId, {
+                    totalTokens: calculateBaselineTokens(lastAssistant.usage),
+                    time: anchorTime,
+                    compactId: lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : void 0
+                });
+            }
+
+            const firstTurnStats = calculateCacheStats(this.agent.state.messages);
+            this.logger.info(
+                `[ReplyAgent] [${groupId}] first turn cache stats: ` +
+                `hitRate=${firstTurnStats.cacheHitRate}%, ` +
+                `promptTokens=${firstTurnStats.promptTokens}, ` +
+                `outputTokens=${firstTurnStats.output}, ` +
+                `cacheRead=${firstTurnStats.cacheRead}, ` +
+                `cacheWrite=${firstTurnStats.cacheWrite}, ` +
+                `totalTokens=${firstTurnStats.totalTokens}`);
+
+            if (!firstTurnResult) {
+                const text = lastAssistant ? extractText(lastAssistant) : '';
+                this.logger.info(
+                    `[ReplyAgent] [${groupId}] first turn no toolCall after ${maxReminders} reminders, ` +
+                    `fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+                if (this.taskType === 'at') {
+                    return {texts: ['@响应失败']};
+                }
+                return {texts: []};
+            }
+
+            break;
         }
 
         if (!firstTurnResult) {
-            const lastAssistant = getLastAssistant(this.agent!);
-            const text = lastAssistant ? extractText(lastAssistant) : '';
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] first turn no toolCall after ${maxReminders} reminders, ` +
-                `fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
             if (this.taskType === 'at') {
                 return {texts: ['@响应失败']};
             }
@@ -533,9 +748,28 @@ export class ReplyAgent {
             await this.agent.waitForIdle();
         }
 
+        const secondTurnStats = calculateCacheStats(this.agent.state.messages);
+        this.logger.info(
+            `[ReplyAgent] [${groupId}] second turn cache stats: ` +
+            `hitRate=${secondTurnStats.cacheHitRate}%, ` +
+            `promptTokens=${secondTurnStats.promptTokens}, ` +
+            `outputTokens=${secondTurnStats.output}, ` +
+            `cacheRead=${secondTurnStats.cacheRead}, ` +
+            `cacheWrite=${secondTurnStats.cacheWrite}, ` +
+            `totalTokens=${secondTurnStats.totalTokens}`);
+
+        const lastAssistant2 = getLastAssistant(this.agent);
+        const contextWindow2 = this.modelEntry?.model.contextWindow ?? 128000;
+        if (lastAssistant2 && isContextOverflow(lastAssistant2, contextWindow2)) {
+            this.logger.error(`[ReplyAgent] [${groupId}] second turn context overflow detected`);
+            if (this.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
         if (!secondTurnResult) {
-            const lastAssistant = getLastAssistant(this.agent);
-            const text = lastAssistant ? extractText(lastAssistant) : '';
+            const text = lastAssistant2 ? extractText(lastAssistant2) : '';
             this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
             if (this.taskType === 'at') {
                 return ['@深度研究失败'];
@@ -626,9 +860,28 @@ export class ReplyAgent {
             await agent.waitForIdle();
         }
 
+        const secondTurnStats = calculateCacheStats(agent.state.messages);
+        this.logger.info(
+            `[ReplyAgent] [${groupId}] second turn standalone cache stats: ` +
+            `hitRate=${secondTurnStats.cacheHitRate}%, ` +
+            `promptTokens=${secondTurnStats.promptTokens}, ` +
+            `outputTokens=${secondTurnStats.output}, ` +
+            `cacheRead=${secondTurnStats.cacheRead}, ` +
+            `cacheWrite=${secondTurnStats.cacheWrite}, ` +
+            `totalTokens=${secondTurnStats.totalTokens}`);
+
+        const lastAssistantStandalone = getLastAssistant(agent);
+        const standaloneContextWindow = context.modelEntry.model.contextWindow ?? 128000;
+        if (lastAssistantStandalone && isContextOverflow(lastAssistantStandalone, standaloneContextWindow)) {
+            this.logger.error(`[ReplyAgent] [${groupId}] second turn standalone context overflow detected`);
+            if (context.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
         if (!secondTurnResult) {
-            const lastAssistant = getLastAssistant(agent);
-            const text = lastAssistant ? extractText(lastAssistant) : '';
+            const text = lastAssistantStandalone ? extractText(lastAssistantStandalone) : '';
             this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone no toolCall after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
             if (context.taskType === 'at') {
                 return ['@深度研究失败'];
@@ -690,6 +943,19 @@ export class ReplyAgent {
         }, {timeout: 1800000});
 
         const text = response.choices[0]?.message?.content?.trim() ?? '（研究失败）\n';
+        const usage = (response as any).usage;
+        if (usage) {
+            const promptTokens = (usage.prompt_tokens || 0) + (usage.prompt_cache_hit_tokens || 0);
+            const cacheHitRate = promptTokens > 0 ?
+                ((usage.prompt_cache_hit_tokens || 0) / promptTokens * 100).toFixed(2) :
+                '0.00';
+            this.logger.info(
+                `[ReplyAgent] doDeepResearch cache stats: ` +
+                `hitRate=${cacheHitRate}%, promptTokens=${promptTokens}, ` +
+                `outputTokens=${usage.completion_tokens || 0}, ` +
+                `cacheRead=${usage.prompt_cache_hit_tokens || 0}, ` +
+                `totalTokens=${usage.total_tokens || 0}`);
+        }
         this.logger.debug(`[ReplyAgent] doDeepResearch done text length=${text.length}`);
         return text;
     }

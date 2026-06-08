@@ -66,9 +66,9 @@ export const GET: APIRoute = async ({ url }) => {
         };
 
         const agent = manager.getAgent();
-        const prompt = await agent.buildPrompt(groupId, manager.lastTriggerId, task);
+        const {userPrompt} = await agent.buildPrompt(groupId, manager.lastTriggerId, task);
 
-        return new Response(JSON.stringify({ prompt }), {
+        return new Response(JSON.stringify({ prompt: userPrompt }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
