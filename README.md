@@ -26,6 +26,14 @@ cp config.example.ts config.ts
 yarn web:build && yarn start
 ```
 
+## 回复机制
+
+- 支持 `@触发` 与 `闲时触发` 两种模式
+- 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
+- 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），可在 Web 面板追踪
+- 当模型返回 API 错误、未调用回复工具或回复为空时，会自动 reminder 重试；最终失败时 @触发返回 `@响应失败` / `@深度研究失败`，闲时触发静默失败
+- 工具调用轮数超过 `max_tool_call_rounds` 后强制终止并引导回复
+
 ## Web面板功能
 
 访问 `http://<host>:<port>`（由 `config.web` 配置）：

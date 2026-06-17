@@ -105,9 +105,11 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **回复工具** (`reply_first_turn` / `reply_second_turn`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的工具调用轮数。超过上限后通过 `afterToolCall` hook 强制 terminate，然后发送 reminder 提示词引导模型回复
-- 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）
+- 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
+- **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；第一轮失败会进入 `maxAttempts` 重试，第二轮/独立第二轮失败直接回退
 - **失败回退**：所有尝试（初始 prompt + 最多 2 次 reminder）均失败后，@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
 - 深度研究使用 `openai` SDK 的非流式 `chat.completions.create` 调用 Hermes，不经过 Agent loop
+- 深度研究前后的状态会以 `special_type='system'` 的系统消息写入数据库（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），便于在 Web 面板追踪研究过程
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
 - 除深度研究外，严禁在任何地方使用openai sdk
 
@@ -116,13 +118,14 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **触发条件**：`buildPrompt` / `triggerCompact` 获取全部消息后，计算总 token 数。优先使用上一次模型返回的真实 `usage`（`input + cacheRead + cacheWrite`）作为锚点，对锚点之后的新消息再用 chars/4 启发式增量估算；没有可用锚点时回退到全量估算。若超过 `(contextWindow - reserveTokens) * threshold` 则触发
 - **Usage 锚点**：每次成功回复后，将 `{totalTokens, time, compactId}` 写入 `kv_store` 的 `group:{id}:lastUsageAnchor`。`compactId` 用于校验锚点是否仍位于当前 compact 窗口内；`time` 用于在消息列表中定位锚点位置
 - **消息过滤**：查询时会检查 `kv_store` 中的 `lastCompactId`，过滤掉已被 compact 的原始消息，只保留最新的 compact 消息及其之后的消息
+- **触发边界**：`StoredMessage` 新增内部字段 `id`（数据库自增行 ID）。`buildPrompt` 使用 `id` 而非 `messageId` 来划分历史消息与最新消息，避免 OneBot 消息 ID 不连续或重复导致边界错误；`kv_store` 中的 `lastTriggerId` 同样保存该自增 ID
 - **切割算法**：从最新消息反向遍历，累积 token 直到 `keepRecentTokens`，在该处切割
 - **摘要生成**：调用 reply 模型通过 `complete()` 生成结构化摘要（`prompts.compactSummarySystem`），保留关键话题、决策、人名
 - **时间戳**：compact 消息时间设为被保留的第一条消息时间减 1 秒，确保排序时出现在保留消息之前
 - **Overflow 恢复**：如果 LLM 返回 context overflow 错误（覆盖 Anthropic、OpenAI、Google、Groq、OpenRouter、Together AI、xAI、Mistral、Ollama、Kimi 等常见错误文案），`generateReply` 会移除错误回复、强制 compact 并重试一次；若重试仍 overflow 则按正常失败回退。第二、三轮回复检测到 overflow 时直接按失败回退
 - **存储**：摘要作为 `special_type='compact'` 的消息插入数据库，渲染为 `**前情提要**: (内容)`
 - **系统消息**：`special_type='system'` 的消息渲染为 `**系统消息**: (内容)`
-- **KV Store**：`kv_store` 表持久化 `lastTriggerId` 和 `lastCompactId`，重启后不丢失上下文边界
+- **KV Store**：`kv_store` 表持久化 `lastTriggerId`（数据库自增 `id`）和 `lastCompactId`，重启后不丢失上下文边界
 
 ### AI 配置架构
 
@@ -150,7 +153,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 ## 核心文件
 
 - `src/index.ts` — 入口
-- `src/message-format.ts` — 消息数据结构 + simple-id 序列化
+- `src/message-format.ts` — 消息数据结构 + simple-id 序列化，`StoredMessage` 含内部自增 `id` 用于触发边界
 - `src/db/schema.ts` — Drizzle 表定义（messages / images / kv_store）
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
