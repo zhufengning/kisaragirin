@@ -140,6 +140,8 @@ export type StoredSegment =
     | StoredSystemSegment;
 
 export interface StoredMessage {
+    /** 数据库自增行 ID（仅内部使用，不序列化到 OneBot） */
+    id?: number;
     /** Unix 时间戳（秒） */
     time: number;
     /** 消息 ID */

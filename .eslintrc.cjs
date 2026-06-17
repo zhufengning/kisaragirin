@@ -82,7 +82,8 @@ module.exports = {
             code: 120,
             tabWidth: 4,
             ignoreUrls: true,
-            ignoreStrings: true
+            ignoreStrings: true,
+            ignoreTemplateLiterals: true
         }],
         'new-parens': [2],
         'newline-per-chained-call': [2],
@@ -95,7 +96,7 @@ module.exports = {
         }],
         'no-negated-condition': [2],
         'no-tabs': [2],
-        'no-trailing-spaces': [2, {skipBlankLines: true}],
+        'no-trailing-spaces': [2, { skipBlankLines: true }],
         'no-unneeded-ternary': [2],
         'object-curly-spacing': [2],
         'object-property-newline': [2, {
@@ -131,7 +132,7 @@ module.exports = {
         'no-useless-rename': [2],
         'no-var': [2],
         'prefer-arrow-callback': [2],
-        'prefer-const': [2, {destructuring: 'all'}],
+        'prefer-const': [2, { destructuring: 'all' }],
         'prefer-promise-reject-errors': [2],
         'prefer-rest-params': [2],
         'prefer-spread': [2],
@@ -143,6 +144,6 @@ module.exports = {
 
         '@typescript-eslint/no-explicit-any': [0],
         '@typescript-eslint/no-empty-object-type': [0],
-        '@typescript-eslint/no-unused-vars': [2, {argsIgnorePattern: '^_'}]
+        '@typescript-eslint/no-unused-vars': [2, { argsIgnorePattern: '^_' }]
     }
 };
