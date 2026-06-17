@@ -883,17 +883,21 @@ export class ReplyAgent {
         const startTime = Math.floor(Date.now() / 1000);
         await this.insertSystemMessage(groupId, `开始深度研究：${researchKeyword}`, startTime);
 
+        let researchResult: string | undefined;
+        let researchError: string | undefined;
+
         try {
-            let researchResult: string;
             try {
                 researchResult = await this.doDeepResearch(researchKeyword);
                 this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
                 if (!researchResult) {
                     this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
+                    researchError = '深度研究未能获取结果';
                     researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
                 }
             } catch (err) {
                 this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
+                researchError = err instanceof Error ? err.message : String(err);
                 researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
             }
 
@@ -1020,7 +1024,15 @@ export class ReplyAgent {
             return [secondTurnArgs.final_reply];
         } finally {
             const endTime = Math.floor(Date.now() / 1000);
-            await this.insertSystemMessage(groupId, `深度研究结束：${researchKeyword}`, endTime);
+            let endMsg: string;
+            if (researchError) {
+                endMsg = `深度研究结束：${researchKeyword}\n\n${researchError}`;
+            } else if (researchResult) {
+                endMsg = `深度研究结束：${researchKeyword}\n\n${researchResult}`;
+            } else {
+                endMsg = `深度研究结束：${researchKeyword}`;
+            }
+            await this.insertSystemMessage(groupId, endMsg, endTime);
         }
     }
 
