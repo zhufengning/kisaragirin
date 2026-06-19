@@ -106,14 +106,23 @@ function pageUrl(page: number) {
         <div class="grid">
             {pageFiles.map(f => {
                 const desc = descMap.get(f.sha256);
+                const descText = desc ?? '';
                 return (
-                    <div class="card">
+                    <div class="card" data-sha256={f.sha256}>
                         <img src={`/api/images/file/${f.name}`} alt={f.sha256} loading="lazy" />
                         <div class="info">
                             <div class="sha">{f.sha256.slice(0, 16)}…</div>
-                            <div class={`desc ${desc ? '' : 'empty'}`}>
-                                {desc ?? '（无描述）'}
+                            <div class="desc-wrap" data-desc={descText}>
+                                <div class={`desc-view ${desc ? '' : 'empty'}`}>
+                                    {desc ?? '（无描述）'}
+                                </div>
+                                <textarea class="desc-input hidden" rows="3">{descText}</textarea>
+                                <div class="desc-actions hidden">
+                                    <button type="button" class="btn btn-sm save-desc">保存</button>
+                                    <button type="button" class="btn btn-sm btn-secondary cancel-desc">取消</button>
+                                </div>
                             </div>
+                            <button type="button" class="btn btn-sm btn-secondary edit-desc">编辑描述</button>
                         </div>
                         <label class="check">
                             <input type="checkbox" name="sha256" value={f.sha256} /> 选择
@@ -187,6 +196,124 @@ function pageUrl(page: number) {
     };
 </script>
 
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const grid = document.querySelector('.grid');
+        if (!grid) return;
+
+        grid.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            const editBtn = target.closest('.edit-desc') as HTMLButtonElement | null;
+            if (editBtn) {
+                enterEdit(editBtn);
+                return;
+            }
+            const saveBtn = target.closest('.save-desc') as HTMLButtonElement | null;
+            if (saveBtn) {
+                void saveEdit(saveBtn);
+                return;
+            }
+            const cancelBtn = target.closest('.cancel-desc') as HTMLButtonElement | null;
+            if (cancelBtn) {
+                cancelEdit(cancelBtn);
+            }
+        });
+
+        interface EditElements {
+            card: HTMLElement;
+            wrap: HTMLElement;
+            view: HTMLElement;
+            input: HTMLTextAreaElement;
+            actions: HTMLElement;
+            editBtn: HTMLButtonElement;
+        }
+
+        function findEditElements(btn: HTMLButtonElement): EditElements | null {
+            const card = btn.closest('.card') as HTMLElement | null;
+            if (!card) return null;
+            const wrap = card.querySelector('.desc-wrap') as HTMLElement | null;
+            if (!wrap) return null;
+            const view = wrap.querySelector('.desc-view') as HTMLElement | null;
+            const input = wrap.querySelector('.desc-input') as HTMLTextAreaElement | null;
+            const actions = wrap.querySelector('.desc-actions') as HTMLElement | null;
+            const editBtn = card.querySelector('.edit-desc') as HTMLButtonElement | null;
+            if (!view || !input || !actions || !editBtn) return null;
+            return { card, wrap, view, input, actions, editBtn };
+        }
+
+        function enterEdit(btn: HTMLButtonElement) {
+            const els = findEditElements(btn);
+            if (!els) return;
+            const { view, input, actions, editBtn, wrap } = els;
+            input.value = wrap.dataset.desc ?? '';
+            view.classList.add('hidden');
+            editBtn.classList.add('hidden');
+            input.classList.remove('hidden');
+            actions.classList.remove('hidden');
+            input.focus();
+            input.select();
+
+            input.onkeydown = (event) => {
+                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                    const save = actions.querySelector('.save-desc') as HTMLButtonElement | null;
+                    if (save) void saveEdit(save);
+                } else if (event.key === 'Escape') {
+                    const cancel = actions.querySelector('.cancel-desc') as HTMLButtonElement | null;
+                    if (cancel) cancelEdit(cancel);
+                }
+            };
+        }
+
+        function cancelEdit(btn: HTMLButtonElement) {
+            const els = findEditElements(btn);
+            if (!els) return;
+            const { view, input, actions, editBtn } = els;
+            input.value = '';
+            input.onkeydown = null;
+            view.classList.remove('hidden');
+            editBtn.classList.remove('hidden');
+            input.classList.add('hidden');
+            actions.classList.add('hidden');
+        }
+
+        async function saveEdit(btn: HTMLButtonElement) {
+            const els = findEditElements(btn);
+            if (!els) return;
+            const { card, input, actions } = els;
+            const sha256 = card.dataset.sha256;
+            if (!sha256) return;
+
+            const saveBtn = actions.querySelector('.save-desc') as HTMLButtonElement | null;
+            const cancelBtn = actions.querySelector('.cancel-desc') as HTMLButtonElement | null;
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.textContent = '保存中...';
+            }
+            if (cancelBtn) cancelBtn.disabled = true;
+
+            try {
+                const form = new FormData();
+                form.append('sha256', sha256);
+                form.append('description', input.value);
+                const res = await fetch('/api/images/update-description', {
+                    method: 'POST',
+                    body: form,
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) throw new Error(await res.text());
+                window.location.href = '/images' + window.location.search;
+            } catch (err) {
+                alert('保存失败: ' + (err as Error).message);
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = '保存';
+                }
+                if (cancelBtn) cancelBtn.disabled = false;
+            }
+        }
+    });
+</script>
+
 <style>
     .search-bar {
         display: flex;
@@ -241,12 +368,36 @@ function pageUrl(page: number) {
         margin-bottom: 6px;
         word-break: break-all;
     }
-    .desc {
+    .desc-view {
         font-size: 13px;
         color: var(--text);
         line-height: 1.5;
     }
-    .desc.empty { color: var(--text-secondary); font-style: italic; }
+    .desc-view.empty { color: var(--text-secondary); font-style: italic; }
+    .edit-desc { margin-top: 10px; }
+    .desc-input {
+        width: 100%;
+        min-height: 64px;
+        padding: 8px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        font-family: inherit;
+        line-height: 1.5;
+        resize: vertical;
+    }
+    .desc-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .desc-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+    }
+    .hidden { display: none; }
     .check {
         display: flex;
         align-items: center;
