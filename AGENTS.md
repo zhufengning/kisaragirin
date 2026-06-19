@@ -69,7 +69,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       index.astro    -- 群列表
       group/[id].astro       -- 群消息浏览（分页，仅原始数据）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPrompt）
-      images.astro           -- 图片管理（分页 + 描述搜索）
+      images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
       memories.astro         -- mem0 记忆管理（增删改查 + 语义搜索）
       api/
         images/...           -- 图片文件服务 + 描述管理 API

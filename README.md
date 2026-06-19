@@ -11,7 +11,7 @@
 - [x] 特殊消息类型：前情提要（compact）、系统消息（system）
 - [x] Web面板：群消息浏览（支持分页，仅显示原始数据）
 - [x] Web面板：Prompt 预览（忠实反映 buildUserPrompt 结果）
-- [x] Web面板：图片管理（支持分页、按描述搜索、实时队列进度）
+- [x] Web面板：图片管理（支持分页、按描述搜索、实时队列进度、描述编辑）
 - [x] Web面板：mem0记忆管理（增删改查、语义搜索）
 - [x] Web面板：手动触发群消息 compact
 - [x] 日志写入文件（支持按级别过滤）
@@ -43,7 +43,7 @@ yarn web:build && yarn start
 | `/` | 群列表，显示消息数和最后活动时间 |
 | `/group/{id}` | 群消息浏览，50条/页，仅显示原始数据（无图片描述查询），支持手动 compact |
 | `/group/{id}/preview` | Prompt 预览，调用 `ReplyAgent.buildPrompt` 忠实反映模型输入 |
-| `/images` | 图片管理，24张/页，支持按描述搜索和翻页 |
+| `/images` | 图片管理，24张/页，支持按描述搜索、翻页、描述编辑 |
 | `/memories` | mem0记忆管理，支持语义搜索、增删改查 |
 
 ## Auto Compact 配置
