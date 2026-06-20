@@ -7,6 +7,7 @@
 - [x] 接收、存储消息，并打包成simple-id格式
 - [x] 处理消息中的图片（下载、去重、AI描述）
 - [x] 回复消息（@触发 + 闲时触发，支持深度研究两轮回复）
+- [x] **记忆预取**：第一轮回复前用专用模型生成关键词并预先检索 mem0 记忆，注入 prompt
 - [x] **Auto Compact**：超过 context window 阈值后自动摘要历史消息为「前情提要」
 - [x] 特殊消息类型：前情提要（compact）、系统消息（system）
 - [x] Web面板：群消息浏览（支持分页，仅显示原始数据）
@@ -21,7 +22,7 @@
 ```bash
 cp config.example.ts config.ts
 
-// 然后修改配置文件（必须填写 ai.assignments.reply 和 ai.assignments.deep_research）
+// 然后修改配置文件（必须填写 ai.assignments.reply、ai.assignments.deep_research 和 ai.assignments.memory_keyword）
 
 yarn web:build && yarn start
 ```
@@ -30,6 +31,7 @@ yarn web:build && yarn start
 
 - 支持 `@触发` 与 `闲时触发` 两种模式
 - 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
+- 第一轮回复前，会使用 `ai.assignments.memory_keyword` 指定的模型从最新消息生成查询关键词，检索 mem0 历史记忆，并将结果（含关键词）通过明显分隔线注入 prompt；WebUI 的 Prompt 预览也会包含此部分
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），可在 Web 面板追踪
 - 当模型返回 API 错误、未调用回复工具或回复为空时，会自动 reminder 重试；最终失败时 @触发返回 `@响应失败` / `@深度研究失败`，闲时触发静默失败
 - 工具调用轮数超过 `max_tool_call_rounds` 后强制终止并引导回复

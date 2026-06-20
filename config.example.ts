@@ -106,6 +106,7 @@ export const config: AppConfig = {
             vision: 'qwen',
             reply: 'ocg-qwen3.7-max',
             deep_research: 'hermes',
+            memory_keyword: 'ocg-minimax-m2.5',
         },
         mem0: {
             embedder: {

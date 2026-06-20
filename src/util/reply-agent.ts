@@ -1,6 +1,7 @@
 import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
 import {Type, type AssistantMessage, type Usage, complete} from '@earendil-works/pi-ai';
 import OpenAI from 'openai';
+import {Memory} from 'mem0ai/oss';
 import {schema, type Db, kvGet, kvSet} from '~/db';
 import type {AppConfig, ModelEntry} from '~/config';
 import {eq, desc, and, gte} from 'drizzle-orm';
@@ -57,6 +58,28 @@ function extractText (response: AssistantMessage): string {
         .map(c => c.text)
         .join('')
         .trim();
+}
+
+function parseKeywordJson (text: string): string[] {
+    const cleaned = text.trim();
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(cleaned);
+    } catch {
+        const start = cleaned.indexOf('[');
+        const end = cleaned.lastIndexOf(']');
+        if (start !== -1 && end !== -1 && end > start) {
+            try {
+                parsed = JSON.parse(cleaned.slice(start, end + 1));
+            } catch {
+                return [];
+            }
+        } else {
+            return [];
+        }
+    }
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string');
 }
 
 function calculateCacheStats (messages: AgentMessage[]) {
@@ -525,7 +548,7 @@ export class ReplyAgent {
         }
 
         const anchorTime = allMessages.length > 0 ? allMessages[allMessages.length - 1].time : 0;
-        const userPrompt = await this.buildUserPrompt(history, latest, task);
+        const userPrompt = await this.buildUserPrompt(groupId, history, latest, task);
         return {userPrompt, anchorTime};
     }
 
@@ -1045,7 +1068,7 @@ export class ReplyAgent {
     }
 
     private async buildUserPrompt (
-        history: StoredMessage[], latest: StoredMessage[], task: ReplyTask,
+        groupId: number, history: StoredMessage[], latest: StoredMessage[], task: ReplyTask,
     ): Promise<string> {
         const parts: string[] = [];
 
@@ -1057,6 +1080,11 @@ export class ReplyAgent {
         parts.push(prompts.replyLatestStart);
         parts.push(await messagesToString(latest, sha => this.descQueue.resolve(sha)));
 
+        const memoryBlock = await this.buildMemoryBlock(groupId, latest, task);
+        if (memoryBlock) {
+            parts.push(memoryBlock);
+        }
+
         if (task.type === 'at') {
             parts.push(`注意：以上最新消息中，有人@了你（消息ID: ${task.triggerMessage.messageId}）。`);
         }
@@ -1064,6 +1092,119 @@ export class ReplyAgent {
         parts.push(prompts.replyStart);
 
         return parts.join('\n\n');
+    }
+
+    private async generateMemoryKeywords (
+        latest: StoredMessage[], task: ReplyTask,
+    ): Promise<string[]> {
+        const assignmentKey = this.config.ai.assignments.memory_keyword;
+        if (!assignmentKey) return [];
+        const modelEntry = this.config.ai.models[assignmentKey];
+        if (!modelEntry) {
+            this.logger.warn(`[ReplyAgent] memory_keyword model "${assignmentKey}" not found`);
+            return [];
+        }
+        if (!this.config.ai.mem0) return [];
+
+        const latestText = await messagesToString(latest, sha => this.descQueue.resolve(sha));
+        if (!latestText.trim()) return [];
+
+        this.logger.debug(
+            `[ReplyAgent] generating memory keywords with ${modelEntry.model.name}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+        try {
+            const response = await complete(
+                modelEntry.model,
+                {
+                    systemPrompt: prompts.memoryKeywordSystem,
+                    messages: [{
+                        role: 'user',
+                        content: prompts.memoryKeywordUser(latestText, task.type),
+                        timestamp: Date.now()
+                    }]
+                },
+                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 60000}
+            );
+
+            clearTimeout(timeoutId);
+
+            const text = extractText(response);
+            const keywords = parseKeywordJson(text).slice(0, 5);
+            this.logger.debug(`[ReplyAgent] memory keywords: ${keywords.join(', ')}`);
+            return keywords;
+        } catch (err) {
+            clearTimeout(timeoutId);
+            this.logger.error('[ReplyAgent] generate memory keywords failed:', err);
+            return [];
+        }
+    }
+
+    private async searchMemories (
+        groupId: number, keywords: string[],
+    ): Promise<{memory: string; score: number}[]> {
+        if (keywords.length === 0 || !this.config.ai.mem0) return [];
+
+        try {
+            const mem0Client = new Memory(this.config.ai.mem0);
+            const userId = `group-${groupId}`;
+            const memoryScores = new Map<string, number>();
+
+            for (const keyword of keywords) {
+                const results = await mem0Client.search(keyword, {
+                    topK: 5,
+                    filters: {user_id: userId}
+                });
+                for (const r of results.results) {
+                    const score = r.score ?? 0;
+                    const existing = memoryScores.get(r.memory);
+                    if (typeof existing === 'undefined' || score > existing) {
+                        memoryScores.set(r.memory, score);
+                    }
+                }
+            }
+
+            const sorted = Array.from(memoryScores.entries())
+                .map(([memory, score]) => ({memory, score}))
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 10);
+
+            this.logger.debug(`[ReplyAgent] memory search returned ${sorted.length} results`);
+            return sorted;
+        } catch (err) {
+            this.logger.error('[ReplyAgent] search memories failed:', err);
+            return [];
+        }
+    }
+
+    private async buildMemoryBlock (
+        groupId: number, latest: StoredMessage[], task: ReplyTask,
+    ): Promise<string | null> {
+        if (latest.length === 0 || !this.config.ai.mem0) return null;
+
+        const keywords = await this.generateMemoryKeywords(latest, task);
+        if (keywords.length === 0) return null;
+
+        const memories = await this.searchMemories(groupId, keywords);
+
+        const lines: string[] = [];
+        lines.push(prompts.memoryBlockHeader);
+        lines.push(`${prompts.memoryBlockKeywordsPrefix}${keywords.join('、')}`);
+
+        if (memories.length === 0) {
+            lines.push(prompts.memoryBlockNoResult);
+        } else {
+            lines.push(prompts.memoryBlockResultPrefix);
+            for (const {memory, score} of memories) {
+                const percent = (score * 100).toFixed(1);
+                lines.push(`- ${memory} (相关度: ${percent}%)`);
+            }
+        }
+
+        lines.push(prompts.memoryBlockFooter);
+        return lines.join('\n\n');
     }
 
     private async doDeepResearch (keyword: string): Promise<string> {

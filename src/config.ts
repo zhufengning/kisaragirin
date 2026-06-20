@@ -49,6 +49,8 @@ export interface AiConfig {
         vision: string;
         reply: string;
         deep_research: string;
+        /** 预生成记忆查询关键词的模型 */
+        memory_keyword: string;
     };
     mem0?: MemoryConfig;
 }

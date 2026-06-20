@@ -23,5 +23,14 @@ export const prompts = {
 - 删除无意义的闲聊、重复内容和表情包互动
 - 用简洁的中文总结，不超过300字
 - 按话题分段，每段用「主题：」开头
-- 如果对话中有明确的待办事项或约定，单独列出`
+- 如果对话中有明确的待办事项或约定，单独列出`,
+    memoryKeywordSystem: '你是一个关键词提取助手。请根据给出的QQ群最新消息，生成3到5个用于搜索历史记忆的查询关键词。关键词应聚焦于：用户身份、偏好、习惯、约定、过去提到的重要事实或人名。只输出一个JSON数组字符串，数组元素为查询字符串，不要输出任何解释、markdown或代码块。',
+    memoryKeywordUser (latestMessages: string, taskType: string) {
+        return `以下是最新消息（消息类型：${taskType === 'at' ? '有人@机器人' : '闲时触发'}），请生成用于搜索历史记忆的查询关键词：\n\n${latestMessages}`;
+    },
+    memoryBlockHeader: '===== 相关记忆 =====\n系统根据最新消息预生成以下查询关键词，并检索到相关历史记忆。以下记忆仅供参考，请结合上下文判断是否使用。',
+    memoryBlockKeywordsPrefix: '查询关键词：',
+    memoryBlockResultPrefix: '检索结果：',
+    memoryBlockNoResult: '未检索到相关记忆。',
+    memoryBlockFooter: '===== 相关记忆结束 ====='
 };

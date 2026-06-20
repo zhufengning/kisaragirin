@@ -8,6 +8,7 @@
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 两轮回复（支持深度研究agent）
+- 记忆预取（第一轮回复前生成关键词并预检索 mem0，注入 prompt）
 - Auto Compact（自动摘要历史消息，优化缓存命中率）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
@@ -101,6 +102,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 - **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `Agent` 类
 - Agent 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
+- **记忆预取**：第一轮回复前，`ReplyAgent.buildUserPrompt` 会调用 `ai.assignments.memory_keyword` 指定的模型，根据最新消息生成若干查询关键词，使用 `mem0ai/oss` 的 `Memory.search` 检索本群历史记忆，并将关键词和检索结果以明显分隔线插入最新消息之后；WebUI Prompt 预览共用同一逻辑，若最新消息为空则跳过
 - **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **回复工具** (`reply_first_turn` / `reply_second_turn`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
@@ -135,6 +137,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.auto_compact_threshold`：触发 compact 的 context window 使用百分比，默认 0.7
 - `input.auto_compact_keep_recent`：compact 后保留的最近 token 数，默认 20000
 - `input.auto_compact_reserve_tokens`：为 LLM 响应预留的 token 数，默认 8000
+- `ai.assignments.memory_keyword`：预生成记忆查询关键词的模型 assignment，示例值 `'ocg-minimax-m2.5'`
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
