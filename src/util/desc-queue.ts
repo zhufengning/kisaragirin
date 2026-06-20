@@ -180,7 +180,7 @@ export class DescQueue {
                 `[DescQueue] assistant text is empty, treating as failure`);
         } else {
             this.logger.warn(
-                `[DescQueue] invalid last message role=${last?.role} stopReason=${lastAssistant?.stopReason}`);
+                `[DescQueue] invalid last message role=${last?.role} stopReason=${lastAssistant?.stopReason}${lastAssistant?.errorMessage ? ` error=${lastAssistant.errorMessage}` : ''}`);
         }
         return;
     }
