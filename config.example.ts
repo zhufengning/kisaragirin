@@ -59,6 +59,12 @@ export const config: AppConfig = {
         auto_compact_threshold: 0.7,
         auto_compact_keep_recent: 20000,
         auto_compact_reserve_tokens: 8000,
+        /** 调试：每次第一轮回复前将 system/user prompt 原始数据写入 data/debug/ 目录 */
+        debug_dump_prompt: false,
+        /** 按群号配置的专属提示词，注入在 system prompt 人设之后 */
+        group_custom_prompts: {
+            // 123456789: '本群是技术讨论群，请以技术讨论为主，减少闲聊。\n当群友讨论CTF题目时，可以使用深度研究帮助搜索writeup。',
+        },
     },
     web: {
         host: '0.0.0.0',
@@ -98,6 +104,21 @@ export const config: AppConfig = {
                     provider: 'openai',
                     baseUrl: 'http://127.0.0.1:8642/v1',
                     ...openaiCompatBase,
+                } satisfies Model<Api>,
+                apiKey: '',
+            },
+            'gpt-5.5': {
+                model: {
+                    id: 'gpt-5.5',
+                    name: 'GPT-5.5',
+                    provider: 'openai',
+                    baseUrl: 'https://api.axis.fan',
+                    api: 'openai-responses' as const,
+                    reasoning: false,
+                    input: ['text', 'image'] as ('text' | 'image')[],
+                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 128000,
+                    maxTokens: 8192,
                 } satisfies Model<Api>,
                 apiKey: '',
             },

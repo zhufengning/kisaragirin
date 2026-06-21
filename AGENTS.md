@@ -12,6 +12,7 @@
 - Auto Compact（自动摘要历史消息，优化缓存命中率）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
+- 按群专属提示词（在 system prompt 人设之后注入群专属指令）
 
 ## 包管理
 
@@ -137,6 +138,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.auto_compact_threshold`：触发 compact 的 context window 使用百分比，默认 0.7
 - `input.auto_compact_keep_recent`：compact 后保留的最近 token 数，默认 20000
 - `input.auto_compact_reserve_tokens`：为 LLM 响应预留的 token 数，默认 8000
+- `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `ai.assignments.memory_keyword`：预生成记忆查询关键词的模型 assignment，示例值 `'ocg-minimax-m2.5'`
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。

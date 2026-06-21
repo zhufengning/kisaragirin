@@ -29,6 +29,10 @@ export interface InputConfig {
     auto_compact_keep_recent?: number;
     /** 为 LLM 响应预留的 token 数，默认 8000 */
     auto_compact_reserve_tokens?: number;
+    /** 按群号配置的专属提示词，注入在 system prompt 人设之后 */
+    group_custom_prompts?: Record<number, string>;
+    /** 调试：每次第一轮回复前将 system/user prompt 原始数据写入文件，默认 false */
+    debug_dump_prompt?: boolean;
 }
 
 export interface WebPanelConfig {

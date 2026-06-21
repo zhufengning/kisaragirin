@@ -9,6 +9,8 @@ import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage, type StoredSegment} from '~/message-format';
 import {prompts} from '~/prompts';
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {createMem0Tools} from './mem0-tool';
 
@@ -556,7 +558,7 @@ export class ReplyAgent {
         this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
         this.taskType = task.type;
 
-        this.systemPrompt = this.buildSystemPrompt();
+        this.systemPrompt = this.buildSystemPrompt(groupId);
 
         this.modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
         if (!this.modelEntry) throw new Error('Reply model not configured');
@@ -591,6 +593,10 @@ export class ReplyAgent {
             const userPrompt = promptResult.userPrompt;
             anchorTime = promptResult.anchorTime;
             this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
+
+            if (attempt === 1) {
+                this.dumpPrompt(groupId, task.type, this.systemPrompt, userPrompt);
+            }
 
             firstTurnResult = null;
             const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
@@ -1059,11 +1065,41 @@ export class ReplyAgent {
         }
     }
 
-    private buildSystemPrompt (): string {
+    private dumpPrompt (groupId: number, taskType: string, systemPrompt: string, userPrompt: string): void {
+        if (!this.config.input.debug_dump_prompt) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+
+        const ts = new Date().toISOString()
+            .replace(/:/g, '-');
+        const prefix = `${groupId}-${taskType}-${ts}`;
+
+        writeFileSync(join(dir, `${prefix}-system.txt`), systemPrompt, 'utf-8');
+        writeFileSync(join(dir, `${prefix}-user.txt`), userPrompt, 'utf-8');
+
+        this.logger.debug(
+            `[ReplyAgent] [${groupId}] prompt dumped to ` +
+            `${prefix}-system.txt (${systemPrompt.length} chars) / ` +
+            `${prefix}-user.txt (${userPrompt.length} chars)`);
+    }
+
+    private buildSystemPrompt (groupId?: number): string {
         const botName = this.config.input.bot_name || '机器人';
         const persona = this.config.input.bot_persona || '';
         const parts = [prompts.replyIdentity(botName)];
         if (persona) parts.push(persona);
+        if (typeof groupId === 'number') {
+            const groupCustomPrompts = this.config.input.group_custom_prompts;
+            if (groupCustomPrompts) {
+                const customPrompt = groupCustomPrompts[groupId];
+                if (customPrompt) {
+                    parts.push(prompts.groupCustomPromptStart);
+                    parts.push(customPrompt);
+                    parts.push(prompts.groupCustomPromptEnd);
+                }
+            }
+        }
         return parts.join('\n\n');
     }
 
@@ -1086,7 +1122,7 @@ export class ReplyAgent {
         }
 
         if (task.type === 'at') {
-            parts.push(`注意：以上最新消息中，有人@了你（消息ID: ${task.triggerMessage.messageId}）。`);
+            parts.push(`注意：以上最新消息中，有人@了你`);
         }
 
         parts.push(prompts.replyStart);
