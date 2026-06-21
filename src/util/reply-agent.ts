@@ -427,16 +427,8 @@ export class ReplyAgent {
     async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
         const keepRecent = this.config.input.auto_compact_keep_recent ?? 20000;
 
-        let accumulated = 0;
-        let cutIndex = 0;
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const tokens = this.estimateMessageTokens(messages[i]);
-            accumulated += tokens;
-            if (accumulated >= keepRecent) {
-                cutIndex = i + 1;
-                break;
-            }
-        }
+        // 按消息条数保留最近的消息
+        const cutIndex = Math.max(0, messages.length - keepRecent);
 
         const toSummarize = messages.slice(0, cutIndex);
         const toKeep = messages.slice(cutIndex);
