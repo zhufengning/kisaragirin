@@ -603,6 +603,7 @@ export class ReplyAgent {
             let turnCount = 0;
 
             this.agent = new Agent({
+                sessionId: `group-${groupId}`,
                 initialState: {
                     systemPrompt: this.systemPrompt,
                     model: this.modelEntry!.model,
@@ -951,6 +952,7 @@ export class ReplyAgent {
             let turnCount = 0;
 
             const agent = new Agent({
+                sessionId: `group-${groupId}`,
                 initialState: {
                     systemPrompt: context.systemPrompt,
                     model: context.modelEntry.model,
