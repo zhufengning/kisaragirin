@@ -314,8 +314,8 @@ export class ReplyAgent {
     }
 
     private async shouldCompact (messages: StoredMessage[], contextWindow: number, groupId: number): Promise<boolean> {
-        const threshold = this.config.input.auto_compact_threshold ?? 0.7;
-        const reserveTokens = this.config.input.auto_compact_reserve_tokens ?? 8000;
+        const threshold = this.config.input.auto_compact_threshold;
+        const reserveTokens = this.config.input.auto_compact_reserve_tokens;
         const tokens = await this.estimateContextTokens(groupId, messages);
         const limit = Math.floor((contextWindow - reserveTokens) * threshold);
         this.logger.debug(
@@ -425,7 +425,7 @@ export class ReplyAgent {
     }
 
     async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
-        const keepRecent = this.config.input.auto_compact_keep_recent ?? 20000;
+        const keepRecent = this.config.input.auto_compact_keep_recent;
 
         // 按消息条数保留最近的消息
         const cutIndex = Math.max(0, messages.length - keepRecent);
@@ -591,7 +591,7 @@ export class ReplyAgent {
             }
 
             firstTurnResult = null;
-            const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
+            const maxToolCallRounds = this.config.input.max_tool_call_rounds;
             let turnCount = 0;
 
             this.agent = new Agent({
@@ -940,7 +940,7 @@ export class ReplyAgent {
                 }
             };
 
-            const maxToolCallRounds = this.config.input.max_tool_call_rounds ?? 5;
+            const maxToolCallRounds = this.config.input.max_tool_call_rounds;
             let turnCount = 0;
 
             const agent = new Agent({

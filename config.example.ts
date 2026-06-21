@@ -1,4 +1,4 @@
-import type { AppConfig } from './src/config';
+import { InputConfig, type AppConfig } from './src/config';
 import type { Model, Api } from '@earendil-works/pi-ai';
 
 const openaiCompatBase = {
@@ -47,20 +47,10 @@ export const config: AppConfig = {
         file: 'data/app.log',
     },
     input: {
+        ...new InputConfig(),
         group_whitelist: [],
-        merge_window: 30,
-        silence_wait_time: 30,
-        reply_probability: 0.1,
-        max_msg_count: 50,
-        max_tool_call_rounds: 5,
-        vision_concurrency: 5,
         bot_name: '',
         bot_persona: '',
-        auto_compact_threshold: 0.7,
-        auto_compact_keep_recent: 20000,
-        auto_compact_reserve_tokens: 8000,
-        /** 调试：每次第一轮回复前将 system/user prompt 原始数据写入 data/debug/ 目录 */
-        debug_dump_prompt: false,
         /** 按群号配置的专属提示词，注入在 system prompt 人设之后 */
         group_custom_prompts: {
             // 123456789: '本群是技术讨论群，请以技术讨论为主，减少闲聊。\n当群友讨论CTF题目时，可以使用深度研究帮助搜索writeup。',

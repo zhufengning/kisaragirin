@@ -106,7 +106,7 @@ export class GroupReplyManager {
     }
 
     private startAtMergeWindow (): void {
-        const ms = (this.config.input.merge_window ?? 30) * 1000;
+        const ms = this.config.input.merge_window * 1000;
         this.logger.debug(`[ReplyManager] [${this.groupId}] merge window started (${ms}ms)`);
         this.pendingAtTimeout = setTimeout(() => {
             const msg = this.pendingAtMessage;
@@ -138,7 +138,7 @@ export class GroupReplyManager {
     }
 
     private startSilenceTimer (): void {
-        const minutes = this.config.input.silence_wait_time ?? 30;
+        const minutes = this.config.input.silence_wait_time;
         this.logger.debug(`[ReplyManager] [${this.groupId}] silence timer started (${minutes}min)`);
         this.silenceTimeout = setTimeout(() => this.onSilenceTimeout(), minutes * 60 * 1000);
     }
@@ -161,7 +161,7 @@ export class GroupReplyManager {
             return;
         }
 
-        const probability = this.config.input.reply_probability ?? 0.1;
+        const probability = this.config.input.reply_probability;
         const roll = Math.random();
         this.logger.debug(`[ReplyManager] [${this.groupId}] silence roll=${roll.toFixed(3)} vs prob=${probability}`);
         if (roll >= probability) {

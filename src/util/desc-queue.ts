@@ -22,7 +22,7 @@ export class DescQueue {
     constructor (db: Db) {
         this.db = db;
         this.logger = new Logger();
-        this.concurrency = config.input.vision_concurrency ?? 5;
+        this.concurrency = config.input.vision_concurrency;
         const modelEntry = config.ai.models[config.ai.assignments.vision];
         this.agents = Array.from({length: this.concurrency}, () => new Agent({
             initialState: {

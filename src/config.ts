@@ -13,26 +13,21 @@ export interface LogConfig {
     file?: string;
 }
 
-export interface InputConfig {
-    group_whitelist: number[];
-    merge_window?: number;
-    silence_wait_time?: number;
-    reply_probability?: number;
-    max_msg_count?: number;
-    max_tool_call_rounds?: number;
-    vision_concurrency?: number;
+export class InputConfig {
+    group_whitelist!: number[];
+    merge_window = 30;
+    silence_wait_time = 30;
+    reply_probability = 0.1;
+    max_msg_count = 50;
+    max_tool_call_rounds = 5;
+    vision_concurrency = 5;
     bot_name?: string;
     bot_persona?: string;
-    /** 触发 auto compact 的 context window 使用百分比阈值 (0.0-1.0)，默认 0.7 */
-    auto_compact_threshold?: number;
-    /** compact 后保留的最近消息估算 token 数，默认 20000 */
-    auto_compact_keep_recent?: number;
-    /** 为 LLM 响应预留的 token 数，默认 8000 */
-    auto_compact_reserve_tokens?: number;
-    /** 按群号配置的专属提示词，注入在 system prompt 人设之后 */
+    auto_compact_threshold = 0.7;
+    auto_compact_keep_recent = 20000;
+    auto_compact_reserve_tokens = 8000;
     group_custom_prompts?: Record<number, string>;
-    /** 调试：每次第一轮回复前将 system/user prompt 原始数据写入文件，默认 false */
-    debug_dump_prompt?: boolean;
+    debug_dump_prompt = false;
 }
 
 export interface WebPanelConfig {
