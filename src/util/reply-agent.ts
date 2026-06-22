@@ -1180,24 +1180,15 @@ export class ReplyAgent {
         try {
             const mem0Client = new Memory(this.config.ai.mem0);
             const userId = `group-${groupId}`;
-            const memoryScores = new Map<string, number>();
+            const query = keywords.join(' ');
 
-            for (const keyword of keywords) {
-                const results = await mem0Client.search(keyword, {
-                    topK: 5,
-                    filters: {user_id: userId}
-                });
-                for (const r of results.results) {
-                    const score = r.score ?? 0;
-                    const existing = memoryScores.get(r.memory);
-                    if (typeof existing === 'undefined' || score > existing) {
-                        memoryScores.set(r.memory, score);
-                    }
-                }
-            }
+            const results = await mem0Client.search(query, {
+                topK: 25,
+                filters: {user_id: userId}
+            });
 
-            const sorted = Array.from(memoryScores.entries())
-                .map(([memory, score]) => ({memory, score}))
+            const sorted = results.results
+                .map(r => ({memory: r.memory, score: r.score ?? 0}))
                 .sort((a, b) => b.score - a.score)
                 .slice(0, 10);
 
