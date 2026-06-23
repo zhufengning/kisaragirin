@@ -32,6 +32,17 @@ if (Astro.request.method === 'POST') {
     } catch {
         // formData 解析失败时保持默认值
     }
+
+    // POST-Redirect-GET：搜索提交后重定向到 GET URL，避免刷新/删除后 reload 时浏览器提示重新发送数据
+    const redirectUrl = new URL(Astro.url);
+    redirectUrl.searchParams.delete('page');
+    if (searchQuery) {
+        redirectUrl.searchParams.set('search', searchQuery);
+    } else {
+        redirectUrl.searchParams.delete('search');
+    }
+    redirectUrl.searchParams.set('user_id', userId);
+    return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
 } else {
     searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
 }

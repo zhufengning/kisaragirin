@@ -599,7 +599,8 @@ export class ReplyAgent {
                 initialState: {
                     systemPrompt: this.systemPrompt,
                     model: this.modelEntry!.model,
-                    tools: [replyFirstTurnTool, ...this.mem0Tools]
+                    tools: [replyFirstTurnTool, ...this.mem0Tools],
+                    thinkingLevel: 'high'
                 },
                 getApiKey: () => this.modelEntry!.apiKey,
                 afterToolCall: async () => {
@@ -948,7 +949,8 @@ export class ReplyAgent {
                 initialState: {
                     systemPrompt: context.systemPrompt,
                     model: context.modelEntry.model,
-                    tools: [replySecondTurnTool, ...context.mem0Tools]
+                    tools: [replySecondTurnTool, ...context.mem0Tools],
+                    thinkingLevel: 'high'
                 },
                 getApiKey: () => context.modelEntry.apiKey,
                 afterToolCall: async () => {
