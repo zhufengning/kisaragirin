@@ -32,6 +32,8 @@ export const config: AppConfig = {
         group_custom_prompts: {
             // 123456789: '本群是技术讨论群，请以技术讨论为主，减少闲聊。\n当群友讨论CTF题目时，可以使用深度研究帮助搜索writeup。',
         },
+        /** 是否将每次回复的 prompt 与模型输出保存到 data/debug/，默认 false */
+        debug_dump_prompt: false,
     },
     web: {
         host: '0.0.0.0',

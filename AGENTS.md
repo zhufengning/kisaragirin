@@ -141,6 +141,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `ai.assignments.memory_keyword`：预生成记忆查询关键词的模型 assignment，示例值 `'ocg-minimax-m2.5'`
 
+- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、第一轮/第二轮模型输出保存到 `data/debug/`，默认 `false`
+
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
 ## 代码规范

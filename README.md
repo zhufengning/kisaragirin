@@ -67,6 +67,24 @@ input: {
 - Compact 会将旧消息摘要为一条「前情提要」消息插入数据库
 - Web 面板支持手动触发 compact
 
+## 调试配置
+
+在 `config.ts` 的 `input` 中配置：
+
+```typescript
+input: {
+    // ... 其他配置
+    debug_dump_prompt: true // 开启后将每次回复的 prompt 与模型输出保存到 data/debug/
+}
+```
+
+- 开启后会在 `data/debug/` 目录下保存以下文件：
+  - `{groupId}-{taskType}-{ts}-system.txt`：system prompt
+  - `{groupId}-{taskType}-{ts}-user.txt`：user prompt
+  - `{groupId}-{taskType}-{ts}-first-turn.json`：第一轮完整对话历史（含最终输出、所有 assistant 消息与 tool 调用）
+  - `{groupId}-{taskType}-{ts}-second-turn.json`：第二轮完整对话历史（含最终输出、所有 assistant 消息与 tool 调用）
+- 同一组文件使用相同时间戳前缀，便于关联 prompt 与输出
+
 ## 技术栈
 
 - **Bot Harness**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
