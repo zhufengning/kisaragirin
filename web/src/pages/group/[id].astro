@@ -113,6 +113,7 @@ function pageUrl(page: number) {
     <span class="meta">({totalCount} 条消息)</span>
     · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a>
     · <button id="compact-btn" class="compact-btn">手动 Compact</button>
+    · <button id="clear-btn" class="clear-btn">清空</button>
 </h1>
 
 <script is:inline define:vars={{ groupId }}>
@@ -135,6 +136,28 @@ function pageUrl(page: number) {
         } finally {
             compactBtn.disabled = false;
             compactBtn.textContent = '手动 Compact';
+        }
+    });
+
+    const clearBtn = document.getElementById('clear-btn');
+    clearBtn.addEventListener('click', async () => {
+        if (!confirm(`确定要清空群 ${groupId} 的所有消息吗？此操作不可恢复。`)) return;
+        clearBtn.disabled = true;
+        clearBtn.textContent = '清空中...';
+        try {
+            const res = await fetch(`/api/group/${groupId}/clear`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                alert('已清空所有消息');
+                location.reload();
+            } else {
+                alert('清空失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('清空失败：' + err.message);
+        } finally {
+            clearBtn.disabled = false;
+            clearBtn.textContent = '清空';
         }
     });
 </script>
@@ -231,6 +254,23 @@ function pageUrl(page: number) {
         background: var(--border);
     }
     .compact-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+    .clear-btn {
+        padding: 4px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--danger);
+        background: rgba(224, 108, 117, 0.15);
+        color: var(--danger);
+        font-size: 13px;
+        cursor: pointer;
+        vertical-align: middle;
+    }
+    .clear-btn:hover:not(:disabled) {
+        background: rgba(224, 108, 117, 0.25);
+    }
+    .clear-btn:disabled {
         opacity: 0.6;
         cursor: not-allowed;
     }

@@ -39,6 +39,14 @@ export async function kvDelete (db: Db, key: string): Promise<void> {
     await db.delete(schema.kvStore).where(eq(schema.kvStore.key, key));
 }
 
+export async function clearGroupMessages (db: Db, groupId: number): Promise<void> {
+    await db.delete(schema.messages)
+        .where(eq(schema.messages.groupId, groupId));
+    await kvDelete(db, `group:${groupId}:lastTriggerId`);
+    await kvDelete(db, `group:${groupId}:lastCompactId`);
+    await kvDelete(db, `group:${groupId}:lastUsageAnchor`);
+}
+
 export async function runMigrations (db: Db): Promise<void> {
     const sqlite = (db as {$client: Database.Database}).$client;
 

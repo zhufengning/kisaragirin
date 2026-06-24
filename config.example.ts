@@ -1,15 +1,6 @@
 import { InputConfig, type AppConfig } from './src/config';
 import type { Model, Api } from '@earendil-works/pi-ai';
 
-const openaiCompatBase = {
-    api: 'openai-completions' as const,
-    reasoning: false,
-    input: ['text', 'image'] as ('text' | 'image')[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
-    maxTokens: 8192,
-};
-
 const anthropicCompatBase = {
     api: 'anthropic-messages' as const,
     reasoning: false,
@@ -19,21 +10,7 @@ const anthropicCompatBase = {
     maxTokens: 8192,
 };
 
-const OCG_KEY = '';
-
-function ocgOpenai(id: string, name: string): { model: Model<Api>; apiKey: string } {
-    return {
-        model: { id, name, provider: 'opencode', baseUrl: 'https://opencode.ai/zen/go/v1', ...openaiCompatBase } satisfies Model<Api>,
-        apiKey: OCG_KEY,
-    };
-}
-
-function ocgAnthropic(id: string, name: string, baseUrl = 'https://opencode.ai/zen/go'): { model: Model<Api>; apiKey: string } {
-    return {
-        model: { id, name, provider: 'opencode', baseUrl, ...anthropicCompatBase } satisfies Model<Api>,
-        apiKey: OCG_KEY,
-    };
-}
+const MINIMAX_KEY = '';
 
 export const config: AppConfig = {
     onebot: {
@@ -64,46 +41,23 @@ export const config: AppConfig = {
     },
     ai: {
         models: {
-            qwen: {
+            'minimax-m3': {
                 model: {
-                    id: 'qwen-vl-max',
-                    name: 'Qwen VL Max',
-                    provider: 'custom',
-                    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-                    ...openaiCompatBase,
+                    id: 'MiniMax-M3',
+                    name: 'MiniMax M3',
+                    provider: 'minimax',
+                    baseUrl: 'https://api.minimaxi.com/anthropic',
+                    ...anthropicCompatBase,
                 } satisfies Model<Api>,
-                apiKey: '',
+                apiKey: MINIMAX_KEY,
             },
-            'ocg-glm-5.1': ocgOpenai('glm-5.1', 'OpenCode GLM 5.1'),
-            'ocg-glm-5': ocgOpenai('glm-5', 'OpenCode GLM 5'),
-            'ocg-kimi-k2.5': ocgOpenai('kimi-k2.5', 'OpenCode Kimi K2.5'),
-            'ocg-kimi-k2.6': ocgOpenai('kimi-k2.6', 'OpenCode Kimi K2.6'),
-            'ocg-deepseek-v4-pro': ocgOpenai('deepseek-v4-pro', 'OpenCode DeepSeek V4 Pro'),
-            'ocg-deepseek-v4-flash': ocgOpenai('deepseek-v4-flash', 'OpenCode DeepSeek V4 Flash'),
-            'ocg-mimo-v2.5': ocgOpenai('mimo-v2.5', 'OpenCode MIMO V2.5'),
-            'ocg-mimo-v2.5-pro': ocgOpenai('mimo-v2.5-pro', 'OpenCode MIMO V2.5 Pro'),
-            'ocg-qwen3.7-max': ocgAnthropic('qwen3.7-max', 'OpenCode Qwen 3.7 Max', 'https://opencode.ai/zen/go/'),
-            'ocg-minimax-m2.7': ocgAnthropic('minimax-m2.7', 'OpenCode MiniMax M2.7'),
-            'ocg-minimax-m2.5': ocgAnthropic('minimax-m2.5', 'OpenCode MiniMax M2.5'),
-            'ocg-qwen3.6-plus': ocgOpenai('qwen3.6-plus', 'OpenCode Qwen 3.6 Plus'),
-            'ocg-qwen3.5-plus': ocgOpenai('qwen3.5-plus', 'OpenCode Qwen 3.5 Plus'),
             'hermes': {
                 model: {
                     id: 'sec-bot',
                     name: 'Hermes Sec-Bot',
                     provider: 'openai',
                     baseUrl: 'http://127.0.0.1:8642/v1',
-                    ...openaiCompatBase,
-                } satisfies Model<Api>,
-                apiKey: '',
-            },
-            'gpt-5.5': {
-                model: {
-                    id: 'gpt-5.5',
-                    name: 'GPT-5.5',
-                    provider: 'openai',
-                    baseUrl: 'https://api.axis.fan',
-                    api: 'openai-responses' as const,
+                    api: 'openai-completions' as const,
                     reasoning: false,
                     input: ['text', 'image'] as ('text' | 'image')[],
                     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -114,10 +68,10 @@ export const config: AppConfig = {
             },
         },
         assignments: {
-            vision: 'qwen',
-            reply: 'ocg-qwen3.7-max',
+            vision: 'minimax-m3',
+            reply: 'minimax-m3',
             deep_research: 'hermes',
-            memory_keyword: 'ocg-minimax-m2.5',
+            memory_keyword: 'minimax-m3',
         },
         mem0: {
             embedder: {
@@ -139,11 +93,11 @@ export const config: AppConfig = {
                 },
             },
             llm: {
-                provider: 'openai',
+                provider: 'anthropic',
                 config: {
-                    apiKey: '',
-                    model: 'MiniMax-M2.5',
-                    baseURL: 'https://opencode.ai/zen/go/v1',
+                    apiKey: MINIMAX_KEY,
+                    model: 'MiniMax-M3',
+                    baseURL: 'https://api.minimaxi.com/anthropic',
                 },
             },
             historyDbPath: 'data/mem0-history.db',
