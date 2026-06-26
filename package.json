@@ -74,8 +74,8 @@
     "dependencies": {
         "@astrojs/check": "^0.9.9",
         "@astrojs/node": "^10.1.2",
-        "@earendil-works/pi-agent-core": "^0.78.0",
-        "@earendil-works/pi-ai": "^0.78.0",
+        "@earendil-works/pi-agent-core": "^0.80.2",
+        "@earendil-works/pi-ai": "^0.80.2",
         "@qdrant/js-client-rest": "1.13.0",
         "astro": "^6.4.0",
         "better-sqlite3": "^12.6.2",

@@ -1,3 +1,5 @@
+import './util/disable-mem0-telemetry';
+
 import {createBot} from '@lib';
 import {config} from '@/config';
 import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';

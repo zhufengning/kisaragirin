@@ -1,22 +1,23 @@
-import { Agent, type AgentTool, type AgentMessage } from '@earendil-works/pi-agent-core';
-import { Type, type AssistantMessage, type Usage, complete } from '@earendil-works/pi-ai';
+import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
+import {Type, type AssistantMessage, type Usage} from '@earendil-works/pi-ai';
+import {complete} from '@earendil-works/pi-ai/compat';
 import OpenAI from 'openai';
-import { Memory } from 'mem0ai/oss';
-import { schema, type Db, kvGet, kvSet } from '~/db';
-import type { AppConfig, ModelEntry } from '~/config';
-import { eq, desc, and, gte } from 'drizzle-orm';
-import type { DescQueue } from './desc-queue';
-import type { ReplyTask } from './reply-manager';
-import { messagesToString, type StoredMessage, type StoredSegment } from '~/message-format';
-import { prompts } from '~/prompts';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { Logger } from '@lib/util/logger';
-import { createMem0Tools } from './mem0-tool';
+import {Memory} from 'mem0ai/oss';
+import {schema, type Db, kvGet, kvSet} from '~/db';
+import type {AppConfig, ModelEntry} from '~/config';
+import {eq, desc, and, gte} from 'drizzle-orm';
+import type {DescQueue} from './desc-queue';
+import type {ReplyTask} from './reply-manager';
+import {messagesToString, type StoredMessage, type StoredSegment} from '~/message-format';
+import {prompts} from '~/prompts';
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {Logger} from '@lib/util/logger';
+import {createMem0Tools} from './mem0-tool';
 
 const replyFirstTurnSchema = Type.Object({
     immediate_reply: Type.String(),
-    action: Type.String({ enum: ['FINISH', 'DEEP_RESEARCH'] }),
+    action: Type.String({enum: ['FINISH', 'DEEP_RESEARCH']}),
     deep_research_keyword: Type.Optional(Type.String())
 });
 
@@ -55,7 +56,7 @@ interface SecondTurnContext {
     debugPrefix?: string;
 }
 
-function extractText(response: AssistantMessage): string {
+function extractText (response: AssistantMessage): string {
     return response.content
         .filter((c): c is Extract<typeof c, { type: 'text' }> => c.type === 'text')
         .map(c => c.text)
@@ -63,7 +64,7 @@ function extractText(response: AssistantMessage): string {
         .trim();
 }
 
-function parseKeywordJson(text: string): string[] {
+function parseKeywordJson (text: string): string[] {
     const cleaned = text.trim();
     let parsed: unknown;
     try {
@@ -85,7 +86,7 @@ function parseKeywordJson(text: string): string[] {
     return parsed.filter((item): item is string => typeof item === 'string');
 }
 
-function calculateCacheStats(messages: AgentMessage[]) {
+function calculateCacheStats (messages: AgentMessage[]) {
     let input = 0;
     let output = 0;
     let cacheRead = 0;
@@ -119,7 +120,7 @@ function calculateCacheStats(messages: AgentMessage[]) {
     };
 }
 
-function getLastAssistant(agent: Agent): AssistantMessage | undefined {
+function getLastAssistant (agent: Agent): AssistantMessage | undefined {
     const messages = agent.state.messages;
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -130,11 +131,11 @@ function getLastAssistant(agent: Agent): AssistantMessage | undefined {
     return;
 }
 
-function isFirstTurnEmpty(result: ReplyFirstTurnArgs | null): boolean {
+function isFirstTurnEmpty (result: ReplyFirstTurnArgs | null): boolean {
     return !result || !result.immediate_reply.trim();
 }
 
-function isSecondTurnEmpty(result: ReplySecondTurnArgs | null): boolean {
+function isSecondTurnEmpty (result: ReplySecondTurnArgs | null): boolean {
     return !result || !result.final_reply.trim();
 }
 
@@ -170,11 +171,11 @@ const NON_OVERFLOW_PATTERNS = [
     /too many requests/i
 ];
 
-function calculateBaselineTokens(usage: Usage): number {
+function calculateBaselineTokens (usage: Usage): number {
     return usage.input + usage.cacheRead + usage.cacheWrite;
 }
 
-function isContextOverflow(message: AssistantMessage, contextWindow?: number): boolean {
+function isContextOverflow (message: AssistantMessage, contextWindow?: number): boolean {
     if (message.stopReason === 'error' && message.errorMessage) {
         const isNonOverflow = NON_OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!));
         if (!isNonOverflow && OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!))) {
@@ -209,7 +210,7 @@ export class ReplyAgent {
     private agent: Agent | null = null;
     private debugPrefix?: string;
 
-    constructor(db: Db, descQueue: DescQueue, config: AppConfig) {
+    constructor (db: Db, descQueue: DescQueue, config: AppConfig) {
         this.db = db;
         this.descQueue = descQueue;
         this.config = config;
@@ -218,59 +219,59 @@ export class ReplyAgent {
 
     // ==================== Auto Compact ====================
 
-    private estimateSegmentTokens(seg: StoredSegment): number {
+    private estimateSegmentTokens (seg: StoredSegment): number {
         switch (seg.type) {
-            case 'text':
-                return Math.ceil(seg.text.length / 4);
-            case 'at':
-                return Math.ceil((seg.targetName || seg.target).length / 4) + 2;
-            case 'image':
-                return 1200;
-            case 'face':
-                return 3;
-            case 'record':
-                return 5;
-            case 'video':
-                return Math.ceil((seg.fileName || '').length / 4) + 5;
-            case 'file':
-                return Math.ceil(seg.fileName.length / 4) + 5;
-            case 'json':
-                return Math.ceil((seg.data || '').length / 4);
-            case 'poke':
-                return 5;
-            case 'dice':
-            case 'rps':
-                return 3;
-            case 'reply':
-                if (seg.message) {
-                    return this.estimateMessageTokens(seg.message);
-                }
-                return 5;
-            case 'forward':
-                if (seg.messages) {
-                    return seg.messages.reduce((sum, m) => sum + this.estimateMessageTokens(m), 0);
-                }
-                return 5;
-            case 'compact':
-            case 'system':
-                return Math.ceil(seg.text.length / 4) + 5;
-            default:
-                return 0;
+        case 'text':
+            return Math.ceil(seg.text.length / 4);
+        case 'at':
+            return Math.ceil((seg.targetName || seg.target).length / 4) + 2;
+        case 'image':
+            return 1200;
+        case 'face':
+            return 3;
+        case 'record':
+            return 5;
+        case 'video':
+            return Math.ceil((seg.fileName || '').length / 4) + 5;
+        case 'file':
+            return Math.ceil(seg.fileName.length / 4) + 5;
+        case 'json':
+            return Math.ceil((seg.data || '').length / 4);
+        case 'poke':
+            return 5;
+        case 'dice':
+        case 'rps':
+            return 3;
+        case 'reply':
+            if (seg.message) {
+                return this.estimateMessageTokens(seg.message);
+            }
+            return 5;
+        case 'forward':
+            if (seg.messages) {
+                return seg.messages.reduce((sum, m) => sum + this.estimateMessageTokens(m), 0);
+            }
+            return 5;
+        case 'compact':
+        case 'system':
+            return Math.ceil(seg.text.length / 4) + 5;
+        default:
+            return 0;
         }
     }
 
-    private estimateMessageTokens(msg: StoredMessage): number {
+    private estimateMessageTokens (msg: StoredMessage): number {
         const segmentTokens = msg.segments.reduce((sum, seg) => sum + this.estimateSegmentTokens(seg), 0);
         const senderName = msg.senderCard || msg.senderName || '';
         const senderTokens = Math.ceil(senderName.length / 4) + 4;
         return segmentTokens + senderTokens + 4;
     }
 
-    private estimateMessagesTokens(messages: StoredMessage[]): number {
+    private estimateMessagesTokens (messages: StoredMessage[]): number {
         return messages.reduce((sum, msg) => sum + this.estimateMessageTokens(msg), 0);
     }
 
-    private async loadUsageAnchor(groupId: number): Promise<UsageAnchor | undefined> {
+    private async loadUsageAnchor (groupId: number): Promise<UsageAnchor | undefined> {
         const raw = await kvGet(this.db, `group:${groupId}:lastUsageAnchor`);
         if (!raw) return;
         try {
@@ -280,11 +281,11 @@ export class ReplyAgent {
         }
     }
 
-    private async saveUsageAnchor(groupId: number, anchor: UsageAnchor): Promise<void> {
+    private async saveUsageAnchor (groupId: number, anchor: UsageAnchor): Promise<void> {
         await kvSet(this.db, `group:${groupId}:lastUsageAnchor`, JSON.stringify(anchor));
     }
 
-    private async estimateContextTokens(groupId: number, messages: StoredMessage[]): Promise<number> {
+    private async estimateContextTokens (groupId: number, messages: StoredMessage[]): Promise<number> {
         const anchor = await this.loadUsageAnchor(groupId);
         if (!anchor) {
             return this.estimateMessagesTokens(messages);
@@ -315,7 +316,7 @@ export class ReplyAgent {
         return anchor.totalTokens + trailingTokens;
     }
 
-    private async shouldCompact(messages: StoredMessage[], contextWindow: number, groupId: number): Promise<boolean> {
+    private async shouldCompact (messages: StoredMessage[], contextWindow: number, groupId: number): Promise<boolean> {
         const threshold = this.config.input.auto_compact_threshold;
         const reserveTokens = this.config.input.auto_compact_reserve_tokens;
         const tokens = await this.estimateContextTokens(groupId, messages);
@@ -326,7 +327,7 @@ export class ReplyAgent {
         return tokens > limit;
     }
 
-    private async generateCompactSummary(messages: StoredMessage[]): Promise<string> {
+    private async generateCompactSummary (messages: StoredMessage[]): Promise<string> {
         // Direct DB query for image descriptions, bypassing DescQueue to avoid hanging
         const prompt = await messagesToString(messages, async (sha256: string) => {
             const rows = await this.db
@@ -350,9 +351,9 @@ export class ReplyAgent {
                 modelEntry.model,
                 {
                     systemPrompt: prompts.compactSummarySystem,
-                    messages: [{ role: 'user', content: prompt, timestamp: Date.now() }]
+                    messages: [{role: 'user', content: prompt, timestamp: Date.now()}]
                 },
-                { apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 300000 }
+                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 300000}
             );
 
             clearTimeout(timeoutId);
@@ -379,7 +380,7 @@ export class ReplyAgent {
         }
     }
 
-    private async insertCompactMessage(
+    private async insertCompactMessage (
         groupId: number, summary: string, time: number,
     ): Promise<number> {
         const rows = await this.db.insert(schema.messages).values({
@@ -392,10 +393,10 @@ export class ReplyAgent {
             isBot: true,
             isAtBot: false,
             specialType: 'compact',
-            segments: [{ type: 'compact', text: summary }] as StoredSegment[],
+            segments: [{type: 'compact', text: summary}] as StoredSegment[],
             rawMessage: summary
         })
-            .returning({ id: schema.messages.id });
+            .returning({id: schema.messages.id});
 
         const compactId = rows[0].id;
         await kvSet(this.db, `group:${groupId}:lastCompactId`, String(compactId));
@@ -403,7 +404,7 @@ export class ReplyAgent {
         return compactId;
     }
 
-    private async insertSystemMessage(
+    private async insertSystemMessage (
         groupId: number, text: string, time: number,
     ): Promise<number> {
         const rows = await this.db.insert(schema.messages).values({
@@ -416,17 +417,17 @@ export class ReplyAgent {
             isBot: true,
             isAtBot: false,
             specialType: 'system',
-            segments: [{ type: 'system', text }] as StoredSegment[],
+            segments: [{type: 'system', text}] as StoredSegment[],
             rawMessage: text
         })
-            .returning({ id: schema.messages.id });
+            .returning({id: schema.messages.id});
 
         const id = rows[0].id;
         this.logger.info(`[ReplyAgent] [${groupId}] system message inserted, id=${id}, text=${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`);
         return id;
     }
 
-    async doCompact(groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
+    async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
         const keepRecent = this.config.input.auto_compact_keep_recent;
 
         // 按消息条数保留最近的消息
@@ -468,7 +469,7 @@ export class ReplyAgent {
             senderCard: void 0,
             isBot: true,
             isAtBot: false,
-            segments: [{ type: 'compact', text: summary }]
+            segments: [{type: 'compact', text: summary}]
         };
 
         return [compactMsg, ...toKeep];
@@ -476,7 +477,7 @@ export class ReplyAgent {
 
     // ==================== Compact ====================
 
-    private async getAllMessages(groupId: number): Promise<StoredMessage[]> {
+    private async getAllMessages (groupId: number): Promise<StoredMessage[]> {
         const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
         const conditions = [eq(schema.messages.groupId, groupId)];
         if (lastCompactIdStr) {
@@ -504,7 +505,7 @@ export class ReplyAgent {
         }));
     }
 
-    async triggerCompact(groupId: number, force = false): Promise<boolean> {
+    async triggerCompact (groupId: number, force = false): Promise<boolean> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
         const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
 
@@ -520,7 +521,7 @@ export class ReplyAgent {
 
     // ==================== Build Prompt ====================
 
-    async buildPrompt(
+    async buildPrompt (
         groupId: number, lastTriggerId: number, task: ReplyTask,
     ): Promise<{ userPrompt: string[]; anchorTime: number }> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
@@ -545,10 +546,10 @@ export class ReplyAgent {
 
         const anchorTime = allMessages.length > 0 ? allMessages[allMessages.length - 1].time : 0;
         const userPrompt = await this.buildUserPrompt(groupId, history, latest, task);
-        return { userPrompt, anchorTime };
+        return {userPrompt, anchorTime};
     }
 
-    async generateReply(groupId: number, lastTriggerId: number, task: ReplyTask): Promise<FirstTurnResult> {
+    async generateReply (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<FirstTurnResult> {
         this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
         this.taskType = task.type;
 
@@ -571,10 +572,10 @@ export class ReplyAgent {
             label: '第一轮回复',
             description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。否则将先发送immediate_reply，再为你提供深度研究结果以便发送后续消息。',
             parameters: replyFirstTurnSchema,
-            async execute(_toolCallId, params) {
+            async execute (_toolCallId, params) {
                 firstTurnResult = params as ReplyFirstTurnArgs;
                 return {
-                    content: [{ type: 'text', text: `决策: ${params.action}` }],
+                    content: [{type: 'text', text: `决策: ${params.action}`}],
                     details: params,
                     terminate: true
                 };
@@ -610,7 +611,7 @@ export class ReplyAgent {
                         this.logger.warn(
                             `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
                             `${maxToolCallRounds}, forcing termination`);
-                        return { terminate: true };
+                        return {terminate: true};
                     }
                 },
                 prepareNextTurn: async () => {
@@ -621,10 +622,10 @@ export class ReplyAgent {
             this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
             this.agent.reset();
             turnCount = 0;
-            await this.agent.prompt(userPrompt.map((text) => ({
-                role: "user",
+            await this.agent.prompt(userPrompt.map(text => ({
+                role: 'user',
                 content: text,
-                timestamp: Date.now(),
+                timestamp: Date.now()
             })));
             await this.agent.waitForIdle();
 
@@ -636,9 +637,9 @@ export class ReplyAgent {
                     `(attempt ${attempt}/${maxAttempts}): ${lastAssistant.errorMessage}`);
                 if (attempt >= maxAttempts) {
                     if (this.taskType === 'at') {
-                        return { texts: ['@响应失败'] };
+                        return {texts: ['@响应失败']};
                     }
-                    return { texts: [] };
+                    return {texts: []};
                 }
                 continue;
             }
@@ -671,9 +672,9 @@ export class ReplyAgent {
                     `(attempt ${attempt}/${maxAttempts}): ${lastAssistant.errorMessage}`);
                 if (attempt >= maxAttempts) {
                     if (this.taskType === 'at') {
-                        return { texts: ['@响应失败'] };
+                        return {texts: ['@响应失败']};
                     }
-                    return { texts: [] };
+                    return {texts: []};
                 }
                 continue;
             }
@@ -684,9 +685,9 @@ export class ReplyAgent {
                 if (attempt >= maxAttempts) {
                     this.logger.error(`[ReplyAgent] [${groupId}] overflow recovery failed after retry`);
                     if (this.taskType === 'at') {
-                        return { texts: ['@响应失败'] };
+                        return {texts: ['@响应失败']};
                     }
-                    return { texts: [] };
+                    return {texts: []};
                 }
                 const msgs = this.agent.state.messages;
                 if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
@@ -697,9 +698,9 @@ export class ReplyAgent {
                 if (compacted.length === allMessages.length) {
                     this.logger.error(`[ReplyAgent] [${groupId}] compact failed during overflow recovery`);
                     if (this.taskType === 'at') {
-                        return { texts: ['@响应失败'] };
+                        return {texts: ['@响应失败']};
                     }
-                    return { texts: [] };
+                    return {texts: []};
                 }
                 this.logger.info(`[ReplyAgent] [${groupId}] overflow recovery: compact done, retrying...`);
                 continue;
@@ -730,9 +731,9 @@ export class ReplyAgent {
                     `[ReplyAgent] [${groupId}] first turn no toolCall or empty reply after ${maxReminders} reminders, ` +
                     `fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
                 if (this.taskType === 'at') {
-                    return { texts: ['@响应失败'] };
+                    return {texts: ['@响应失败']};
                 }
-                return { texts: [] };
+                return {texts: []};
             }
 
             break;
@@ -740,9 +741,9 @@ export class ReplyAgent {
 
         if (isFirstTurnEmpty(firstTurnResult)) {
             if (this.taskType === 'at') {
-                return { texts: ['@响应失败'] };
+                return {texts: ['@响应失败']};
             }
-            return { texts: [] };
+            return {texts: []};
         }
 
         const firstTurnArgs = firstTurnResult!;
@@ -752,7 +753,7 @@ export class ReplyAgent {
         if (firstTurnArgs.action === 'FINISH') {
             this.logger.info(
                 `[ReplyAgent] [${groupId}] FINISH reply=${firstTurnArgs.immediate_reply.slice(0, 80)}${firstTurnArgs.immediate_reply.length > 80 ? '...' : ''}`);
-            return { texts: [firstTurnArgs.immediate_reply] };
+            return {texts: [firstTurnArgs.immediate_reply]};
         }
 
         this.logger.info(
@@ -762,7 +763,7 @@ export class ReplyAgent {
 
         const secondTurnContext: SecondTurnContext = {
             messages: [...this.agent!.state.messages],
-            firstTurnArgs: { ...firstTurnArgs },
+            firstTurnArgs: {...firstTurnArgs},
             systemPrompt: this.systemPrompt,
             modelEntry: this.modelEntry!,
             mem0Tools: [...this.mem0Tools],
@@ -778,7 +779,7 @@ export class ReplyAgent {
         };
     }
 
-    async generateSecondTurn(groupId: number): Promise<string[]> {
+    async generateSecondTurn (groupId: number): Promise<string[]> {
         if (!this.firstTurnArgs || this.firstTurnArgs.action !== 'DEEP_RESEARCH') {
             return [];
         }
@@ -813,10 +814,10 @@ export class ReplyAgent {
             label: '第二轮回复',
             description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
             parameters: replySecondTurnSchema,
-            async execute(_toolCallId, params) {
+            async execute (_toolCallId, params) {
                 secondTurnResult = params as ReplySecondTurnArgs;
                 return {
-                    content: [{ type: 'text', text: `最终回复已生成` }],
+                    content: [{type: 'text', text: `最终回复已生成`}],
                     details: params,
                     terminate: true
                 };
@@ -908,7 +909,7 @@ export class ReplyAgent {
         return [secondTurnArgs.final_reply];
     }
 
-    private async executeSecondTurnStandalone(groupId: number, context: SecondTurnContext): Promise<string[]> {
+    private async executeSecondTurnStandalone (groupId: number, context: SecondTurnContext): Promise<string[]> {
         const firstTurnArgs = context.firstTurnArgs;
         const researchKeyword = firstTurnArgs.deep_research_keyword || '';
 
@@ -940,10 +941,10 @@ export class ReplyAgent {
                 label: '第二轮回复',
                 description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
                 parameters: replySecondTurnSchema,
-                async execute(_toolCallId, params) {
+                async execute (_toolCallId, params) {
                     secondTurnResult = params as ReplySecondTurnArgs;
                     return {
-                        content: [{ type: 'text', text: `最终回复已生成` }],
+                        content: [{type: 'text', text: `最终回复已生成`}],
                         details: params,
                         terminate: true
                     };
@@ -967,7 +968,7 @@ export class ReplyAgent {
                         this.logger.warn(
                             `[ReplyAgent] [${groupId}] second turn tool call rounds exceeded ` +
                             `${maxToolCallRounds}, forcing termination`);
-                        return { terminate: true };
+                        return {terminate: true};
                     }
                 },
                 prepareNextTurn: async () => {
@@ -1071,13 +1072,13 @@ export class ReplyAgent {
         }
     }
 
-    private dumpPrompt(
+    private dumpPrompt (
         groupId: number, taskType: string, systemPrompt: string, userPrompt: string,
     ): string | undefined {
         if (!this.config.input.debug_dump_prompt) return;
 
         const dir = join('data', 'debug');
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, {recursive: true});
 
         const ts = new Date().toISOString()
             .replace(/:/g, '-');
@@ -1094,7 +1095,7 @@ export class ReplyAgent {
         return prefix;
     }
 
-    private dumpFirstTurnOutput(
+    private dumpFirstTurnOutput (
         groupId: number, prefix: string | undefined, result: ReplyFirstTurnArgs, messages: AgentMessage[],
     ): void {
         if (!prefix) return;
@@ -1113,7 +1114,7 @@ export class ReplyAgent {
             `${prefix}-first-turn.json (${content.length} chars)`);
     }
 
-    private dumpSecondTurnOutput(
+    private dumpSecondTurnOutput (
         groupId: number, prefix: string | undefined, result: ReplySecondTurnArgs, messages: AgentMessage[],
     ): void {
         if (!prefix) return;
@@ -1130,14 +1131,14 @@ export class ReplyAgent {
             `${prefix}-second-turn.json (${content.length} chars)`);
     }
 
-    private buildSystemPrompt(groupId?: number): string {
+    private buildSystemPrompt (_groupId?: number): string {
         const botName = this.config.input.bot_name || '机器人';
         const jailBreak = prompts.jailBreak;
         const parts = [jailBreak, prompts.replyIdentity(botName)];
         return parts.join('\n\n');
     }
 
-    private async buildUserPrompt(
+    private async buildUserPrompt (
         groupId: number, history: StoredMessage[], latest: StoredMessage[], task: ReplyTask,
     ): Promise<string[]> {
         const parts: string[] = [];
@@ -1157,7 +1158,8 @@ export class ReplyAgent {
 
         if (history.length > 0) {
             parts.push(prompts.replyHistoryStart);
-            parts.push(await messagesToString(history, sha => this.descQueue.resolve(sha)));
+            const historyMsgs = await messagesToString(history, sha => this.descQueue.resolve(sha));
+            parts.push(...historyMsgs.split('---\n').map(s => `${s}---\n`));
         }
 
         parts.push(prompts.replyLatestStart);
@@ -1177,7 +1179,7 @@ export class ReplyAgent {
         return parts;
     }
 
-    private async generateMemoryKeywords(
+    private async generateMemoryKeywords (
         latest: StoredMessage[], task: ReplyTask,
     ): Promise<string[]> {
         const assignmentKey = this.config.ai.assignments.memory_keyword;
@@ -1209,7 +1211,7 @@ export class ReplyAgent {
                         timestamp: Date.now()
                     }]
                 },
-                { apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 60000 }
+                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 60000}
             );
 
             clearTimeout(timeoutId);
@@ -1225,7 +1227,7 @@ export class ReplyAgent {
         }
     }
 
-    private async searchMemories(
+    private async searchMemories (
         groupId: number, keywords: string[],
     ): Promise<{ memory: string; score: number }[]> {
         if (keywords.length === 0 || !this.config.ai.mem0) return [];
@@ -1237,11 +1239,11 @@ export class ReplyAgent {
 
             const results = await mem0Client.search(query, {
                 topK: 25,
-                filters: { user_id: userId }
+                filters: {user_id: userId}
             });
 
             const sorted = results.results
-                .map(r => ({ memory: r.memory, score: r.score ?? 0 }))
+                .map(r => ({memory: r.memory, score: r.score ?? 0}))
                 .sort((a, b) => b.score - a.score)
                 .slice(0, 10);
 
@@ -1253,7 +1255,7 @@ export class ReplyAgent {
         }
     }
 
-    private async buildMemoryBlock(
+    private async buildMemoryBlock (
         groupId: number, latest: StoredMessage[], task: ReplyTask,
     ): Promise<string | null> {
         if (latest.length === 0 || !this.config.ai.mem0) return null;
@@ -1271,7 +1273,7 @@ export class ReplyAgent {
             lines.push(prompts.memoryBlockNoResult);
         } else {
             lines.push(prompts.memoryBlockResultPrefix);
-            for (const { memory, score } of memories) {
+            for (const {memory, score} of memories) {
                 const percent = (score * 100).toFixed(1);
                 lines.push(`- ${memory} (相关度: ${percent}%)`);
             }
@@ -1281,7 +1283,7 @@ export class ReplyAgent {
         return lines.join('\n\n');
     }
 
-    private async doDeepResearch(keyword: string): Promise<string> {
+    private async doDeepResearch (keyword: string): Promise<string> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
         if (!modelEntry) throw new Error('Deep research model not configured');
         this.logger.debug(`[ReplyAgent] doDeepResearch model=${modelEntry.model.name} keyword=${keyword}`);
@@ -1294,10 +1296,10 @@ export class ReplyAgent {
         const response = await client.chat.completions.create({
             model: modelEntry.model.id,
             messages: [
-                { role: 'user', content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${keyword}` }
+                {role: 'user', content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${keyword}`}
             ],
             stream: false
-        }, { timeout: 1800000 });
+        }, {timeout: 1800000});
 
         const text = response.choices[0]?.message?.content?.trim() ?? '（研究失败）\n';
         const usage = (response as any).usage;

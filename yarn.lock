@@ -655,25 +655,26 @@
   resolved "https://registry.npmmirror.com/@drizzle-team/brocli/-/brocli-0.10.2.tgz#9757c006a43daaa6f45512e6cf5fabed36fb9da7"
   integrity sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==
 
-"@earendil-works/pi-agent-core@^0.78.0":
-  version "0.78.0"
-  resolved "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.78.0.tgz#231174f22b7d0f1a0c609bf94f3468a4c342dd2c"
-  integrity sha512-xhWd59Qzd8yO88gYQw2S4dEQstJJEiUtxRP01//YzVJ61jCtUASMfcyAmYhgGYR4Onp7GmwEAbBBGOiV6Iwk9g==
+"@earendil-works/pi-agent-core@^0.80.2":
+  version "0.80.2"
+  resolved "https://registry.npmmirror.com/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.2.tgz#b190d99d1bc57506aed3172a4fca8aa21868ad6d"
+  integrity sha512-BF9WPhixIFjT6Kp3Iz3H6ugkU+4AWotM8py96XE5pIK0arJbQKMWbR+dXSWWDEmR5yc/aFQODnuyowOEzMGO7Q==
   dependencies:
-    "@earendil-works/pi-ai" "^0.78.0"
+    "@earendil-works/pi-ai" "^0.80.2"
     ignore "7.0.5"
     typebox "1.1.38"
     yaml "2.9.0"
 
-"@earendil-works/pi-ai@^0.78.0":
-  version "0.78.0"
-  resolved "https://registry.npmmirror.com/@earendil-works/pi-ai/-/pi-ai-0.78.0.tgz#f6befb7c84e1cb04ab66eb0a19f497670d4f2b0f"
-  integrity sha512-q0hUrvT6ngT6cgBX0oIbzfQfmzztgdkZobP8OTL+sCOOBlnG6+1YRt8g7zO9CC/4NdeYEqa7uGqWdQhH0fjCLA==
+"@earendil-works/pi-ai@^0.80.2":
+  version "0.80.2"
+  resolved "https://registry.npmmirror.com/@earendil-works/pi-ai/-/pi-ai-0.80.2.tgz#c2892241cdcbae7a34fccabf4639f746db470ada"
+  integrity sha512-5GNKfdrRJ4uZ5Zd9iudoXggi/BbUcKnD/xfRHtdR+7q4vWqPvfx8auFuaT+ewGBVI8K4wj87eigFQ/iCSuy9RQ==
   dependencies:
     "@anthropic-ai/sdk" "0.91.1"
     "@aws-sdk/client-bedrock-runtime" "3.1048.0"
     "@google/genai" "1.52.0"
-    "@mistralai/mistralai" "2.2.1"
+    "@mistralai/mistralai" "2.2.6"
+    "@opentelemetry/api" "1.9.0"
     "@smithy/node-http-handler" "4.7.3"
     http-proxy-agent "7.0.2"
     https-proxy-agent "7.0.6"
@@ -1637,11 +1638,12 @@
     p-queue "^6.6.2"
     zod "^3.25.76 || ^4"
 
-"@mistralai/mistralai@2.2.1":
-  version "2.2.1"
-  resolved "https://registry.npmjs.org/@mistralai/mistralai/-/mistralai-2.2.1.tgz#5de2a2534a33da26a324a028f03822048c104878"
-  integrity sha512-uKU8CZmL2RzYKmplsU01hii4p3pe4HqJefpWNRWXm1Tcm0Sm4xXfwSLIy4k7ZCPlbETCGcp69E7hZs+WOJ5itQ==
+"@mistralai/mistralai@2.2.6":
+  version "2.2.6"
+  resolved "https://registry.npmmirror.com/@mistralai/mistralai/-/mistralai-2.2.6.tgz#0bc8c02cff80912977a07f27bb886c1bb5a8bd91"
+  integrity sha512-W8pX7zHxjJvMIpw8JMxeJEleapXX0Q9NPszdNzqkM3MIEoIGPObdodujj+WHteXEvGfaP/AMwlNyRfEzSY6dQQ==
   dependencies:
+    "@opentelemetry/semantic-conventions" "^1.40.0"
     ws "^8.18.0"
     zod "^3.25.0 || ^4.0.0"
     zod-to-json-schema "^3.25.0"
@@ -1687,6 +1689,16 @@
   dependencies:
     "@nodelib/fs.scandir" "2.1.5"
     fastq "^1.6.0"
+
+"@opentelemetry/api@1.9.0":
+  version "1.9.0"
+  resolved "https://registry.npmmirror.com/@opentelemetry/api/-/api-1.9.0.tgz#d03eba68273dc0f7509e2a3d5cba21eae10379fe"
+  integrity sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==
+
+"@opentelemetry/semantic-conventions@^1.40.0":
+  version "1.41.1"
+  resolved "https://registry.npmmirror.com/@opentelemetry/semantic-conventions/-/semantic-conventions-1.41.1.tgz#b04e7151c5913a7a006d4f465479da75efb98a7a"
+  integrity sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA==
 
 "@oslojs/encoding@^1.1.0":
   version "1.1.0"
