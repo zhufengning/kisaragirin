@@ -7,6 +7,7 @@
 - [x] 接收、存储消息，并打包成simple-id格式
 - [x] 处理消息中的图片（下载、去重、AI描述）
 - [x] 回复消息（@触发 + 闲时触发，支持深度研究两轮回复）
+- [x] 按群定时任务触发（crontab-like，支持触发前预研究）
 - [x] **记忆预取**：第一轮回复前用专用模型生成关键词并预先检索 mem0 记忆，注入 prompt
 - [x] **Auto Compact**：超过 context window 阈值后自动摘要历史消息为「前情提要」
 - [x] 特殊消息类型：前情提要（compact）、系统消息（system）
@@ -30,6 +31,7 @@ yarn web:build && yarn start
 ## 回复机制
 
 - 支持 `@触发` 与 `闲时触发` 两种模式
+- 支持按群配置定时任务触发。任务触发时会先写入一条系统消息作为最新消息，内容为任务自定义提示词；如果配置了 `deep_research_topic`，会在第一轮回复前自动执行一次深度研究并写入研究结果系统消息
 - 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
 - 第一轮回复前，会使用 `ai.assignments.memory_keyword` 指定的模型从最新消息生成查询关键词，检索 mem0 历史记忆，并将结果（含关键词）通过明显分隔线注入 prompt；WebUI 的 Prompt 预览也会包含此部分
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），可在 Web 面板追踪
@@ -67,6 +69,29 @@ input: {
 - Compact 会将旧消息摘要为一条「前情提要」消息插入数据库
 - Web 面板支持手动触发 compact
 
+## 定时任务配置
+
+在 `config.ts` 的 `input.scheduled_tasks` 中按群号配置：
+
+```typescript
+scheduled_tasks: {
+    123456789: [
+        {
+            name: 'daily-news',
+            cron: '0 9 * * *',
+            timezone: 'Asia/Shanghai',
+            prompt: '请结合最近群聊，发起一个今日安全新闻简评。',
+            deep_research_topic: '今日网络安全重要新闻',
+        },
+    ],
+}
+```
+
+- `cron` 使用 Croner，支持 5/6/7 字段 cron 表达式、`@daily` 等 nickname 和时区
+- `prompt` 会作为 `special_type='system'` 的消息插入该群最新消息
+- `deep_research_topic` 可选；配置后会在第一轮回复前预先执行深度研究，研究开始/结束同样写入系统消息
+- 只有 `group_whitelist` 中的群会注册定时任务
+
 ## 调试配置
 
 在 `config.ts` 的 `input` 中配置：
@@ -89,4 +114,5 @@ input: {
 
 - **Bot Harness**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
 - **LLM**: `@earendil-works/pi-agent-core` (Agent tool loop) + mem0ai
+- **Scheduling**: Croner
 - **Web UI前后端**: Astro 6.4 SSR (Node middleware模式)

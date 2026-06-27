@@ -7,6 +7,7 @@ import {createDb, schema, runMigrations} from './db';
 import {createWebPanel} from './web/server';
 import {DescQueue} from './util/desc-queue';
 import {GroupReplyManager} from './util/reply-manager';
+import {ScheduledTaskManager} from './util/scheduled-tasks';
 import {Logger, configureLogger} from '@lib/util/logger';
 import {Memory} from 'mem0ai/oss';
 
@@ -42,6 +43,7 @@ globalThis.__replyManagers__ = replyManagers;
 let botSelfId = 0;
 let botName = '';
 let botInfoReady = false;
+let scheduledTaskManager: ScheduledTaskManager | null = null;
 
 bot.on('meta_event.lifecycle.connect', async () => {
     logger.debug('[Bot] meta_event.lifecycle.connect received');
@@ -57,6 +59,11 @@ bot.on('meta_event.lifecycle.connect', async () => {
                 replyManagers.set(groupId, new GroupReplyManager(groupId, bot, db, queue, config, botSelfId, botName));
                 logger.debug(`[Bot] pre-initialized ReplyManager for group ${groupId}`);
             }
+        }
+
+        if (!scheduledTaskManager) {
+            scheduledTaskManager = new ScheduledTaskManager(config, getReplyManager);
+            scheduledTaskManager.start();
         }
     } catch (e) {
         logger.error('[Bot] Failed to get login info:', e);

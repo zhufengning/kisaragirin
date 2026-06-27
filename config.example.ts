@@ -32,6 +32,18 @@ export const config: AppConfig = {
         group_custom_prompts: {
             // 123456789: '本群是技术讨论群，请以技术讨论为主，减少闲聊。\n当群友讨论CTF题目时，可以使用深度研究帮助搜索writeup。',
         },
+        /** 按群号配置 crontab-like 定时任务，cron 支持 5/6/7 字段和 timezone */
+        scheduled_tasks: {
+            // 123456789: [
+            //     {
+            //         name: 'daily-news',
+            //         cron: '0 9 * * *',
+            //         timezone: 'Asia/Shanghai',
+            //         prompt: '请结合最近群聊，发起一个今日安全新闻简评。',
+            //         deep_research_topic: '今日网络安全重要新闻',
+            //     },
+            // ],
+        },
         /** 是否将每次回复的 prompt 与模型输出保存到 data/debug/，默认 false */
         debug_dump_prompt: false,
     },

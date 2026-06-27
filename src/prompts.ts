@@ -38,6 +38,8 @@ export const prompts = {
 
 - 深度研究的作用？是否需要调用深度研究？是否已经进行过深度研究？是否有未知的url必须通过深度研究查看？
 
+- 是否有仍未结束的深度研究？最新消息中群友是否重复提出已在深度研究的问题？深度研究耗时太长如何安抚群友？
+
 - 你将要回复什么内容？这些内容是否符合内容规则？
 
 - 最新消息中是否有带\`(me)\`的由你自身发送的消息？你想回复的内容是否与你自身的历史消息重复？
@@ -57,6 +59,7 @@ export const prompts = {
 `,
     replyReminderFirstTurn: '请使用 reply_first_turn 工具进行回复决策。',
     replyReminderSecondTurn: '请使用 reply_second_turn 工具给出最终回复。',
+    replyScheduledTaskNotice: '注意：以上最新消息中包含定时任务触发的系统消息，请按该系统消息中的任务提示完成本次回复。',
     deepResearchSystem: `你是一个研究助手。请尽快对用户给出的关键词或主题进行研究，提供详尽、准确、有洞察力的分析报告。报告应结构化、逻辑清晰、内容充实。请保持高效，已有结果的部分不必继续深入，不要在无关紧要的地方浪费时间。字数要求1000字以内。输出报告时不要添加分割线（\`---\`)
 
 ## 工作路径
@@ -69,7 +72,7 @@ export const prompts = {
 
 ## 网页搜索
 
-网页搜索必须使用open-websearch skill。
+网页搜索必须使用open-websearch skill。如果你找不到，open-websearch在~/.local/bin/open-websearch。绝对禁止使用web_search工具，用不了的，别做无用功了。
 
 以下是 open-websearch 支持的所有搜索引擎的测试结果：
 
@@ -99,7 +102,12 @@ export const prompts = {
 - 如果对话中有明确的待办事项或约定，单独列出`,
     memoryKeywordSystem: '你是一个关键词提取助手。请根据给出的QQ群最新消息，生成3到5个用于搜索历史记忆的查询关键词。所有关键词将合并为一次语义搜索（用空格连接），请确保各关键词聚焦不同方面、语义互补、避免重复。关键词应聚焦于：用户身份、偏好、习惯、约定、过去提到的重要事实或人名。只输出一个JSON数组字符串，数组元素为查询字符串，不要输出任何解释、markdown或代码块。注意，最新消息中可能混入带`(me)`的消息，请忽略这些消息。',
     memoryKeywordUser (latestMessages: string, taskType: string) {
-        return `以下是最新消息（消息类型：${taskType === 'at' ? '有人@机器人' : '闲时触发'}），请生成用于搜索历史记忆的查询关键词：\n\n${latestMessages}`;
+        const taskTypeLabel = taskType === 'at' ?
+            '有人@机器人' :
+            taskType === 'scheduled' ?
+                '定时任务触发' :
+                '闲时触发';
+        return `以下是最新消息（消息类型：${taskTypeLabel}），请生成用于搜索历史记忆的查询关键词：\n\n${latestMessages}`;
     },
     memoryBlockHeader: '===== 相关记忆 =====\n系统根据最新消息预生成以下查询关键词，并检索到相关历史记忆。以下记忆仅供参考，请结合上下文判断是否使用。',
     memoryBlockKeywordsPrefix: '查询关键词：',

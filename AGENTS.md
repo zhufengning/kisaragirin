@@ -7,6 +7,7 @@
 - 消息与图片浏览
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
+- 按群定时任务触发（crontab-like，支持触发前预研究）
 - 两轮回复（支持深度研究agent）
 - 记忆预取（第一轮回复前生成关键词并预检索 mem0，注入 prompt）
 - Auto Compact（自动摘要历史消息，优化缓存命中率）
@@ -21,6 +22,7 @@ yarn
 ## 约束
 
 - 遵循指令，而不是越俎代庖。对非代码文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
+- 优先使用成熟的库，避免造轮子。允许重构来保证代码始终为最优结构。
 - `src/prompts.ts` 统一管理所有 LLM prompt，禁止在业务代码中硬编码 prompt
 - 打日志必须用`lib/utl/logger.ts`
 - `lib/` 是上游 SDK，不写业务逻辑
@@ -55,6 +57,7 @@ src/
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列）
     reply-agent.ts      -- 回复Agent（两轮回复 + 深度研究调用，基于 pi-agent-core Agent 的自动 tool loop）
+    scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
     mem0-tool.ts        -- mem0 记忆工具（search_memory / add_memory），注册为 AgentTool 供 reply-agent 调用
   prompts.ts         -- 所有 LLM prompt 的统一入口
   web/
@@ -86,6 +89,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
+- `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - mem0 配置通过 `globalThis.__mem0_config__` 暴露给 Astro
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
@@ -117,6 +121,14 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
 - 除深度研究外，严禁在任何地方使用openai sdk
 
+### 定时任务触发机制
+
+- `input.scheduled_tasks` 按群号配置任务数组，群号必须同时存在于 `group_whitelist`
+- 每个任务使用 Croner 注册 crontab-like 表达式，支持 5/6/7 字段、nickname、timezone，并启用 `protect` 防止同一任务重入
+- 任务触发时由 `GroupReplyManager.triggerScheduledReply` 插入一条 `special_type='system'` 的系统消息，内容为任务自定义 `prompt`，再以 `type='scheduled'` 入单群 FIFO 队列
+- 若任务配置 `deep_research_topic`，队列执行时会在第一轮回复前调用 `ReplyAgent.runPreReplyResearch`，将预研究开始/结束写入系统消息；随后继续走普通第一轮回复和可能的后续两轮回复流程
+- 定时任务不会自动添加 reply segment，失败回退行为与闲时触发一致，静默失败
+
 ### Auto Compact 机制
 
 - **触发条件**：`buildPrompt` / `triggerCompact` 获取全部消息后，计算总 token 数。优先使用上一次模型返回的真实 `usage`（`input + cacheRead + cacheWrite`）作为锚点，对锚点之后的新消息再用 chars/4 启发式增量估算；没有可用锚点时回退到全量估算。若超过 `(contextWindow - reserveTokens) * threshold` 则触发
@@ -140,6 +152,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.auto_compact_keep_recent`：compact 后保留的最近 token 数，默认 20000
 - `input.auto_compact_reserve_tokens`：为 LLM 响应预留的 token 数，默认 8000
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
+- `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.memory_keyword`：预生成记忆查询关键词的模型 assignment，示例值 `'ocg-minimax-m2.5'`
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、第一轮/第二轮模型输出保存到 `data/debug/`，默认 `false`
@@ -168,6 +181,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
 - `src/util/reply-manager.ts` — 群回复触发管理与队列
 - `src/util/reply-agent.ts` — 回复Agent（基于 `Agent` 类的自动 tool loop，支持 mem0 记忆工具多轮调用）
+- `src/util/scheduled-tasks.ts` — Croner 定时任务调度
 - `src/util/mem0-tool.ts` — mem0 记忆工具（`search_memory` / `add_memory`），注册为 `AgentTool`
 - `src/prompts.ts` — 所有 LLM prompt 的统一入口
 - `src/web/server.ts` — Web 面板 Node adapter

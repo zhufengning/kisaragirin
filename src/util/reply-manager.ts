@@ -9,10 +9,18 @@ import {ReplyAgent} from './reply-agent';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
-    type: 'at' | 'silence';
+    type: 'at' | 'silence' | 'scheduled';
     triggerDbId: number;
     triggerMessageId: number;
     triggerMessage: StoredMessage;
+    scheduledTaskName?: string;
+    preResearchTopic?: string;
+}
+
+export interface ScheduledReplyTask {
+    name: string;
+    prompt: string;
+    deepResearchTopic?: string;
 }
 
 export class GroupReplyManager {
@@ -103,6 +111,57 @@ export class GroupReplyManager {
     onBotMessage (_rowId: number): void {
         this.clearSilenceTimeout();
         // bot 消息不启动沉默定时器
+    }
+
+    async triggerScheduledReply (task: ScheduledReplyTask): Promise<void> {
+        const prompt = task.prompt.trim();
+        if (!prompt) {
+            this.logger.warn(
+                `[ReplyManager] [${this.groupId}] skip scheduled task "${task.name}": empty prompt`);
+            return;
+        }
+
+        this.logger.info(
+            `[ReplyManager] [${this.groupId}] scheduled task "${task.name}" triggered`);
+
+        const now = Math.floor(Date.now() / 1000);
+        const segments: StoredSegment[] = [{type: 'system', text: prompt}];
+        const rows = await this.db.insert(schema.messages).values({
+            messageId: 0,
+            groupId: this.groupId,
+            userId: 0,
+            time: now,
+            senderName: '系统',
+            senderCard: null,
+            isBot: true,
+            isAtBot: false,
+            specialType: 'system',
+            segments,
+            rawMessage: prompt
+        })
+            .returning({id: schema.messages.id});
+
+        const rowId = rows[0].id;
+        const stored: StoredMessage = {
+            id: rowId,
+            time: now,
+            messageId: 0,
+            senderId: 0,
+            senderName: '系统',
+            isBot: true,
+            isAtBot: false,
+            segments
+        };
+
+        this.onBotMessage(rowId);
+        this.enqueueTask({
+            type: 'scheduled',
+            triggerDbId: rowId,
+            triggerMessageId: 0,
+            triggerMessage: stored,
+            scheduledTaskName: task.name,
+            preResearchTopic: task.deepResearchTopic
+        });
     }
 
     private startAtMergeWindow (): void {
@@ -239,6 +298,15 @@ export class GroupReplyManager {
     }
 
     private async executeTask (task: ReplyTask): Promise<void> {
+        const agent = this.agent;
+
+        if (task.type === 'scheduled' && task.preResearchTopic) {
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] scheduled task "${task.scheduledTaskName ?? ''}" ` +
+                `pre-research: ${task.preResearchTopic}`);
+            await agent.runPreReplyResearch(this.groupId, task.preResearchTopic);
+        }
+
         // 获取当前最新消息的 id（用于更新 lastTriggerId）
         const latestRows = await this.db
             .select({id: schema.messages.id})
@@ -247,8 +315,6 @@ export class GroupReplyManager {
             .orderBy(desc(schema.messages.id))
             .limit(1);
         const currentLatestId = latestRows[0]?.id ?? 0;
-
-        const agent = this.agent;
 
         // 获取当前群里的群名片
         let botCard: string | null = null;

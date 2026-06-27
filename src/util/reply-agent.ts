@@ -52,7 +52,7 @@ interface SecondTurnContext {
     systemPrompt: string;
     modelEntry: ModelEntry;
     mem0Tools: AgentTool[];
-    taskType: 'at' | 'silence';
+    taskType: ReplyTask['type'];
     debugPrefix?: string;
 }
 
@@ -206,7 +206,7 @@ export class ReplyAgent {
     private systemPrompt: string = '';
     private modelEntry: ModelEntry | null = null;
     private mem0Tools: AgentTool[] = [];
-    private taskType: 'at' | 'silence' = 'silence';
+    private taskType: ReplyTask['type'] = 'silence';
     private agent: Agent | null = null;
     private debugPrefix?: string;
 
@@ -912,7 +912,156 @@ export class ReplyAgent {
     private async executeSecondTurnStandalone (groupId: number, context: SecondTurnContext): Promise<string[]> {
         const firstTurnArgs = context.firstTurnArgs;
         const researchKeyword = firstTurnArgs.deep_research_keyword || '';
+        const researchResult = await this.doDeepResearchWithSystemMessages(
+            groupId,
+            researchKeyword,
+            '（深度研究失败，请根据你已有的知识直接回复。）',
+            '（深度研究未能获取结果，请根据你已有的知识直接回复。）'
+        );
 
+        let secondTurnResult: ReplySecondTurnArgs | null = null;
+
+        const replySecondTurnTool: AgentTool<typeof replySecondTurnSchema> = {
+            name: 'reply_second_turn',
+            label: '第二轮回复',
+            description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
+            parameters: replySecondTurnSchema,
+            async execute (_toolCallId, params) {
+                secondTurnResult = params as ReplySecondTurnArgs;
+                return {
+                    content: [{type: 'text', text: `最终回复已生成`}],
+                    details: params,
+                    terminate: true
+                };
+            }
+        };
+
+        const maxToolCallRounds = this.config.input.max_tool_call_rounds;
+        let turnCount = 0;
+
+        const agent = new Agent({
+            sessionId: `group-${groupId}`,
+            initialState: {
+                systemPrompt: context.systemPrompt,
+                model: context.modelEntry.model,
+                tools: [replySecondTurnTool, ...context.mem0Tools],
+                thinkingLevel: 'high'
+            },
+            getApiKey: () => context.modelEntry.apiKey,
+            afterToolCall: async () => {
+                if (turnCount >= maxToolCallRounds) {
+                    this.logger.warn(
+                        `[ReplyAgent] [${groupId}] second turn tool call rounds exceeded ` +
+                        `${maxToolCallRounds}, forcing termination`);
+                    return {terminate: true};
+                }
+            },
+            prepareNextTurn: async () => {
+                turnCount++;
+            }
+        });
+
+        agent.state.messages = [...context.messages];
+
+        const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
+
+        this.logger.debug(`[ReplyAgent] [${groupId}] second turn standalone prompt...`);
+        secondTurnResult = null;
+        await agent.prompt(secondUserPrompt);
+        await agent.waitForIdle();
+
+        let lastAssistantStandalone = getLastAssistant(agent);
+
+        if (lastAssistantStandalone?.stopReason === 'error') {
+            this.logger.error(
+                `[ReplyAgent] [${groupId}] second turn standalone API error: ${lastAssistantStandalone.errorMessage}`);
+            if (context.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
+        let reminderCount = 0;
+        const maxReminders = 2;
+
+        // eslint-disable-next-line no-unmodified-loop-condition
+        while (isSecondTurnEmpty(secondTurnResult) && reminderCount < maxReminders) {
+            reminderCount++;
+            this.logger.info(
+                `[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply, ` +
+                `sending reminder ${reminderCount}/${maxReminders}...`);
+            await agent.prompt(prompts.replyReminderSecondTurn);
+            await agent.waitForIdle();
+
+            lastAssistantStandalone = getLastAssistant(agent);
+            if (lastAssistantStandalone?.stopReason === 'error') {
+                this.logger.error(
+                    `[ReplyAgent] [${groupId}] second turn standalone reminder API error: ${lastAssistantStandalone.errorMessage}`);
+                break;
+            }
+        }
+
+        lastAssistantStandalone = getLastAssistant(agent);
+        if (lastAssistantStandalone?.stopReason === 'error') {
+            this.logger.error(
+                `[ReplyAgent] [${groupId}] second turn standalone API error after reminders: ${lastAssistantStandalone.errorMessage}`);
+            if (context.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
+        const secondTurnStats = calculateCacheStats(agent.state.messages);
+        this.logger.info(
+            `[ReplyAgent] [${groupId}] second turn standalone cache stats: ` +
+            `hitRate=${secondTurnStats.cacheHitRate}%, ` +
+            `promptTokens=${secondTurnStats.promptTokens}, ` +
+            `outputTokens=${secondTurnStats.output}, ` +
+            `cacheRead=${secondTurnStats.cacheRead}, ` +
+            `cacheWrite=${secondTurnStats.cacheWrite}, ` +
+            `totalTokens=${secondTurnStats.totalTokens}`);
+
+        const standaloneContextWindow = context.modelEntry.model.contextWindow ?? 128000;
+        if (lastAssistantStandalone && isContextOverflow(lastAssistantStandalone, standaloneContextWindow)) {
+            this.logger.error(`[ReplyAgent] [${groupId}] second turn standalone context overflow detected`);
+            if (context.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
+        if (isSecondTurnEmpty(secondTurnResult)) {
+            const text = lastAssistantStandalone ? extractText(lastAssistantStandalone) : '';
+            this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+            if (context.taskType === 'at') {
+                return ['@深度研究失败'];
+            }
+            return [];
+        }
+
+        const secondTurnArgs = secondTurnResult!;
+        this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
+        this.dumpSecondTurnOutput(groupId, context.debugPrefix, secondTurnArgs, agent.state.messages);
+        return [secondTurnArgs.final_reply];
+    }
+
+    async runPreReplyResearch (groupId: number, topic: string): Promise<void> {
+        const researchTopic = topic.trim();
+        if (!researchTopic) return;
+        await this.doDeepResearchWithSystemMessages(
+            groupId,
+            researchTopic,
+            '（定时任务预研究失败，请根据已有信息完成本次任务。）',
+            '（定时任务预研究未能获取结果，请根据已有信息完成本次任务。）'
+        );
+    }
+
+    private async doDeepResearchWithSystemMessages (
+        groupId: number,
+        researchKeyword: string,
+        failureFallback: string,
+        emptyFallback: string,
+    ): Promise<string> {
         const startTime = Math.floor(Date.now() / 1000);
         await this.insertSystemMessage(groupId, `开始深度研究：${researchKeyword}`, startTime);
 
@@ -920,144 +1069,17 @@ export class ReplyAgent {
         let researchError: string | undefined;
 
         try {
-            try {
-                researchResult = await this.doDeepResearch(researchKeyword);
-                this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
-                if (!researchResult) {
-                    this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
-                    researchError = '深度研究未能获取结果';
-                    researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
-                }
-            } catch (err) {
-                this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
-                researchError = err instanceof Error ? err.message : String(err);
-                researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
+            researchResult = await this.doDeepResearch(researchKeyword);
+            this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
+            if (!researchResult) {
+                this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
+                researchError = '深度研究未能获取结果';
+                researchResult = emptyFallback;
             }
-
-            let secondTurnResult: ReplySecondTurnArgs | null = null;
-
-            const replySecondTurnTool: AgentTool<typeof replySecondTurnSchema> = {
-                name: 'reply_second_turn',
-                label: '第二轮回复',
-                description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
-                parameters: replySecondTurnSchema,
-                async execute (_toolCallId, params) {
-                    secondTurnResult = params as ReplySecondTurnArgs;
-                    return {
-                        content: [{type: 'text', text: `最终回复已生成`}],
-                        details: params,
-                        terminate: true
-                    };
-                }
-            };
-
-            const maxToolCallRounds = this.config.input.max_tool_call_rounds;
-            let turnCount = 0;
-
-            const agent = new Agent({
-                sessionId: `group-${groupId}`,
-                initialState: {
-                    systemPrompt: context.systemPrompt,
-                    model: context.modelEntry.model,
-                    tools: [replySecondTurnTool, ...context.mem0Tools],
-                    thinkingLevel: 'high'
-                },
-                getApiKey: () => context.modelEntry.apiKey,
-                afterToolCall: async () => {
-                    if (turnCount >= maxToolCallRounds) {
-                        this.logger.warn(
-                            `[ReplyAgent] [${groupId}] second turn tool call rounds exceeded ` +
-                            `${maxToolCallRounds}, forcing termination`);
-                        return {terminate: true};
-                    }
-                },
-                prepareNextTurn: async () => {
-                    turnCount++;
-                }
-            });
-
-            agent.state.messages = [...context.messages];
-
-            const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
-
-            this.logger.debug(`[ReplyAgent] [${groupId}] second turn standalone prompt...`);
-            secondTurnResult = null;
-            await agent.prompt(secondUserPrompt);
-            await agent.waitForIdle();
-
-            let lastAssistantStandalone = getLastAssistant(agent);
-
-            if (lastAssistantStandalone?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] second turn standalone API error: ${lastAssistantStandalone.errorMessage}`);
-                if (context.taskType === 'at') {
-                    return ['@深度研究失败'];
-                }
-                return [];
-            }
-
-            let reminderCount = 0;
-            const maxReminders = 2;
-
-            // eslint-disable-next-line no-unmodified-loop-condition
-            while (isSecondTurnEmpty(secondTurnResult) && reminderCount < maxReminders) {
-                reminderCount++;
-                this.logger.info(
-                    `[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply, ` +
-                    `sending reminder ${reminderCount}/${maxReminders}...`);
-                await agent.prompt(prompts.replyReminderSecondTurn);
-                await agent.waitForIdle();
-
-                lastAssistantStandalone = getLastAssistant(agent);
-                if (lastAssistantStandalone?.stopReason === 'error') {
-                    this.logger.error(
-                        `[ReplyAgent] [${groupId}] second turn standalone reminder API error: ${lastAssistantStandalone.errorMessage}`);
-                    break;
-                }
-            }
-
-            lastAssistantStandalone = getLastAssistant(agent);
-            if (lastAssistantStandalone?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] second turn standalone API error after reminders: ${lastAssistantStandalone.errorMessage}`);
-                if (context.taskType === 'at') {
-                    return ['@深度研究失败'];
-                }
-                return [];
-            }
-
-            const secondTurnStats = calculateCacheStats(agent.state.messages);
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] second turn standalone cache stats: ` +
-                `hitRate=${secondTurnStats.cacheHitRate}%, ` +
-                `promptTokens=${secondTurnStats.promptTokens}, ` +
-                `outputTokens=${secondTurnStats.output}, ` +
-                `cacheRead=${secondTurnStats.cacheRead}, ` +
-                `cacheWrite=${secondTurnStats.cacheWrite}, ` +
-                `totalTokens=${secondTurnStats.totalTokens}`);
-
-            const standaloneContextWindow = context.modelEntry.model.contextWindow ?? 128000;
-            if (lastAssistantStandalone && isContextOverflow(lastAssistantStandalone, standaloneContextWindow)) {
-                this.logger.error(`[ReplyAgent] [${groupId}] second turn standalone context overflow detected`);
-                if (context.taskType === 'at') {
-                    return ['@深度研究失败'];
-                }
-                return [];
-            }
-
-            if (isSecondTurnEmpty(secondTurnResult)) {
-                const text = lastAssistantStandalone ? extractText(lastAssistantStandalone) : '';
-                this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-                if (context.taskType === 'at') {
-                    return ['@深度研究失败'];
-                }
-                return [];
-            }
-
-            const secondTurnArgs = secondTurnResult!;
-            this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
-            this.dumpSecondTurnOutput(groupId, context.debugPrefix, secondTurnArgs, agent.state.messages);
-            return [secondTurnArgs.final_reply];
+        } catch (err) {
+            this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
+            researchError = err instanceof Error ? err.message : String(err);
+            researchResult = failureFallback;
         } finally {
             const endTime = Math.floor(Date.now() / 1000);
             let endMsg: string;
@@ -1070,6 +1092,8 @@ export class ReplyAgent {
             }
             await this.insertSystemMessage(groupId, endMsg, endTime);
         }
+
+        return researchResult;
     }
 
     private dumpPrompt (
@@ -1172,6 +1196,8 @@ export class ReplyAgent {
 
         if (task.type === 'at') {
             parts.push(`注意：以上最新消息中，有人@了你`);
+        } else if (task.type === 'scheduled') {
+            parts.push(prompts.replyScheduledTaskNotice);
         }
 
         parts.push(prompts.replyStart);

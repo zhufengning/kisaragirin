@@ -27,7 +27,17 @@ export class InputConfig {
     auto_compact_keep_recent = 20000;
     auto_compact_reserve_tokens = 8000;
     group_custom_prompts?: Record<number, string>;
+    scheduled_tasks?: Record<number, ScheduledGroupTask[]>;
     debug_dump_prompt = false;
+}
+
+export interface ScheduledGroupTask {
+    name?: string;
+    cron: string;
+    timezone?: string;
+    prompt: string;
+    deep_research_topic?: string;
+    enabled?: boolean;
 }
 
 export interface WebPanelConfig {
