@@ -1,7 +1,6 @@
 import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
-import {Type, type AssistantMessage, type Usage} from '@earendil-works/pi-ai';
+import {Type, type AssistantMessage, type Context, type Usage} from '@earendil-works/pi-ai';
 import {complete} from '@earendil-works/pi-ai/compat';
-import OpenAI from 'openai';
 import {Memory} from 'mem0ai/oss';
 import {schema, type Db, kvGet, kvSet} from '~/db';
 import type {AppConfig, ModelEntry} from '~/config';
@@ -62,6 +61,16 @@ function extractText (response: AssistantMessage): string {
         .map(c => c.text)
         .join('')
         .trim();
+}
+
+function stringifyMessageContent (content: Context['messages'][number]['content']): string {
+    if (typeof content === 'string') return content;
+    return content
+        .map(block => {
+            if (block.type === 'text') return block.text;
+            return JSON.stringify(block);
+        })
+        .join('\n');
 }
 
 function parseKeywordJson (text: string): string[] {
@@ -795,7 +804,11 @@ export class ReplyAgent {
         this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH keyword=${firstTurnArgs.deep_research_keyword || '(empty)'}`);
         let researchResult: string;
         try {
-            researchResult = await this.doDeepResearch(firstTurnArgs.deep_research_keyword || '');
+            researchResult = await this.doDeepResearch(
+                firstTurnArgs.deep_research_keyword || '',
+                groupId,
+                this.debugPrefix
+            );
             this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
             if (!researchResult) {
                 this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
@@ -916,7 +929,8 @@ export class ReplyAgent {
             groupId,
             researchKeyword,
             '（深度研究失败，请根据你已有的知识直接回复。）',
-            '（深度研究未能获取结果，请根据你已有的知识直接回复。）'
+            '（深度研究未能获取结果，请根据你已有的知识直接回复。）',
+            context.debugPrefix
         );
 
         let secondTurnResult: ReplySecondTurnArgs | null = null;
@@ -1061,6 +1075,7 @@ export class ReplyAgent {
         researchKeyword: string,
         failureFallback: string,
         emptyFallback: string,
+        debugPrefix?: string,
     ): Promise<string> {
         const startTime = Math.floor(Date.now() / 1000);
         await this.insertSystemMessage(groupId, `开始深度研究：${researchKeyword}`, startTime);
@@ -1069,7 +1084,7 @@ export class ReplyAgent {
         let researchError: string | undefined;
 
         try {
-            researchResult = await this.doDeepResearch(researchKeyword);
+            researchResult = await this.doDeepResearch(researchKeyword, groupId, debugPrefix);
             this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
             if (!researchResult) {
                 this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
@@ -1153,6 +1168,93 @@ export class ReplyAgent {
         this.logger.debug(
             `[ReplyAgent] [${groupId}] second turn dumped to ` +
             `${prefix}-second-turn.json (${content.length} chars)`);
+    }
+
+    private createDebugPrefix (groupId: number, label: string): string | undefined {
+        if (!this.config.input.debug_dump_prompt) return;
+
+        const ts = new Date().toISOString()
+            .replace(/:/g, '-');
+        return `${groupId}-${label}-${ts}`;
+    }
+
+    private dumpDeepResearchPrompt (
+        groupId: number | undefined, prefix: string | undefined, context: Context,
+    ): string | undefined {
+        if (!this.config.input.debug_dump_prompt) return;
+
+        const debugPrefix = prefix || this.createDebugPrefix(groupId ?? 0, 'deep-research');
+        if (!debugPrefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+
+        if (context.systemPrompt) {
+            writeFileSync(join(dir, `${debugPrefix}-deep-research-system.txt`), context.systemPrompt, 'utf-8');
+        }
+        writeFileSync(
+            join(dir, `${debugPrefix}-deep-research-user.txt`),
+            context.messages.map(msg => stringifyMessageContent(msg.content)).join('\n\n'),
+            'utf-8'
+        );
+        writeFileSync(
+            join(dir, `${debugPrefix}-deep-research-prompt.json`),
+            JSON.stringify(context, null, 2),
+            'utf-8'
+        );
+
+        this.logger.debug(
+            `[ReplyAgent] [${groupId ?? 0}] deep research prompt dumped to ` +
+            `${debugPrefix}-deep-research-*`);
+
+        return debugPrefix;
+    }
+
+    private dumpDeepResearchPayload (
+        groupId: number | undefined, prefix: string | undefined, payload: unknown,
+    ): void {
+        if (!this.config.input.debug_dump_prompt || !prefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+
+        const content = JSON.stringify(payload, null, 2);
+        writeFileSync(join(dir, `${prefix}-deep-research-payload.json`), content, 'utf-8');
+
+        this.logger.debug(
+            `[ReplyAgent] [${groupId ?? 0}] deep research provider payload dumped to ` +
+            `${prefix}-deep-research-payload.json (${content.length} chars)`);
+    }
+
+    private dumpDeepResearchConversation (
+        groupId: number | undefined,
+        prefix: string | undefined,
+        context: Context,
+        response?: AssistantMessage,
+        error?: unknown,
+    ): void {
+        if (!this.config.input.debug_dump_prompt || !prefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+
+        const messages = response ? [...context.messages, response] : context.messages;
+        const content = JSON.stringify({
+            systemPrompt: context.systemPrompt,
+            messages,
+            response,
+            error: error instanceof Error ? {
+                name: error.name,
+                message: error.message,
+                stack: error.stack
+            } : error
+        }, null, 2);
+
+        writeFileSync(join(dir, `${prefix}-deep-research-conversation.json`), content, 'utf-8');
+
+        this.logger.debug(
+            `[ReplyAgent] [${groupId ?? 0}] deep research conversation dumped to ` +
+            `${prefix}-deep-research-conversation.json (${content.length} chars)`);
     }
 
     private buildSystemPrompt (_groupId?: number): string {
@@ -1309,39 +1411,62 @@ export class ReplyAgent {
         return lines.join('\n\n');
     }
 
-    private async doDeepResearch (keyword: string): Promise<string> {
+    private async doDeepResearch (
+        keyword: string, groupId?: number, debugPrefix?: string,
+    ): Promise<string> {
         const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
         if (!modelEntry) throw new Error('Deep research model not configured');
         this.logger.debug(`[ReplyAgent] doDeepResearch model=${modelEntry.model.name} keyword=${keyword}`);
 
-        const client = new OpenAI({
-            apiKey: modelEntry.apiKey,
-            baseURL: modelEntry.model.baseUrl
-        });
+        const context: Context = {
+            messages: [{
+                role: 'user',
+                content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${keyword}`,
+                timestamp: Date.now()
+            }]
+        };
+        const dumpPrefix = this.dumpDeepResearchPrompt(groupId, debugPrefix, context);
 
-        const response = await client.chat.completions.create({
-            model: modelEntry.model.id,
-            messages: [
-                {role: 'user', content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${keyword}`}
-            ],
-            stream: false
-        }, {timeout: 1800000});
+        let response: AssistantMessage | undefined;
+        try {
+            response = await complete(
+                modelEntry.model,
+                context,
+                {
+                    apiKey: modelEntry.apiKey,
+                    timeoutMs: 1800000,
+                    onPayload: payload => {
+                        this.dumpDeepResearchPayload(groupId, dumpPrefix, payload);
+                    }
+                }
+            );
+            this.dumpDeepResearchConversation(groupId, dumpPrefix, context, response);
 
-        const text = response.choices[0]?.message?.content?.trim() ?? '（研究失败）\n';
-        const usage = (response as any).usage;
-        if (usage) {
-            const promptTokens = (usage.prompt_tokens || 0) + (usage.prompt_cache_hit_tokens || 0);
+            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+                throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
+            }
+
+            const text = extractText(response);
+            const usage = response.usage;
+            const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
             const cacheHitRate = promptTokens > 0 ?
-                ((usage.prompt_cache_hit_tokens || 0) / promptTokens * 100).toFixed(2) :
+                (usage.cacheRead / promptTokens * 100).toFixed(2) :
                 '0.00';
             this.logger.info(
                 `[ReplyAgent] doDeepResearch cache stats: ` +
                 `hitRate=${cacheHitRate}%, promptTokens=${promptTokens}, ` +
-                `outputTokens=${usage.completion_tokens || 0}, ` +
-                `cacheRead=${usage.prompt_cache_hit_tokens || 0}, ` +
-                `totalTokens=${usage.total_tokens || 0}`);
+                `outputTokens=${usage.output}, ` +
+                `cacheRead=${usage.cacheRead}, ` +
+                `cacheWrite=${usage.cacheWrite}, ` +
+                `totalTokens=${usage.totalTokens}`);
+
+            this.logger.debug(`[ReplyAgent] doDeepResearch done text length=${text.length}`);
+            return text;
+        } catch (err) {
+            if (!response) {
+                this.dumpDeepResearchConversation(groupId, dumpPrefix, context, void 0, err);
+            }
+            throw err;
         }
-        this.logger.debug(`[ReplyAgent] doDeepResearch done text length=${text.length}`);
-        return text;
     }
 }

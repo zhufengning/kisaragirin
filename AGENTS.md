@@ -116,10 +116,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；第一轮失败会进入 `maxAttempts` 重试，第二轮/独立第二轮失败直接回退
 - **失败回退**：所有尝试（初始 prompt + 最多 2 次 reminder）均失败后，@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
-- 深度研究使用 `openai` SDK 的非流式 `chat.completions.create` 调用 Hermes，不经过 Agent loop
+- 深度研究使用 `@earendil-works/pi-ai` 的 `complete()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
 - 深度研究前后的状态会以 `special_type='system'` 的系统消息写入数据库（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），便于在 Web 面板追踪研究过程
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
-- 除深度研究外，严禁在任何地方使用openai sdk
 
 ### 定时任务触发机制
 
@@ -155,7 +154,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.memory_keyword`：预生成记忆查询关键词的模型 assignment，示例值 `'ocg-minimax-m2.5'`
 
-- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、第一轮/第二轮模型输出保存到 `data/debug/`，默认 `false`
+- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、第一轮/第二轮模型输出，以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 

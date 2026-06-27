@@ -34,6 +34,7 @@ yarn web:build && yarn start
 - 支持按群配置定时任务触发。任务触发时会先写入一条系统消息作为最新消息，内容为任务自定义提示词；如果配置了 `deep_research_topic`，会在第一轮回复前自动执行一次深度研究并写入研究结果系统消息
 - 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
 - 第一轮回复前，会使用 `ai.assignments.memory_keyword` 指定的模型从最新消息生成查询关键词，检索 mem0 历史记忆，并将结果（含关键词）通过明显分隔线注入 prompt；WebUI 的 Prompt 预览也会包含此部分
+- 深度研究通过 `@earendil-works/pi-ai` 的 `complete()` 调用 `ai.assignments.deep_research` 指定模型；深度研究指令会拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，会记录错误并降级为 fallback 文本继续第二轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），可在 Web 面板追踪
 - 当模型返回 API 错误、未调用回复工具或回复为空时，会自动 reminder 重试；最终失败时 @触发返回 `@响应失败` / `@深度研究失败`，闲时触发静默失败
 - 工具调用轮数超过 `max_tool_call_rounds` 后强制终止并引导回复
@@ -108,6 +109,11 @@ input: {
   - `{groupId}-{taskType}-{ts}-user.txt`：user prompt
   - `{groupId}-{taskType}-{ts}-first-turn.json`：第一轮完整对话历史（含最终输出、所有 assistant 消息与 tool 调用）
   - `{groupId}-{taskType}-{ts}-second-turn.json`：第二轮完整对话历史（含最终输出、所有 assistant 消息与 tool 调用）
+  - `{groupId}-{taskType}-{ts}-deep-research-system.txt`：深度研究 system prompt（仅存在 systemPrompt 时生成）
+  - `{groupId}-{taskType}-{ts}-deep-research-user.txt`：深度研究 user prompt（包含深度研究指令和主题）
+  - `{groupId}-{taskType}-{ts}-deep-research-prompt.json`：深度研究完整请求上下文
+  - `{groupId}-{taskType}-{ts}-deep-research-payload.json`：深度研究发送给 provider 的最终 payload
+  - `{groupId}-{taskType}-{ts}-deep-research-conversation.json`：深度研究完整对话数据（含响应或错误）
 - 同一组文件使用相同时间戳前缀，便于关联 prompt 与输出
 
 ## 技术栈
