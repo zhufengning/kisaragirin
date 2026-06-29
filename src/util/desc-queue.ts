@@ -101,7 +101,7 @@ export class DescQueue {
                 const path = findImagePath(sha256);
                 if (!path) {
                     this.logger.error(`[DescQueue] [w${workerId}] Image file not found: ${sha256}`);
-                    this.notify(sha256, void 0);
+                    this.notify(sha256, undefined);
                     continue;
                 }
 
@@ -122,7 +122,7 @@ export class DescQueue {
                 this.notify(sha256, desc);
             } catch (err) {
                 this.logger.error(`[DescQueue] [w${workerId}] Failed to describe ${sha256}:`, err);
-                this.notify(sha256, void 0);
+                this.notify(sha256, undefined);
             } finally {
                 this.processing.delete(sha256);
             }
@@ -164,7 +164,7 @@ export class DescQueue {
 
         const msgs = agent.state.messages;
         const last = msgs[msgs.length - 1];
-        const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : void 0;
+        const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : undefined;
         this.logger.debug(
             `[DescQueue] messages count=${msgs.length}, last role=${last?.role}, ` +
             `stopReason=${lastAssistant?.stopReason}`);

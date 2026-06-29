@@ -49,7 +49,7 @@ module.exports = {
         // Variables
         'no-catch-shadow': [2],
         'no-shadow': [2],
-        'no-undefined': [2],
+        'no-undefined': [0],
 
         // Strict
         'strict': [2, 'never'],

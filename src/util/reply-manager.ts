@@ -250,7 +250,7 @@ export class GroupReplyManager {
             messageId: row.messageId,
             senderId: row.userId,
             senderName: row.senderName,
-            senderCard: row.senderCard ?? void 0,
+            senderCard: row.senderCard ?? undefined,
             isBot: row.isBot,
             isAtBot: row.isAtBot,
             segments: row.segments as StoredMessage['segments']
@@ -330,6 +330,8 @@ export class GroupReplyManager {
             `[ReplyManager] [${this.groupId}] first turn reply: ${result.texts.length} message(s)`);
 
         let firstTurnMessageId: number | undefined;
+        let firstTurnReplyText: string | undefined;
+        let firstTurnReplyTime: number | undefined;
 
         for (let i = 0; i < result.texts.length; i++) {
             const replyText = result.texts[i];
@@ -345,11 +347,17 @@ export class GroupReplyManager {
 
             const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
             firstTurnMessageId = sendResult.message_id;
+            firstTurnReplyText = replyText;
 
             const now = Math.floor(Date.now() / 1000);
+            firstTurnReplyTime = now;
             const dbSegments: StoredSegment[] = [{type: 'text', text: replyText}];
             if (task.type === 'at' && i === 0) {
-                dbSegments.unshift({type: 'reply', id: task.triggerMessageId});
+                dbSegments.unshift({
+                    type: 'reply',
+                    id: task.triggerMessageId,
+                    message: task.triggerMessage
+                });
             }
             const insertRows = await this.db.insert(schema.messages).values({
                 messageId: sendResult.message_id,
@@ -395,8 +403,21 @@ export class GroupReplyManager {
 
                     const now = Math.floor(Date.now() / 1000);
                     const dbSegments2: StoredSegment[] = [{type: 'text', text: replyText}];
-                    if (firstTurnMessageId) {
-                        dbSegments2.unshift({type: 'reply', id: firstTurnMessageId});
+                    if (firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
+                        dbSegments2.unshift({
+                            type: 'reply',
+                            id: firstTurnMessageId,
+                            message: {
+                                time: firstTurnReplyTime,
+                                messageId: firstTurnMessageId,
+                                senderId: this.botSelfId,
+                                senderName: this.botName,
+                                senderCard: botCard ?? undefined,
+                                isBot: true,
+                                isAtBot: false,
+                                segments: [{type: 'text', text: firstTurnReplyText}]
+                            }
+                        });
                     }
                     const insertRows = await this.db.insert(schema.messages).values({
                         messageId: sendResult.message_id,

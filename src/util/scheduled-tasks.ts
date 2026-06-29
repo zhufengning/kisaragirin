@@ -81,7 +81,7 @@ export class ScheduledTaskManager {
         const replyTask: ScheduledReplyTask = {
             name: taskName,
             prompt,
-            deepResearchTopic: task.deep_research_topic?.trim() || void 0
+            deepResearchTopic: task.deep_research_topic?.trim() || undefined
         };
 
         const options: CronOptions = {

@@ -428,7 +428,7 @@ export async function onebotMessageToSegments (
                     messageId: res.message_id,
                     senderId: res.sender.user_id,
                     senderName: res.sender.nickname,
-                    senderCard: 'card' in res.sender ? res.sender.card : void 0,
+                    senderCard: 'card' in res.sender ? res.sender.card : undefined,
                     segments: await onebotMessageToSegments(bot, nestedGroupId, nestedMsgs)
                 };
             } catch {

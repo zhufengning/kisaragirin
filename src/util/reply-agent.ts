@@ -301,7 +301,7 @@ export class ReplyAgent {
         }
 
         const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
-        const lastCompactId = lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : void 0;
+        const lastCompactId = lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : undefined;
         if (typeof anchor.compactId !== 'undefined' && anchor.compactId !== lastCompactId) {
             return this.estimateMessagesTokens(messages);
         }
@@ -343,7 +343,7 @@ export class ReplyAgent {
                 .select()
                 .from(schema.images)
                 .where(eq(schema.images.sha256, sha256));
-            return rows[0]?.description ?? void 0;
+            return rows[0]?.description ?? undefined;
         });
         const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
         if (!modelEntry) throw new Error('Deep research model not configured');
@@ -475,7 +475,7 @@ export class ReplyAgent {
             messageId: 0,
             senderId: 0,
             senderName: '系统',
-            senderCard: void 0,
+            senderCard: undefined,
             isBot: true,
             isAtBot: false,
             segments: [{type: 'compact', text: summary}]
@@ -507,7 +507,7 @@ export class ReplyAgent {
             messageId: row.messageId,
             senderId: row.userId,
             senderName: row.senderName,
-            senderCard: row.senderCard ?? void 0,
+            senderCard: row.senderCard ?? undefined,
             isBot: row.isBot,
             isAtBot: row.isAtBot,
             segments: row.segments as StoredMessage['segments']
@@ -720,7 +720,7 @@ export class ReplyAgent {
                 await this.saveUsageAnchor(groupId, {
                     totalTokens: calculateBaselineTokens(lastAssistant.usage),
                     time: anchorTime,
-                    compactId: lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : void 0
+                    compactId: lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : undefined
                 });
             }
 
@@ -1464,7 +1464,7 @@ export class ReplyAgent {
             return text;
         } catch (err) {
             if (!response) {
-                this.dumpDeepResearchConversation(groupId, dumpPrefix, context, void 0, err);
+                this.dumpDeepResearchConversation(groupId, dumpPrefix, context, undefined, err);
             }
             throw err;
         }

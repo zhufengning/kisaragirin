@@ -108,7 +108,7 @@ export async function runFullCompaction (
                 messageId: row.messageId,
                 senderId: row.userId,
                 senderName: row.senderName,
-                senderCard: row.senderCard ?? void 0,
+                senderCard: row.senderCard ?? undefined,
                 isBot: row.isBot,
                 isAtBot: row.isAtBot,
                 segments: row.segments as StoredMessage['segments']
