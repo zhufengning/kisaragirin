@@ -7,13 +7,13 @@ const parameterDescriptions = replyToolParameterDescriptions();
 
 const replyToolSchema = Type.Object({
     reply: Type.String({description: parameterDescriptions.reply}),
-    requires_deep_research: Type.Optional(Type.Boolean({description: parameterDescriptions.requiresDeepResearch})),
+    requires_deep_research: Type.Boolean({description: parameterDescriptions.requiresDeepResearch}),
     deep_research_topic: Type.Optional(Type.String({description: parameterDescriptions.deepResearchTopic}))
 });
 
 export interface ReplyToolParams {
     reply: string;
-    requires_deep_research?: boolean;
+    requires_deep_research: boolean;
     deep_research_topic?: string;
 }
 
@@ -30,7 +30,7 @@ export function createReplyTool (options: CreateReplyToolOptions): AgentTool<typ
         description: replyToolDescription(),
         parameters: replyToolSchema,
         async execute (_toolCallId, params) {
-            logger.debug(`[ReplyTool] called reply=${params.reply.slice(0, 80)} requires_deep_research=${params.requires_deep_research}`);
+            logger.debug(`[ReplyTool] called reply=${params.reply.slice(0, 80)} requires_deep_research=${params.requires_deep_research} deep_research_topic=${params.deep_research_topic ?? 'none'}`);
 
             if (options.onCalled) {
                 options.onCalled(params);

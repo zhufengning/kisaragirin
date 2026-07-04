@@ -325,16 +325,22 @@ export class GroupReplyManager {
                 `pre-research: ${task.preResearchTopic}`);
         }
 
-        // 获取当前最新消息的 id（用于更新 lastTriggerId）
-        const latestRows = await this.db
-            .select({id: schema.messages.id})
-            .from(schema.messages)
-            .where(eq(schema.messages.groupId, this.groupId))
-            .orderBy(desc(schema.messages.id))
-            .limit(1);
-        const currentLatestId = latestRows[0]?.id ?? 0;
+        const firstTurn = await agent.generateFirstTurn(task);
+        if (firstTurn.failed || !firstTurn.text) {
+            if (task.type === 'at') {
+                this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, sending fallback`);
+                const segments: Message[] = [{type: 'text', data: {text: '@响应失败'}}];
+                await this.bot.sendGroupMsg(this.groupId, segments);
+            } else {
+                this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, silent fallback`);
+            }
+            return;
+        }
 
-        // 获取当前群里的群名片
+        this.logger.info(
+            `[ReplyManager] [${this.groupId}] first turn ready, ` +
+            `requiresDeepResearch=${firstTurn.requiresDeepResearch}`);
+
         let botCard: string | null = null;
         try {
             const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
@@ -343,99 +349,131 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        const result = await agent.generateReply(task);
+        const firstTurnSendResult = await this.sendTurn(task, {
+            text: firstTurn.text,
+            isFirstTurn: true,
+            isDeepResearchFinal: false,
+            botCard
+        });
+
+        if (firstTurnSendResult.rowId !== null) {
+            this.lastTriggerId = firstTurnSendResult.rowId;
+        }
+
+        if (!firstTurn.requiresDeepResearch) {
+            return;
+        }
+
+        const topic = firstTurn.deepResearchTopic || firstTurn.text;
+        const finalTurn = await agent.generateFinalTurn(task, topic, this.lastTriggerId);
+        await this.sendTurn(task, {
+            text: finalTurn.text,
+            isFirstTurn: false,
+            isDeepResearchFinal: true,
+            firstTurnMessageId: firstTurnSendResult.messageId,
+            firstTurnReplyText: firstTurn.text,
+            firstTurnReplyTime: firstTurnSendResult.time,
+            botCard
+        });
+    }
+
+    private async sendTurn (
+        task: ReplyTask,
+        options: {
+            text: string;
+            isFirstTurn: boolean;
+            isDeepResearchFinal: boolean;
+            firstTurnMessageId?: number;
+            firstTurnReplyText?: string;
+            firstTurnReplyTime?: number;
+            botCard: string | null;
+        }
+    ): Promise<{rowId: number | null; messageId?: number; time?: number}> {
+        const {
+            text,
+            isFirstTurn,
+            isDeepResearchFinal,
+            firstTurnMessageId,
+            firstTurnReplyText,
+            firstTurnReplyTime,
+            botCard
+        } = options;
+
         this.logger.info(
-            `[ReplyManager] [${this.groupId}] reply: ${result.turns.length} turn(s), failed=${result.failed ?? false}`);
+            `[ReplyManager] [${this.groupId}] sending reply ` +
+            `${isDeepResearchFinal ? '(deep research final)' : '(first turn)'}: ` +
+            `${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
 
-        let firstTurnMessageId: number | undefined;
-        let firstTurnReplyText: string | undefined;
-        let firstTurnReplyTime: number | undefined;
-        let lastReplyRowId = currentLatestId;
+        const segments: Message[] = [];
+        if (isFirstTurn && task.type === 'at') {
+            segments.push({type: 'reply', data: {id: task.triggerMessageId}});
+        } else if (!isFirstTurn && firstTurnMessageId) {
+            segments.push({type: 'reply', data: {id: firstTurnMessageId}});
+        }
+        segments.push({type: 'text', data: {text}});
 
-        for (let i = 0; i < result.turns.length; i++) {
-            const turn = result.turns[i];
-            const replyText = turn.text;
-            const isFirstTurn = i === 0;
-            const isDeepResearchFinal = turn.isDeepResearchFinal ?? false;
-            this.logger.info(
-                `[ReplyManager] [${this.groupId}] sending reply ${i + 1}/${result.turns.length}` +
-                `${isDeepResearchFinal ? ' (deep research final)' : ''}: ` +
-                `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
+        const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
 
-            const segments: Message[] = [];
-            if (isFirstTurn && task.type === 'at') {
-                segments.push({type: 'reply', data: {id: task.triggerMessageId}});
-            } else if (!isFirstTurn && firstTurnMessageId) {
-                segments.push({type: 'reply', data: {id: firstTurnMessageId}});
-            }
-            segments.push({type: 'text', data: {text: replyText}});
+        const now = Math.floor(Date.now() / 1000);
 
-            const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
-
-            if (isFirstTurn) {
-                firstTurnMessageId = sendResult.message_id;
-                firstTurnReplyText = replyText;
-                firstTurnReplyTime = Math.floor(Date.now() / 1000);
-            }
-
-            const now = Math.floor(Date.now() / 1000);
-            const dbSegments: StoredSegment[] = [{type: 'text', text: replyText}];
-            if (isFirstTurn && task.type === 'at') {
-                dbSegments.unshift({
-                    type: 'reply',
-                    id: task.triggerMessageId,
-                    message: task.triggerMessage
-                });
-            } else if (!isFirstTurn && firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
-                dbSegments.unshift({
-                    type: 'reply',
-                    id: firstTurnMessageId,
-                    message: {
-                        time: firstTurnReplyTime,
-                        messageId: firstTurnMessageId,
-                        senderId: this.botSelfId,
-                        senderName: this.botName,
-                        senderCard: botCard ?? undefined,
-                        isBot: true,
-                        isAtBot: false,
-                        segments: [{type: 'text', text: firstTurnReplyText}]
-                    }
-                });
-            }
-            const insertRows = await this.db.insert(schema.messages).values({
-                messageId: sendResult.message_id,
-                groupId: this.groupId,
-                userId: this.botSelfId,
-                time: now,
-                senderName: this.botName,
-                senderCard: botCard,
-                isBot: true,
-                isAtBot: false,
-                segments: dbSegments as StoredSegment[],
-                rawMessage: replyText
-            })
-                .returning({id: schema.messages.id});
-
-            if (insertRows[0]) {
-                const rowId = insertRows[0].id;
-                lastReplyRowId = rowId;
-                this.onBotMessage(rowId);
-
-                const botStoredMessage: StoredMessage = {
-                    id: rowId,
-                    time: now,
-                    messageId: sendResult.message_id,
+        const dbSegments: StoredSegment[] = [{type: 'text', text}];
+        if (isFirstTurn && task.type === 'at') {
+            dbSegments.unshift({
+                type: 'reply',
+                id: task.triggerMessageId,
+                message: task.triggerMessage
+            });
+        } else if (!isFirstTurn && firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
+            dbSegments.unshift({
+                type: 'reply',
+                id: firstTurnMessageId,
+                message: {
+                    time: firstTurnReplyTime,
+                    messageId: firstTurnMessageId,
                     senderId: this.botSelfId,
                     senderName: this.botName,
                     senderCard: botCard ?? undefined,
                     isBot: true,
                     isAtBot: false,
-                    segments: dbSegments
-                };
-                await agent.appendBotMessage(botStoredMessage);
-            }
+                    segments: [{type: 'text', text: firstTurnReplyText}]
+                }
+            });
         }
 
-        this.lastTriggerId = lastReplyRowId;
+        const insertRows = await this.db.insert(schema.messages).values({
+            messageId: sendResult.message_id,
+            groupId: this.groupId,
+            userId: this.botSelfId,
+            time: now,
+            senderName: this.botName,
+            senderCard: botCard,
+            isBot: true,
+            isAtBot: false,
+            segments: dbSegments as StoredSegment[],
+            rawMessage: text
+        })
+            .returning({id: schema.messages.id});
+
+        if (!insertRows[0]) {
+            return {rowId: null};
+        }
+
+        const rowId = insertRows[0].id;
+        this.onBotMessage(rowId);
+
+        const botStoredMessage: StoredMessage = {
+            id: rowId,
+            time: now,
+            messageId: sendResult.message_id,
+            senderId: this.botSelfId,
+            senderName: this.botName,
+            senderCard: botCard ?? undefined,
+            isBot: true,
+            isAtBot: false,
+            segments: dbSegments
+        };
+        await this.agent.appendBotMessage(botStoredMessage);
+
+        return {rowId, messageId: sendResult.message_id, time: now};
     }
 }
