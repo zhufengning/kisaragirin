@@ -104,10 +104,11 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### Prompt 构建封装
 
-- `ReplyAgent.buildPreviewPrompt(task)` 复用 system prompt 与 `buildUserPromptArray`，不修改 harness 状态
+- `ReplyAgent.generateReply(task)` 触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息，通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`
+- `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
-- `generateReply` 内部调用 `buildUserPromptArray` 构造 user 消息列表
+- `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为最后一条 bot 回复的数据库 id；`ReplyAgent` 初始化时只将 `lastTriggerId` 及之前的历史消息 seed 进 harness
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
 - webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact
@@ -124,7 +125,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
 - **失败回退**：@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
 - 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
-- 深度研究前后的状态会以 `special_type='system'` 的系统消息写入数据库（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`），便于在 Web 面板追踪研究过程
+- 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
 
 ### 定时任务触发机制

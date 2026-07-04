@@ -4,11 +4,11 @@ import {type AssistantMessage, type Context, type Models} from '@earendil-works/
 import type {MemoryConfig} from 'mem0ai/oss';
 import {schema, type Db, setHarnessMetadata, type JsonlSessionMetadata, insertSystemMessage} from '~/db';
 import type {AppConfig} from '~/config';
-import {eq, asc} from 'drizzle-orm';
+import {eq, asc, and, gt, lte} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage} from '~/message-format';
-import {buildUserPromptArray, formatToolsDescription, prompts, replyReminder, replySystemPrompt} from '~/prompts';
+import {prompts, replyReminder, replyToolInstructions} from '~/prompts';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
@@ -16,6 +16,60 @@ import {getOrCreateGroupSession} from './harness-factory';
 import {resolveModelEntry} from './models-factory';
 import {createReplyTool, type ReplyToolParams} from './reply-tool';
 import {createMem0Tools} from './mem0-tool';
+
+function formatToolParameters (toolSchema: AgentTool['parameters']): string {
+    return JSON.stringify(toolSchema, null, 2);
+}
+
+function formatToolsDescription (tools: AgentTool[]): string {
+    if (tools.length === 0) return '无可用工具。';
+
+    return tools
+        .map(tool => {
+            const params = formatToolParameters(tool.parameters);
+            return `- ${tool.name}（${tool.label}）: ${tool.description}\n参数: ${params}`;
+        })
+        .join('\n');
+}
+
+function buildSystemPrompt ({
+    botName,
+    botPersona,
+    toolsDescription,
+    groupCustomPrompt
+}: {
+    botName: string;
+    botPersona: string;
+    toolsDescription: string;
+    groupCustomPrompt?: string;
+}): string {
+    const parts: string[] = [
+        prompts.jailBreak,
+        prompts.replyIdentity(botName),
+        botPersona,
+        '## 可用工具',
+        toolsDescription,
+        replyToolInstructions
+    ];
+
+    if (groupCustomPrompt) {
+        parts.push(`${prompts.groupCustomPromptStart}\n${groupCustomPrompt}\n${prompts.groupCustomPromptEnd}`);
+    }
+
+    return parts.join('\n\n');
+}
+
+async function buildUserPromptArray (
+    latestMessages: StoredMessage[],
+    descQueue: DescQueue
+): Promise<string[]> {
+    if (latestMessages.length === 0) return [];
+
+    const body = await messagesToString(latestMessages, sha => descQueue.resolve(sha));
+    if (!body.trim()) return [];
+
+    return [body];
+}
 
 function extractText (response: AssistantMessage): string {
     return response.content
@@ -94,8 +148,9 @@ export class ReplyAgent {
         config: AppConfig;
         models: Models;
         memory?: MemoryConfig | null;
+        lastTriggerId?: number;
     }): Promise<ReplyAgent> {
-        const {groupId, db, descQueue, config, models, memory} = options;
+        const {groupId, db, descQueue, config, models, memory, lastTriggerId} = options;
 
         const logger = new Logger();
         const {session, metadata, isNew} = await getOrCreateGroupSession(groupId, config, db);
@@ -114,7 +169,7 @@ export class ReplyAgent {
         const mem0Tools: AgentTool[] = memory ? createMem0Tools(memory, config.log.level, groupId) : [];
         const tools: AgentTool[] = [replyTool, ...mem0Tools];
 
-        const systemPrompt = () => replySystemPrompt({
+        const systemPrompt = () => buildSystemPrompt({
             botName: config.input.bot_name || '机器人',
             botPersona: config.input.bot_persona || '',
             toolsDescription: formatToolsDescription(tools),
@@ -160,7 +215,7 @@ export class ReplyAgent {
         });
 
         if (isNew) {
-            await agent.seedFromDatabase();
+            await agent.seedFromDatabase(lastTriggerId ?? 0);
             await setHarnessMetadata(db, groupId, metadata);
         }
 
@@ -168,11 +223,20 @@ export class ReplyAgent {
         return agent;
     }
 
-    private async seedFromDatabase (): Promise<void> {
+    private async seedFromDatabase (lastTriggerId: number): Promise<void> {
+        if (lastTriggerId <= 0) {
+            return;
+        }
+
         const rows = await this.db
             .select()
             .from(schema.messages)
-            .where(eq(schema.messages.groupId, this.groupId))
+            .where(
+                and(
+                    eq(schema.messages.groupId, this.groupId),
+                    lte(schema.messages.id, lastTriggerId)
+                )
+            )
             .orderBy(asc(schema.messages.id));
 
         for (const row of rows) {
@@ -199,6 +263,33 @@ export class ReplyAgent {
         }
     }
 
+    private async fetchMessagesSince (lastTriggerId: number): Promise<StoredMessage[]> {
+        const rows = await this.db
+            .select()
+            .from(schema.messages)
+            .where(
+                lastTriggerId > 0 ?
+                    and(
+                        eq(schema.messages.groupId, this.groupId),
+                        gt(schema.messages.id, lastTriggerId)
+                    ) :
+                    eq(schema.messages.groupId, this.groupId)
+            )
+            .orderBy(asc(schema.messages.id));
+
+        return rows.map(row => ({
+            id: row.id,
+            time: row.time,
+            messageId: row.messageId,
+            senderId: row.userId,
+            senderName: row.senderName,
+            senderCard: row.senderCard ?? undefined,
+            isBot: row.isBot,
+            isAtBot: row.isAtBot,
+            segments: row.segments as StoredMessage['segments']
+        }));
+    }
+
     private getReplyToolParams (): ReplyToolParams | null {
         return this.lastReplyToolParams;
     }
@@ -213,12 +304,8 @@ export class ReplyAgent {
             await this.doDeepResearchWithSystemMessages(task.preResearchTopic);
         }
 
-        const userTexts = await buildUserPromptArray({
-            groupId: this.groupId,
-            latestMessages: [task.triggerMessage],
-            task,
-            descQueue: this.descQueue
-        });
+        const latestMessages = await this.fetchMessagesSince(task.lastTriggerId ?? 0);
+        const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
 
         if (userTexts.length === 0) {
             return this.fallbackResult();
@@ -345,11 +432,6 @@ export class ReplyAgent {
         this.logger.info(
             `[ReplyAgent] [${this.groupId}] system message inserted, id=${startId}, ` +
             `text=${startText.slice(0, 50)}${startText.length > 50 ? '...' : ''}`);
-        await this.harness.appendMessage({
-            role: 'user',
-            content: [{type: 'text', text: `开始深度研究：${researchTopic}`}],
-            timestamp: startTime * 1000
-        } as AgentMessage);
 
         let researchResult: string | undefined;
         let researchError: string | undefined;
@@ -380,11 +462,6 @@ export class ReplyAgent {
             this.logger.info(
                 `[ReplyAgent] [${this.groupId}] system message inserted, id=${endId}, ` +
                 `text=${endMsg.slice(0, 50)}${endMsg.length > 50 ? '...' : ''}`);
-            await this.harness.appendMessage({
-                role: 'user',
-                content: [{type: 'text', text: endMsg}],
-                timestamp: endTime * 1000
-            } as AgentMessage);
         }
 
         return researchResult;
@@ -448,12 +525,8 @@ export class ReplyAgent {
     }
 
     async buildPreviewPrompt (task: ReplyTask): Promise<{ systemPrompt: string; userMessages: string[] }> {
-        const userMessages = await buildUserPromptArray({
-            groupId: this.groupId,
-            latestMessages: [task.triggerMessage],
-            task,
-            descQueue: this.descQueue
-        });
+        const latestMessages = await this.fetchMessagesSince(task.lastTriggerId ?? 0);
+        const userMessages = await buildUserPromptArray(latestMessages, this.descQueue);
         return {
             systemPrompt: this.systemPromptText,
             userMessages

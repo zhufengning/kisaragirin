@@ -63,6 +63,7 @@ export const GET: APIRoute = async ({ url }) => {
             triggerDbId: row.id,
             triggerMessageId: row.messageId,
             triggerMessage,
+            lastTriggerId: manager.getLastTriggerId(),
         };
 
         const agent = manager.getAgent();

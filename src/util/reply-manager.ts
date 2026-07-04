@@ -14,6 +14,7 @@ export interface ReplyTask {
     triggerDbId: number;
     triggerMessageId: number;
     triggerMessage: StoredMessage;
+    lastTriggerId: number;
     scheduledTaskName?: string;
     preResearchTopic?: string;
 }
@@ -58,7 +59,7 @@ export class GroupReplyManager {
     private constructor (
         groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
         config: AppConfig, botSelfId: number, botName: string,
-        models: Models, agent: ReplyAgent,
+        models: Models, agent: ReplyAgent, lastTriggerId: number = 0,
     ) {
         this.groupId = groupId;
         this.bot = bot;
@@ -69,16 +70,8 @@ export class GroupReplyManager {
         this.botName = botName;
         this.models = models;
         this.agent = agent;
+        this._lastTriggerId = lastTriggerId;
         this.logger = new Logger();
-
-        // Load lastTriggerId from kvStore
-        kvGet(db, `group:${groupId}:lastTriggerId`).then(value => {
-            if (value) {
-                this._lastTriggerId = parseInt(value, 10);
-                this.logger.debug(`[ReplyManager] [${groupId}] loaded lastTriggerId=${this._lastTriggerId}`);
-            }
-        })
-            .catch(err => this.logger.error(`[ReplyManager] failed to load lastTriggerId:`, err));
     }
 
     static async create (
@@ -86,19 +79,36 @@ export class GroupReplyManager {
         config: AppConfig, botSelfId: number, botName: string,
         models: Models,
     ): Promise<GroupReplyManager> {
+        let lastTriggerId = 0;
+        try {
+            const value = await kvGet(db, `group:${groupId}:lastTriggerId`);
+            if (value) {
+                lastTriggerId = parseInt(value, 10);
+            }
+        } catch (err) {
+            new Logger().error(`[ReplyManager] failed to load lastTriggerId for group ${groupId}:`, err);
+        }
+
         const agent = await ReplyAgent.create({
             groupId,
             db,
             descQueue,
             config,
             models,
-            memory: config.ai.mem0 ?? null
+            memory: config.ai.mem0 ?? null,
+            lastTriggerId
         });
-        return new GroupReplyManager(groupId, bot, db, descQueue, config, botSelfId, botName, models, agent);
+        return new GroupReplyManager(
+            groupId, bot, db, descQueue, config, botSelfId, botName, models, agent, lastTriggerId
+        );
     }
 
     getAgent (): ReplyAgent {
         return this.agent;
+    }
+
+    getLastTriggerId (): number {
+        return this._lastTriggerId;
     }
 
     onMessage (stored: StoredMessage, _rowId: number): void {
@@ -165,6 +175,7 @@ export class GroupReplyManager {
             triggerDbId: rowId,
             triggerMessageId: 0,
             triggerMessage: stored,
+            lastTriggerId: this.lastTriggerId,
             scheduledTaskName: task.name,
             preResearchTopic: task.deepResearchTopic
         });
@@ -198,7 +209,8 @@ export class GroupReplyManager {
             type: 'at',
             triggerDbId: rowId,
             triggerMessageId: stored.messageId!,
-            triggerMessage: stored
+            triggerMessage: stored,
+            lastTriggerId: this.lastTriggerId
         });
     }
 
@@ -266,7 +278,8 @@ export class GroupReplyManager {
             type: 'silence',
             triggerDbId: row.id,
             triggerMessageId: row.messageId,
-            triggerMessage: stored
+            triggerMessage: stored,
+            lastTriggerId: this.lastTriggerId
         });
     }
 
@@ -337,6 +350,7 @@ export class GroupReplyManager {
         let firstTurnMessageId: number | undefined;
         let firstTurnReplyText: string | undefined;
         let firstTurnReplyTime: number | undefined;
+        let lastReplyRowId = currentLatestId;
 
         for (let i = 0; i < result.turns.length; i++) {
             const turn = result.turns[i];
@@ -404,6 +418,7 @@ export class GroupReplyManager {
 
             if (insertRows[0]) {
                 const rowId = insertRows[0].id;
+                lastReplyRowId = rowId;
                 this.onBotMessage(rowId);
 
                 const botStoredMessage: StoredMessage = {
@@ -421,6 +436,6 @@ export class GroupReplyManager {
             }
         }
 
-        this.lastTriggerId = currentLatestId;
+        this.lastTriggerId = lastReplyRowId;
     }
 }

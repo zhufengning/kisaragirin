@@ -1,7 +1,3 @@
-import type {AgentTool} from '@earendil-works/pi-agent-core';
-import {messagesToString, type StoredMessage} from './message-format';
-import type {DescQueue} from './util/desc-queue';
-
 export function replyToolDescription (): string {
     return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。';
 }
@@ -22,7 +18,7 @@ export function replyToolParameterDescriptions (): ReplyToolParameterDescription
 
 const rules = `1. 认清自己的身份：你是群聊机器人，不是人类。对群友保持礼貌、谦逊，不冒犯群友。2. 不要强调自己的 bot 身份，系统错误不应暴露给群友。3. 回复应简洁、自然，直接讨论话题本身，不要复述群友的原话或重复已有内容。4. 回复使用纯文本，禁止 markdown 语法，禁止括号动作/状态描述。5. 每次输入消息都必须输出回复。6. 每条消息都有唯一的消息ID，格式为(#数字)，如(#123)。7. 严禁在回应某个话题时复述话题内容。最新消息中只有单个话题的直接回复；多个话题时通过 reply 工具的 ref 字段引用对应消息，正文只写评价内容，不包含消息ID。`;
 
-const replyToolInstructions = `请根据上述上下文决定如何回复。请你先输出思考过程，完成所有所需的记忆操作后，再使用 reply 工具给出你的回复。选择 reply 之后你无法再做出任何后续回复，你无法在后台处理任何操作。深度研究agent是一个运行于Linux虚拟机上的agent，你可以将你想要执行的需求转述给它，最终获得执行报告。深度研究是严肃的，冰冷的机器，只允许用来处理必须获取外部信息的场景，严禁“探讨回复方向”、“生成回复草稿”这类用法。对于url你应当始终调用深度研究，而不是推测其中的内容。调用深度研究时必须完整传递最新消息提及的所有url。你的传给深度研究的研究主题仅仅是作为深度研究agent提示词的一小部分拼接进其中，因此，调用深度研究时禁止添加限制（例如，只允许访问特定url等），你必须允许深度研究自由探索。
+export const replyToolInstructions = `请根据上述上下文决定如何回复。请你先输出思考过程，完成所有所需的记忆操作后，再使用 reply 工具给出你的回复。选择 reply 之后你无法再做出任何后续回复，你无法在后台处理任何操作。深度研究agent是一个运行于Linux虚拟机上的agent，你可以将你想要执行的需求转述给它，最终获得执行报告。深度研究是严肃的，冰冷的机器，只允许用来处理必须获取外部信息的场景，严禁“探讨回复方向”、“生成回复草稿”这类用法。对于url你应当始终调用深度研究，而不是推测其中的内容。调用深度研究时必须完整传递最新消息提及的所有url。你的传给深度研究的研究主题仅仅是作为深度研究agent提示词的一小部分拼接进其中，因此，调用深度研究时禁止添加限制（例如，只允许访问特定url等），你必须允许深度研究自由探索。
 
 字数限制：普通回复不超过50字，深度研究后的回复不超过150字。
 
@@ -71,86 +67,6 @@ const replyToolInstructions = `请根据上述上下文决定如何回复。请�
 
 </Chain_of_Thought>
 `;
-
-function formatToolParameters (schema: unknown): string {
-    if (!schema || typeof schema !== 'object') return JSON.stringify(schema);
-    return JSON.stringify(schema, null, 2);
-}
-
-export function formatToolsDescription (tools: AgentTool[]): string {
-    if (tools.length === 0) return '无可用工具。';
-
-    return tools
-        .map(tool => {
-            const params = formatToolParameters(tool.parameters);
-            return `- ${tool.name}（${tool.label}）: ${tool.description}\n参数: ${params}`;
-        })
-        .join('\n');
-}
-
-export function replySystemPrompt ({
-    botName,
-    botPersona,
-    toolsDescription,
-    groupCustomPrompt
-}: {
-    botName: string;
-    botPersona: string;
-    toolsDescription: string;
-    groupCustomPrompt?: string;
-}): string {
-    const parts: string[] = [
-        prompts.jailBreak,
-        prompts.replyIdentity(botName),
-        botPersona,
-        '## 可用工具',
-        toolsDescription,
-        replyToolInstructions
-    ];
-
-    if (groupCustomPrompt) {
-        parts.push(`${prompts.groupCustomPromptStart}\n${groupCustomPrompt}\n${prompts.groupCustomPromptEnd}`);
-    }
-
-    return parts.join('\n\n');
-}
-
-interface BuildUserPromptTask {
-    type: 'at' | 'silence' | 'scheduled';
-    scheduledTaskName?: string;
-}
-
-export async function buildUserPromptArray ({
-    groupId: _groupId,
-    latestMessages,
-    task,
-    descQueue
-}: {
-    groupId: number;
-    latestMessages: StoredMessage[];
-    task: BuildUserPromptTask;
-    descQueue: DescQueue;
-}): Promise<string[]> {
-    if (latestMessages.length === 0) return [];
-
-    const body = await messagesToString(latestMessages, sha => descQueue.resolve(sha));
-
-    let notice: string;
-    switch (task.type) {
-    case 'at':
-        notice = '有人@我，请优先回应。\n';
-        break;
-    case 'scheduled': {
-        const name = task.scheduledTaskName ? ` [${task.scheduledTaskName}]` : '';
-        notice = `定时任务触发${name}，请按系统消息中的任务提示完成本次回复。\n`;
-        break;
-    }
-    default:
-        notice = '闲时触发，可尝试加入已有话题。\n';
-    }
-
-    return [`${notice}${body}`];
-}
 
 export function replyReminder (): string {
     return '请使用 reply 工具进行回复。';
