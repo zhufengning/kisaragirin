@@ -25,6 +25,12 @@ function extractText (response: AssistantMessage): string {
         .trim();
 }
 
+function formatUsage (usage: AssistantMessage['usage']): string {
+    const totalInput = usage.input + usage.cacheRead;
+    const cacheRatio = totalInput > 0 ? ((usage.cacheRead / totalInput) * 100).toFixed(2) : '0.00';
+    return `input=${usage.input} output=${usage.output} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} cacheWrite1h=${usage.cacheWrite1h ?? 0} cacheRead/totalInput=${cacheRatio}%`;
+}
+
 function stringifyMessageContent (content: Context['messages'][number]['content']): string {
     if (typeof content === 'string') return content;
     return content
@@ -263,7 +269,7 @@ export class ReplyAgent {
             researchResult = await this.doDeepResearchWithSystemMessages(topic);
         } catch (err) {
             this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
-            researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
+            researchResult = '（深度研究失败，请打个圆场。）';
         }
 
         await this.harness.appendMessage({
@@ -312,6 +318,7 @@ export class ReplyAgent {
             if (!assistant) {
                 continue;
             }
+            this.logger.info(`[ReplyAgent] [${this.groupId}] turn usage: ${formatUsage(assistant.usage)}`);
             if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
                 return assistant;
             }
@@ -363,11 +370,11 @@ export class ReplyAgent {
             const endTime = Math.floor(Date.now() / 1000);
             let endMsg: string;
             if (researchError) {
-                endMsg = `深度研究结束：${researchTopic}\n\n${researchError}`;
+                endMsg = `深度研究结束：${researchTopic}状态：错误\n\n${researchError}`;
             } else if (researchResult) {
-                endMsg = `深度研究结束：${researchTopic}\n\n${researchResult}`;
+                endMsg = `深度研究结束：${researchTopic}状态：成功\n\n`;
             } else {
-                endMsg = `深度研究结束：${researchTopic}`;
+                endMsg = `深度研究结束：${researchTopic}状态：未出错但无结果\n\n`;
             }
             const endId = await insertSystemMessage(this.db, this.groupId, endMsg, endTime);
             this.logger.info(
@@ -416,6 +423,8 @@ export class ReplyAgent {
             if (response.stopReason === 'error' || response.stopReason === 'aborted') {
                 throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
             }
+
+            this.logger.info(`[ReplyAgent] [${this.groupId}] deep research usage: ${formatUsage(response.usage)}`);
 
             const text = extractText(response);
             this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch done text length=${text.length}`);
