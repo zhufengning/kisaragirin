@@ -18,14 +18,10 @@ export class InputConfig {
     merge_window = 30;
     silence_wait_time = 30;
     reply_probability = 0.1;
-    max_msg_count = 50;
     max_tool_call_rounds = 5;
     vision_concurrency = 5;
     bot_name?: string;
     bot_persona?: string;
-    auto_compact_threshold = 0.7;
-    auto_compact_keep_recent = 20000;
-    auto_compact_reserve_tokens = 8000;
     group_custom_prompts?: Record<number, string>;
     scheduled_tasks?: Record<number, ScheduledGroupTask[]>;
     debug_dump_prompt = false;
@@ -56,10 +52,9 @@ export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
         vision: string;
-        reply: string;
         deep_research: string;
-        /** 预生成记忆查询关键词的模型 */
-        memory_keyword: string;
+        /** Agent harness 模型 */
+        agent_harness: string;
     };
     mem0?: MemoryConfig;
 }

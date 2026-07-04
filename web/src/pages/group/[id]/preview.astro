@@ -42,7 +42,7 @@ if (!groupId || isNaN(groupId)) {
                 if (!res.ok) {
                     throw new Error(data.error || `HTTP ${res.status}`);
                 }
-                output.textContent = data.prompt.join('\n\n');
+                output.textContent = data.systemPrompt + '\n\n' + data.userMessages.join('\n\n');
             } catch (err) {
                 errorEl.textContent = '加载失败：' + err.message;
                 errorEl.style.display = 'block';

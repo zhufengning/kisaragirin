@@ -41,6 +41,10 @@ export class DescQueue {
         }
     }
 
+    stop () {
+        this.running = false;
+    }
+
     enqueue (sha256: string, toFront = false) {
         if (this.processing.has(sha256)) return;
         if (this.queue.includes(sha256)) return;

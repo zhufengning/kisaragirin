@@ -1,0 +1,432 @@
+---
+import Layout from '@layouts/Layout.astro';
+
+const groupId = Number(Astro.params.id);
+if (!groupId || isNaN(groupId)) {
+    return new Response('Invalid group ID', { status: 400 });
+}
+---
+
+<Layout title={`群 ${groupId} Harness 日志`}>
+    <h1><a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} Harness 日志</h1>
+
+    <div class="controls">
+        <span class="controls-label">筛选：</span>
+        <button class="filter-btn active" data-filter="all">全部</button>
+        <button class="filter-btn" data-filter="user">User</button>
+        <button class="filter-btn" data-filter="assistant">Assistant</button>
+        <button class="filter-btn" data-filter="tool">Tool</button>
+        <button class="filter-btn" data-filter="compaction">Compaction</button>
+        <button id="refresh-btn" class="refresh-btn">刷新</button>
+    </div>
+
+    <div id="loading" class="loading" style="display: block;">加载中...</div>
+    <div id="error" class="error" style="display: none;"></div>
+    <div id="entries-container" class="entries-container" style="display: none;"></div>
+
+    <script is:inline define:vars={{ groupId }}>
+        const container = document.getElementById('entries-container');
+        const loading = document.getElementById('loading');
+        const errorEl = document.getElementById('error');
+        const refreshBtn = document.getElementById('refresh-btn');
+        const filterButtons = document.querySelectorAll('.filter-btn');
+
+        let currentFilter = 'all';
+        let currentEntries = [];
+
+        function formatTimestamp(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return iso;
+            const pad = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
+        function appendText(parent, text) {
+            if (text == null || text === '') return;
+            const span = document.createElement('span');
+            span.className = 'block-text';
+            span.textContent = text;
+            parent.appendChild(span);
+        }
+
+        function appendCodeBlock(parent, label, value) {
+            const wrap = document.createElement('div');
+            wrap.className = 'code-block';
+            if (label) {
+                const lbl = document.createElement('div');
+                lbl.className = 'code-block-label';
+                lbl.textContent = label;
+                wrap.appendChild(lbl);
+            }
+            const pre = document.createElement('pre');
+            pre.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            wrap.appendChild(pre);
+            parent.appendChild(wrap);
+        }
+
+        function renderContentBlock(parent, block) {
+            if (!block || typeof block !== 'object') return;
+            if (block.type === 'text') {
+                appendText(parent, block.text);
+            } else if (block.type === 'toolCall') {
+                const callWrap = document.createElement('div');
+                callWrap.className = 'tool-call';
+                const header = document.createElement('div');
+                header.className = 'tool-call-header';
+                header.textContent = `tool-call: ${block.name || 'unknown'}`;
+                callWrap.appendChild(header);
+                appendCodeBlock(callWrap, 'arguments', block.arguments || {});
+                parent.appendChild(callWrap);
+            } else if (block.type === 'image') {
+                appendText(parent, `[image: ${block.mimeType || 'unknown'}]`);
+            } else if (block.type === 'thinking') {
+                appendCodeBlock(parent, 'thinking', block.thinking || '');
+            } else {
+                appendCodeBlock(parent, block.type, block);
+            }
+        }
+
+        function renderMessageBody(parent, message) {
+            const content = message.content;
+            if (typeof content === 'string') {
+                appendText(parent, content);
+            } else if (Array.isArray(content)) {
+                for (const block of content) {
+                    renderContentBlock(parent, block);
+                }
+            }
+        }
+
+        function createBadge(text, variant) {
+            const badge = document.createElement('span');
+            badge.className = `badge badge-${variant}`;
+            badge.textContent = text;
+            return badge;
+        }
+
+        function createEntryElement(entry) {
+            const el = document.createElement('div');
+            el.className = 'entry';
+            el.dataset.type = entry.type;
+
+            const header = document.createElement('div');
+            header.className = 'entry-header';
+
+            const meta = document.createElement('div');
+            meta.className = 'entry-meta';
+
+            const body = document.createElement('div');
+            body.className = 'entry-body';
+
+            const ts = document.createElement('span');
+            ts.className = 'timestamp';
+            ts.textContent = formatTimestamp(entry.timestamp);
+
+            if (entry.type === 'message') {
+                const role = entry.message?.role || 'unknown';
+                el.dataset.role = role;
+                const variant = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : role === 'toolResult' ? 'tool' : 'default';
+                meta.appendChild(createBadge(`message · ${role}`, variant));
+                renderMessageBody(body, entry.message);
+            } else if (entry.type === 'compaction') {
+                el.dataset.role = 'compaction';
+                meta.appendChild(createBadge('compaction', 'compaction'));
+                appendText(body, entry.summary || '');
+            } else if (entry.type === 'model_change') {
+                meta.appendChild(createBadge('model-change', 'default'));
+                appendText(body, `${entry.provider || 'unknown'} / ${entry.modelId || 'unknown'}`);
+            } else if (entry.type === 'active_tools_change') {
+                meta.appendChild(createBadge('active-tools-change', 'default'));
+                appendText(body, (entry.activeToolNames || []).join(', '));
+            } else if (entry.type === 'thinking_level_change') {
+                meta.appendChild(createBadge('thinking-level-change', 'default'));
+                appendText(body, entry.thinkingLevel || '');
+            } else if (entry.type === 'branch_summary') {
+                meta.appendChild(createBadge('branch-summary', 'default'));
+                appendText(body, entry.summary || '');
+            } else if (entry.type === 'custom') {
+                meta.appendChild(createBadge(`custom · ${entry.customType || 'unknown'}`, 'default'));
+                appendCodeBlock(body, 'data', entry.data);
+            } else if (entry.type === 'custom_message') {
+                meta.appendChild(createBadge(`custom-message · ${entry.customType || 'unknown'}`, 'default'));
+                appendText(body, typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content));
+            } else if (entry.type === 'label') {
+                meta.appendChild(createBadge('label', 'default'));
+                appendText(body, `${entry.targetId || 'null'} → ${entry.label || '(none)'}`);
+            } else if (entry.type === 'session_info') {
+                meta.appendChild(createBadge('session-info', 'default'));
+                appendText(body, entry.name || '');
+            } else if (entry.type === 'leaf') {
+                meta.appendChild(createBadge('leaf', 'default'));
+                appendText(body, `target: ${entry.targetId || 'null'}`);
+            } else {
+                meta.appendChild(createBadge(entry.type || 'unknown', 'default'));
+                appendCodeBlock(body, 'entry', entry);
+            }
+
+            const idSpan = document.createElement('span');
+            idSpan.className = 'entry-id';
+            idSpan.textContent = entry.id || '';
+
+            header.appendChild(meta);
+            header.appendChild(ts);
+            header.appendChild(idSpan);
+            el.appendChild(header);
+            el.appendChild(body);
+            return el;
+        }
+
+        function matchesFilter(entry, filter) {
+            if (filter === 'all') return true;
+            if (filter === 'compaction') return entry.type === 'compaction';
+            if (entry.type !== 'message') return false;
+            const role = entry.message?.role;
+            if (filter === 'user') return role === 'user';
+            if (filter === 'assistant') return role === 'assistant';
+            if (filter === 'tool') {
+                if (role === 'toolResult') return true;
+                if (role === 'assistant' && Array.isArray(entry.message?.content)) {
+                    return entry.message.content.some(b => b?.type === 'toolCall');
+                }
+                return false;
+            }
+            return false;
+        }
+
+        function renderEntries(entries) {
+            currentEntries = entries;
+            container.innerHTML = '';
+
+            const filtered = entries.filter(e => matchesFilter(e, currentFilter));
+            if (filtered.length === 0) {
+                const empty = document.createElement('p');
+                empty.className = 'empty';
+                empty.textContent = '暂无符合条件的条目';
+                container.appendChild(empty);
+                container.style.display = 'block';
+                return;
+            }
+
+            for (const entry of filtered) {
+                container.appendChild(createEntryElement(entry));
+            }
+            container.style.display = 'block';
+        }
+
+        async function loadEntries() {
+            loading.style.display = 'block';
+            errorEl.style.display = 'none';
+            container.style.display = 'none';
+
+            try {
+                const res = await fetch(`/api/harness?groupId=${groupId}`);
+                const data = await res.json();
+                if (!res.ok) {
+                    throw new Error(data.error || `HTTP ${res.status}`);
+                }
+                if (!Array.isArray(data.entries)) {
+                    throw new Error('返回数据格式不正确');
+                }
+                renderEntries(data.entries);
+            } catch (err) {
+                errorEl.textContent = '加载失败：' + err.message;
+                errorEl.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+            }
+        }
+
+        filterButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterButtons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                renderEntries(currentEntries);
+            });
+        });
+
+        refreshBtn.addEventListener('click', loadEntries);
+
+        loadEntries();
+    </script>
+</Layout>
+
+<style>
+    .controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .controls-label {
+        font-size: 14px;
+        color: var(--text-secondary);
+    }
+    .filter-btn,
+    .refresh-btn {
+        padding: 6px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+    }
+    .filter-btn:hover,
+    .refresh-btn:hover {
+        background: var(--surface-hover);
+    }
+    .filter-btn.active {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+    }
+    .refresh-btn {
+        margin-left: auto;
+        background: var(--surface-hover);
+    }
+    .loading {
+        text-align: center;
+        padding: 40px;
+        color: var(--text-secondary);
+    }
+    .error {
+        padding: 16px;
+        background: rgba(220, 38, 38, 0.1);
+        border: 1px solid rgba(220, 38, 38, 0.3);
+        border-radius: var(--radius);
+        color: #ef4444;
+        margin-bottom: 16px;
+    }
+    .entries-container {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .empty {
+        color: var(--text-secondary);
+        text-align: center;
+        padding: 40px;
+    }
+    .entry {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    .entry-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        background: var(--surface-hover);
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+    }
+    .entry-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 10px;
+        border-radius: 9999px;
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid var(--border);
+    }
+    .badge-user {
+        background: rgba(108, 122, 224, 0.15);
+        color: var(--accent);
+        border-color: rgba(108, 122, 224, 0.35);
+    }
+    .badge-assistant {
+        background: rgba(46, 204, 113, 0.12);
+        color: #2ecc71;
+        border-color: rgba(46, 204, 113, 0.3);
+    }
+    .badge-tool {
+        background: rgba(241, 196, 15, 0.12);
+        color: #f1c40f;
+        border-color: rgba(241, 196, 15, 0.3);
+    }
+    .badge-compaction {
+        background: rgba(155, 89, 182, 0.15);
+        color: #9b59b6;
+        border-color: rgba(155, 89, 182, 0.35);
+    }
+    .badge-default {
+        background: rgba(144, 144, 160, 0.12);
+        color: var(--text-secondary);
+        border-color: var(--border);
+    }
+    .timestamp {
+        font-size: 12px;
+        color: var(--text-secondary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .entry-id {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--text-secondary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .entry-body {
+        padding: 12px 14px;
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+        white-space: pre-wrap;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .block-text {
+        white-space: pre-wrap;
+    }
+    .tool-call {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        overflow: hidden;
+    }
+    .tool-call-header {
+        padding: 6px 10px;
+        background: rgba(241, 196, 15, 0.1);
+        color: #f1c40f;
+        font-size: 12px;
+        font-weight: 500;
+    }
+    .code-block {
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        overflow: hidden;
+    }
+    .code-block-label {
+        padding: 5px 10px;
+        font-size: 11px;
+        color: var(--text-secondary);
+        background: var(--surface-hover);
+        border-bottom: 1px solid var(--border);
+    }
+    .code-block pre {
+        padding: 10px;
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+</style>

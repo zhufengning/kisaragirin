@@ -1,59 +1,21 @@
-import {Agent, type AgentTool, type AgentMessage} from '@earendil-works/pi-agent-core';
-import {Type, type AssistantMessage, type Context, type Usage} from '@earendil-works/pi-ai';
-import {complete} from '@earendil-works/pi-ai/compat';
-import {Memory} from 'mem0ai/oss';
-import {schema, type Db, kvGet, kvSet} from '~/db';
-import type {AppConfig, ModelEntry} from '~/config';
-import {eq, desc, and, gte} from 'drizzle-orm';
+import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
+import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
+import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
+import type {MemoryConfig} from 'mem0ai/oss';
+import {schema, type Db, setHarnessMetadata, type JsonlSessionMetadata, insertSystemMessage} from '~/db';
+import type {AppConfig} from '~/config';
+import {eq, asc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
-import {messagesToString, type StoredMessage, type StoredSegment} from '~/message-format';
-import {prompts} from '~/prompts';
+import {messagesToString, type StoredMessage} from '~/message-format';
+import {buildUserPromptArray, formatToolsDescription, prompts, replyReminder, replySystemPrompt} from '~/prompts';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
+import {getOrCreateGroupSession} from './harness-factory';
+import {resolveModelEntry} from './models-factory';
+import {createReplyTool, type ReplyToolParams} from './reply-tool';
 import {createMem0Tools} from './mem0-tool';
-
-const replyFirstTurnSchema = Type.Object({
-    immediate_reply: Type.String(),
-    action: Type.String({enum: ['FINISH', 'DEEP_RESEARCH']}),
-    deep_research_keyword: Type.Optional(Type.String())
-});
-
-type ReplyFirstTurnArgs = {
-    immediate_reply: string;
-    action: 'FINISH' | 'DEEP_RESEARCH';
-    deep_research_keyword?: string;
-};
-
-const replySecondTurnSchema = Type.Object({
-    final_reply: Type.String()
-});
-
-type ReplySecondTurnArgs = {
-    final_reply: string;
-};
-
-export interface FirstTurnResult {
-    texts: string[];
-    secondTurnPromise?: Promise<string[]>;
-}
-
-interface UsageAnchor {
-    totalTokens: number;
-    time: number;
-    compactId?: number;
-}
-
-interface SecondTurnContext {
-    messages: AgentMessage[];
-    firstTurnArgs: ReplyFirstTurnArgs;
-    systemPrompt: string;
-    modelEntry: ModelEntry;
-    mem0Tools: AgentTool[];
-    taskType: ReplyTask['type'];
-    debugPrefix?: string;
-}
 
 function extractText (response: AssistantMessage): string {
     return response.content
@@ -73,1102 +35,437 @@ function stringifyMessageContent (content: Context['messages'][number]['content'
         .join('\n');
 }
 
-function parseKeywordJson (text: string): string[] {
-    const cleaned = text.trim();
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(cleaned);
-    } catch {
-        const start = cleaned.indexOf('[');
-        const end = cleaned.lastIndexOf(']');
-        if (start !== -1 && end !== -1 && end > start) {
-            try {
-                parsed = JSON.parse(cleaned.slice(start, end + 1));
-            } catch {
-                return [];
-            }
-        } else {
-            return [];
-        }
-    }
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === 'string');
+export interface ReplyTurn {
+    text: string;
+    isDeepResearchFinal?: boolean;
 }
 
-function calculateCacheStats (messages: AgentMessage[]) {
-    let input = 0;
-    let output = 0;
-    let cacheRead = 0;
-    let cacheWrite = 0;
-    let totalTokens = 0;
-
-    for (const msg of messages) {
-        if (msg.role === 'assistant') {
-            const usage = msg.usage;
-            if (usage) {
-                input += usage.input;
-                output += usage.output;
-                cacheRead += usage.cacheRead;
-                cacheWrite += usage.cacheWrite;
-                totalTokens += usage.totalTokens;
-            }
-        }
-    }
-
-    const promptTokens = input + cacheRead + cacheWrite;
-    const cacheHitRate = promptTokens > 0 ? (cacheRead / promptTokens * 100).toFixed(2) : '0.00';
-
-    return {
-        input,
-        output,
-        cacheRead,
-        cacheWrite,
-        totalTokens,
-        promptTokens,
-        cacheHitRate
-    };
-}
-
-function getLastAssistant (agent: Agent): AssistantMessage | undefined {
-    const messages = agent.state.messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.role === 'assistant') {
-            return msg as AssistantMessage;
-        }
-    }
-    return;
-}
-
-function isFirstTurnEmpty (result: ReplyFirstTurnArgs | null): boolean {
-    return !result || !result.immediate_reply.trim();
-}
-
-function isSecondTurnEmpty (result: ReplySecondTurnArgs | null): boolean {
-    return !result || !result.final_reply.trim();
-}
-
-const OVERFLOW_PATTERNS = [
-    /prompt is too long/i,
-    /request_too_large/i,
-    /input is too long for requested model/i,
-    /exceeds the context window/i,
-    /exceeds (?:the )?(?:model'?s )?maximum context length of [\d,]+ tokens?/i,
-    /input token count.*exceeds the maximum/i,
-    /maximum prompt length is \d+/i,
-    /reduce the length of the messages/i,
-    /maximum context length is \d+ tokens/i,
-    /exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i,
-    /input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i,
-    /exceeds the limit of \d+/i,
-    /exceeds the available context size/i,
-    /greater than the context length/i,
-    /context window exceeds limit/i,
-    /exceeded model token limit/i,
-    /too large for model with \d+ maximum context length/i,
-    /model_context_window_exceeded/i,
-    /prompt too long; exceeded (?:max )?context length/i,
-    /context[_ ]length[_ ]exceeded/i,
-    /too many tokens/i,
-    /token limit exceeded/i,
-    /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i
-];
-
-const NON_OVERFLOW_PATTERNS = [
-    /^(Throttling error|Service unavailable):/i,
-    /rate limit/i,
-    /too many requests/i
-];
-
-function calculateBaselineTokens (usage: Usage): number {
-    return usage.input + usage.cacheRead + usage.cacheWrite;
-}
-
-function isContextOverflow (message: AssistantMessage, contextWindow?: number): boolean {
-    if (message.stopReason === 'error' && message.errorMessage) {
-        const isNonOverflow = NON_OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!));
-        if (!isNonOverflow && OVERFLOW_PATTERNS.some(p => p.test(message.errorMessage!))) {
-            return true;
-        }
-    }
-    if (contextWindow && message.stopReason === 'stop') {
-        const inputTokens = message.usage.input + message.usage.cacheRead;
-        if (inputTokens > contextWindow) {
-            return true;
-        }
-    }
-    if (contextWindow && message.stopReason === 'length' && message.usage.output === 0) {
-        const inputTokens = message.usage.input + message.usage.cacheRead;
-        if (inputTokens >= contextWindow * 0.99) {
-            return true;
-        }
-    }
-    return false;
+export interface GenerateReplyResult {
+    turns: ReplyTurn[];
+    failed?: boolean;
 }
 
 export class ReplyAgent {
     private db: Db;
     private descQueue: DescQueue;
     private config: AppConfig;
+    private models: Models;
+    private groupId: number;
+    private session: Session<JsonlSessionMetadata>;
+    private harness: AgentHarness;
     private logger: Logger;
-    private firstTurnArgs: ReplyFirstTurnArgs | null = null;
-    private systemPrompt: string = '';
-    private modelEntry: ModelEntry | null = null;
-    private mem0Tools: AgentTool[] = [];
     private taskType: ReplyTask['type'] = 'silence';
-    private agent: Agent | null = null;
+    private systemPromptText: string;
     private debugPrefix?: string;
+    private lastReplyToolParams: ReplyToolParams | null = null;
+    private toolCallRoundCount = 0;
 
-    constructor (db: Db, descQueue: DescQueue, config: AppConfig) {
-        this.db = db;
-        this.descQueue = descQueue;
-        this.config = config;
+    private constructor (options: {
+        db: Db;
+        descQueue: DescQueue;
+        config: AppConfig;
+        models: Models;
+        groupId: number;
+        session: Session<JsonlSessionMetadata>;
+        harness: AgentHarness;
+        systemPromptText: string;
+    }) {
+        this.db = options.db;
+        this.descQueue = options.descQueue;
+        this.config = options.config;
+        this.models = options.models;
+        this.groupId = options.groupId;
+        this.session = options.session;
+        this.harness = options.harness;
+        this.systemPromptText = options.systemPromptText;
         this.logger = new Logger();
     }
 
-    // ==================== Auto Compact ====================
+    static async create (options: {
+        groupId: number;
+        db: Db;
+        descQueue: DescQueue;
+        config: AppConfig;
+        models: Models;
+        memory?: MemoryConfig | null;
+    }): Promise<ReplyAgent> {
+        const {groupId, db, descQueue, config, models, memory} = options;
 
-    private estimateSegmentTokens (seg: StoredSegment): number {
-        switch (seg.type) {
-        case 'text':
-            return Math.ceil(seg.text.length / 4);
-        case 'at':
-            return Math.ceil((seg.targetName || seg.target).length / 4) + 2;
-        case 'image':
-            return 1200;
-        case 'face':
-            return 3;
-        case 'record':
-            return 5;
-        case 'video':
-            return Math.ceil((seg.fileName || '').length / 4) + 5;
-        case 'file':
-            return Math.ceil(seg.fileName.length / 4) + 5;
-        case 'json':
-            return Math.ceil((seg.data || '').length / 4);
-        case 'poke':
-            return 5;
-        case 'dice':
-        case 'rps':
-            return 3;
-        case 'reply':
-            if (seg.message) {
-                return this.estimateMessageTokens(seg.message);
+        const logger = new Logger();
+        const {session, metadata, isNew} = await getOrCreateGroupSession(groupId, config, db);
+
+        const harnessEntry = resolveModelEntry(config, config.ai.assignments.agent_harness);
+        const env = new NodeExecutionEnv({cwd: process.cwd()});
+
+        const agentRef: {current: ReplyAgent | null} = {current: null};
+
+        const replyTool = createReplyTool({
+            onCalled: params => {
+                agentRef.current!.lastReplyToolParams = params;
             }
-            return 5;
-        case 'forward':
-            if (seg.messages) {
-                return seg.messages.reduce((sum, m) => sum + this.estimateMessageTokens(m), 0);
-            }
-            return 5;
-        case 'compact':
-        case 'system':
-            return Math.ceil(seg.text.length / 4) + 5;
-        default:
-            return 0;
-        }
-    }
-
-    private estimateMessageTokens (msg: StoredMessage): number {
-        const segmentTokens = msg.segments.reduce((sum, seg) => sum + this.estimateSegmentTokens(seg), 0);
-        const senderName = msg.senderCard || msg.senderName || '';
-        const senderTokens = Math.ceil(senderName.length / 4) + 4;
-        return segmentTokens + senderTokens + 4;
-    }
-
-    private estimateMessagesTokens (messages: StoredMessage[]): number {
-        return messages.reduce((sum, msg) => sum + this.estimateMessageTokens(msg), 0);
-    }
-
-    private async loadUsageAnchor (groupId: number): Promise<UsageAnchor | undefined> {
-        const raw = await kvGet(this.db, `group:${groupId}:lastUsageAnchor`);
-        if (!raw) return;
-        try {
-            return JSON.parse(raw) as UsageAnchor;
-        } catch {
-            return;
-        }
-    }
-
-    private async saveUsageAnchor (groupId: number, anchor: UsageAnchor): Promise<void> {
-        await kvSet(this.db, `group:${groupId}:lastUsageAnchor`, JSON.stringify(anchor));
-    }
-
-    private async estimateContextTokens (groupId: number, messages: StoredMessage[]): Promise<number> {
-        const anchor = await this.loadUsageAnchor(groupId);
-        if (!anchor) {
-            return this.estimateMessagesTokens(messages);
-        }
-
-        const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
-        const lastCompactId = lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : undefined;
-        if (typeof anchor.compactId !== 'undefined' && anchor.compactId !== lastCompactId) {
-            return this.estimateMessagesTokens(messages);
-        }
-
-        let anchorIndex = -1;
-        for (let i = 0; i < messages.length; i++) {
-            if (messages[i].time >= anchor.time) {
-                anchorIndex = i;
-                break;
-            }
-        }
-        if (anchorIndex === -1) {
-            return this.estimateMessagesTokens(messages);
-        }
-
-        let trailingTokens = 0;
-        for (let i = anchorIndex + 1; i < messages.length; i++) {
-            trailingTokens += this.estimateMessageTokens(messages[i]);
-        }
-
-        return anchor.totalTokens + trailingTokens;
-    }
-
-    private async shouldCompact (messages: StoredMessage[], contextWindow: number, groupId: number): Promise<boolean> {
-        const threshold = this.config.input.auto_compact_threshold;
-        const reserveTokens = this.config.input.auto_compact_reserve_tokens;
-        const tokens = await this.estimateContextTokens(groupId, messages);
-        const limit = Math.floor((contextWindow - reserveTokens) * threshold);
-        this.logger.debug(
-            `[ReplyAgent] compact check: ${tokens} tokens vs limit ${limit} ` +
-            `(window ${contextWindow}, threshold ${threshold})`);
-        return tokens > limit;
-    }
-
-    private async generateCompactSummary (messages: StoredMessage[]): Promise<string> {
-        // Direct DB query for image descriptions, bypassing DescQueue to avoid hanging
-        const prompt = await messagesToString(messages, async (sha256: string) => {
-            const rows = await this.db
-                .select()
-                .from(schema.images)
-                .where(eq(schema.images.sha256, sha256));
-            return rows[0]?.description ?? undefined;
         });
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
-        if (!modelEntry) throw new Error('Deep research model not configured');
 
-        this.logger.info(
-            `[ReplyAgent] generating compact summary, ` +
-            `prompt length=${prompt.length}, messages=${messages.length}`);
+        const mem0Tools: AgentTool[] = memory ? createMem0Tools(memory, config.log.level, groupId) : [];
+        const tools: AgentTool[] = [replyTool, ...mem0Tools];
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 300000);
+        const systemPrompt = () => replySystemPrompt({
+            botName: config.input.bot_name || '机器人',
+            botPersona: config.input.bot_persona || '',
+            toolsDescription: formatToolsDescription(tools),
+            groupCustomPrompt: config.input.group_custom_prompts?.[groupId]
+        });
 
-        try {
-            const response = await complete(
-                modelEntry.model,
-                {
-                    systemPrompt: prompts.compactSummarySystem,
-                    messages: [{role: 'user', content: prompt, timestamp: Date.now()}]
-                },
-                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 300000}
-            );
+        const harness = new AgentHarness({
+            env,
+            session,
+            models,
+            model: harnessEntry.model,
+            systemPrompt,
+            tools,
+            activeToolNames: tools.map(t => t.name),
+            thinkingLevel: 'high'
+        });
 
-            clearTimeout(timeoutId);
-
-            const text = response.content
-                .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-                .map(c => c.text)
-                .join('\n')
-                .trim();
-
-            const usage = response.usage;
-            const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-            const cacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens * 100).toFixed(2) : '0.00';
-            this.logger.info(
-                `[ReplyAgent] compact summary generated, length=${text.length}, ` +
-                `cacheHitRate=${cacheHitRate}%, promptTokens=${promptTokens}, ` +
-                `outputTokens=${usage.output}, cacheRead=${usage.cacheRead}, ` +
-                `cacheWrite=${usage.cacheWrite}, totalTokens=${usage.totalTokens}`);
-            return text;
-        } catch (err) {
-            clearTimeout(timeoutId);
-            this.logger.error(`[ReplyAgent] compact summary failed:`, err);
-            throw err;
-        }
-    }
-
-    private async insertCompactMessage (
-        groupId: number, summary: string, time: number,
-    ): Promise<number> {
-        const rows = await this.db.insert(schema.messages).values({
-            messageId: 0,
+        const agent = new ReplyAgent({
+            db,
+            descQueue,
+            config,
+            models,
             groupId,
-            userId: 0,
-            time,
-            senderName: '系统',
-            senderCard: null,
-            isBot: true,
-            isAtBot: false,
-            specialType: 'compact',
-            segments: [{type: 'compact', text: summary}] as StoredSegment[],
-            rawMessage: summary
-        })
-            .returning({id: schema.messages.id});
+            session,
+            harness,
+            systemPromptText: systemPrompt()
+        });
 
-        const compactId = rows[0].id;
-        await kvSet(this.db, `group:${groupId}:lastCompactId`, String(compactId));
-        this.logger.info(`[ReplyAgent] [${groupId}] compact message inserted, id=${compactId}`);
-        return compactId;
+        agentRef.current = agent;
+
+        harness.on('tool_call', event => {
+            if (event.toolName === 'reply') {
+                return undefined;
+            }
+            agent.toolCallRoundCount++;
+            if (agent.toolCallRoundCount > config.input.max_tool_call_rounds) {
+                logger.warn(
+                    `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
+                    `${config.input.max_tool_call_rounds}, blocking`);
+                return {block: true, reason: 'tool call round limit exceeded'};
+            }
+            return undefined;
+        });
+
+        if (isNew) {
+            await agent.seedFromDatabase();
+            await setHarnessMetadata(db, groupId, metadata);
+        }
+
+        logger.info(`[ReplyAgent] [${groupId}] harness created, isNew=${isNew}`);
+        return agent;
     }
 
-    private async insertSystemMessage (
-        groupId: number, text: string, time: number,
-    ): Promise<number> {
-        const rows = await this.db.insert(schema.messages).values({
-            messageId: 0,
-            groupId,
-            userId: 0,
-            time,
-            senderName: '系统',
-            senderCard: null,
-            isBot: true,
-            isAtBot: false,
-            specialType: 'system',
-            segments: [{type: 'system', text}] as StoredSegment[],
-            rawMessage: text
-        })
-            .returning({id: schema.messages.id});
-
-        const id = rows[0].id;
-        this.logger.info(`[ReplyAgent] [${groupId}] system message inserted, id=${id}, text=${text.slice(0, 50)}${text.length > 50 ? '...' : ''}`);
-        return id;
-    }
-
-    async doCompact (groupId: number, messages: StoredMessage[]): Promise<StoredMessage[]> {
-        const keepRecent = this.config.input.auto_compact_keep_recent;
-
-        // 按消息条数保留最近的消息
-        const cutIndex = Math.max(0, messages.length - keepRecent);
-
-        const toSummarize = messages.slice(0, cutIndex);
-        const toKeep = messages.slice(cutIndex);
-
-        if (toSummarize.length === 0) {
-            this.logger.warn(`[ReplyAgent] [${groupId}] compact skipped: no messages to summarize`);
-            return messages;
-        }
-
-        this.logger.info(
-            `[ReplyAgent] [${groupId}] compacting ${toSummarize.length} messages, ` +
-            `keeping ${toKeep.length}`);
-
-        const summary = await this.generateCompactSummary(toSummarize);
-        if (!summary) {
-            this.logger.error(`[ReplyAgent] [${groupId}] compact summary generation failed`);
-            return messages;
-        }
-
-        let compactTime: number;
-        if (toKeep.length > 0) {
-            compactTime = toKeep[0].time - 1;
-        } else if (toSummarize.length > 0) {
-            compactTime = toSummarize[toSummarize.length - 1].time - 1;
-        } else {
-            compactTime = Math.floor(Date.now() / 1000);
-        }
-        await this.insertCompactMessage(groupId, summary, compactTime);
-
-        const compactMsg: StoredMessage = {
-            time: compactTime,
-            messageId: 0,
-            senderId: 0,
-            senderName: '系统',
-            senderCard: undefined,
-            isBot: true,
-            isAtBot: false,
-            segments: [{type: 'compact', text: summary}]
-        };
-
-        return [compactMsg, ...toKeep];
-    }
-
-    // ==================== Compact ====================
-
-    private async getAllMessages (groupId: number): Promise<StoredMessage[]> {
-        const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
-        const conditions = [eq(schema.messages.groupId, groupId)];
-        if (lastCompactIdStr) {
-            conditions.push(gte(schema.messages.id, parseInt(lastCompactIdStr, 10)));
-        }
-
+    private async seedFromDatabase (): Promise<void> {
         const rows = await this.db
             .select()
             .from(schema.messages)
-            .where(and(...conditions))
-            .orderBy(desc(schema.messages.id));
+            .where(eq(schema.messages.groupId, this.groupId))
+            .orderBy(asc(schema.messages.id));
 
-        rows.reverse();
+        for (const row of rows) {
+            const msg: StoredMessage = {
+                id: row.id,
+                time: row.time,
+                messageId: row.messageId,
+                senderId: row.userId,
+                senderName: row.senderName,
+                senderCard: row.senderCard ?? undefined,
+                isBot: row.isBot,
+                isAtBot: row.isAtBot,
+                segments: row.segments as StoredMessage['segments']
+            };
+            const text = await messagesToString([msg], sha => this.descQueue.resolve(sha));
+            if (!text.trim()) continue;
 
-        return rows.map(row => ({
-            id: row.id,
-            time: row.time,
-            messageId: row.messageId,
-            senderId: row.userId,
-            senderName: row.senderName,
-            senderCard: row.senderCard ?? undefined,
-            isBot: row.isBot,
-            isAtBot: row.isAtBot,
-            segments: row.segments as StoredMessage['segments']
-        }));
+            const role = msg.isBot ? 'assistant' : 'user';
+            await this.harness.appendMessage({
+                role,
+                content: [{type: 'text', text}],
+                timestamp: msg.time * 1000
+            } as AgentMessage);
+        }
     }
 
-    async triggerCompact (groupId: number, force = false): Promise<boolean> {
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
-        const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
-
-        const messages = await this.getAllMessages(groupId);
-
-        if (force || await this.shouldCompact(messages, contextWindow, groupId)) {
-            await this.doCompact(groupId, messages);
-            return true;
-        }
-
-        return false;
+    private getReplyToolParams (): ReplyToolParams | null {
+        return this.lastReplyToolParams;
     }
 
-    // ==================== Build Prompt ====================
-
-    async buildPrompt (
-        groupId: number, lastTriggerId: number, task: ReplyTask,
-    ): Promise<{ userPrompt: string[]; anchorTime: number }> {
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
-        const contextWindow = modelEntry?.model?.contextWindow ?? 128000;
-
-        let allMessages = await this.getAllMessages(groupId);
-        this.logger.debug(`[ReplyAgent] [${groupId}] fetched ${allMessages.length} total messages`);
-
-        if (await this.shouldCompact(allMessages, contextWindow, groupId)) {
-            allMessages = await this.doCompact(groupId, allMessages);
-        }
-
-        const history: StoredMessage[] = [];
-        const latest: StoredMessage[] = [];
-        for (const msg of allMessages) {
-            if (lastTriggerId > 0 && typeof msg.id !== 'undefined' && msg.id <= lastTriggerId) {
-                history.push(msg);
-            } else {
-                latest.push(msg);
-            }
-        }
-
-        const anchorTime = allMessages.length > 0 ? allMessages[allMessages.length - 1].time : 0;
-        const userPrompt = await this.buildUserPrompt(groupId, history, latest, task);
-        return {userPrompt, anchorTime};
-    }
-
-    async generateReply (groupId: number, lastTriggerId: number, task: ReplyTask): Promise<FirstTurnResult> {
-        this.logger.info(`[ReplyAgent] [${groupId}] generateReply start type=${task.type}`);
+    async generateReply (task: ReplyTask): Promise<GenerateReplyResult> {
         this.taskType = task.type;
+        this.lastReplyToolParams = null;
+        this.toolCallRoundCount = 0;
+        this.debugPrefix = undefined;
 
-        this.systemPrompt = this.buildSystemPrompt(groupId);
+        if (task.preResearchTopic) {
+            await this.doDeepResearchWithSystemMessages(task.preResearchTopic);
+        }
 
-        this.modelEntry = this.config.ai.models[this.config.ai.assignments.reply];
-        if (!this.modelEntry) throw new Error('Reply model not configured');
+        const userTexts = await buildUserPromptArray({
+            groupId: this.groupId,
+            latestMessages: [task.triggerMessage],
+            task,
+            descQueue: this.descQueue
+        });
 
-        this.mem0Tools = this.config.ai.mem0 ?
-            createMem0Tools(this.config.ai.mem0, this.config.log.level, groupId) :
-            [];
+        if (userTexts.length === 0) {
+            return this.fallbackResult();
+        }
 
-        const maxAttempts = 2;
-        let attempt = 0;
-        let firstTurnResult: ReplyFirstTurnArgs | null = null;
-        let anchorTime = 0;
+        this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
+        this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
+        for (let i = 0; i < userTexts.length; i++) {
+            this.dumpUserMessage(this.debugPrefix, i, userTexts[i]);
+        }
 
-        const replyFirstTurnTool: AgentTool<typeof replyFirstTurnSchema> = {
-            name: 'reply_first_turn',
-            label: '第一轮回复',
-            description: '第一轮回复决策工具。决定是直接回复（FINISH）还是先进行深度研究（DEEP_RESEARCH）。如果选择 FINISH，immediate_reply 就是你的最终回复内容。否则将先发送immediate_reply，再为你提供深度研究结果以便发送后续消息。',
-            parameters: replyFirstTurnSchema,
-            async execute (_toolCallId, params) {
-                firstTurnResult = params as ReplyFirstTurnArgs;
-                return {
-                    content: [{type: 'text', text: `决策: ${params.action}`}],
-                    details: params,
-                    terminate: true
-                };
-            }
-        };
-
-        while (attempt < maxAttempts) {
-            attempt++;
-            const promptResult = await this.buildPrompt(groupId, lastTriggerId, task);
-            const userPrompt = promptResult.userPrompt;
-            anchorTime = promptResult.anchorTime;
-            this.logger.debug(`[ReplyAgent] [${groupId}] prompt built. userPrompt length=${userPrompt.length}`);
-
-            if (attempt === 1) {
-                this.debugPrefix = this.dumpPrompt(groupId, task.type, this.systemPrompt, userPrompt.join('\n\n'));
-            }
-
-            firstTurnResult = null;
-            const maxToolCallRounds = this.config.input.max_tool_call_rounds;
-            let turnCount = 0;
-
-            this.agent = new Agent({
-                sessionId: `group-${groupId}`,
-                initialState: {
-                    systemPrompt: this.systemPrompt,
-                    model: this.modelEntry!.model,
-                    tools: [replyFirstTurnTool, ...this.mem0Tools],
-                    thinkingLevel: 'high'
-                },
-                getApiKey: () => this.modelEntry!.apiKey,
-                afterToolCall: async () => {
-                    if (turnCount >= maxToolCallRounds) {
-                        this.logger.warn(
-                            `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
-                            `${maxToolCallRounds}, forcing termination`);
-                        return {terminate: true};
-                    }
-                },
-                prepareNextTurn: async () => {
-                    turnCount++;
-                }
-            });
-
-            this.logger.debug(`[ReplyAgent] [${groupId}] first turn agent prompt...`);
-            this.agent.reset();
-            turnCount = 0;
-            await this.agent.prompt(userPrompt.map(text => ({
+        for (let i = 0; i < userTexts.length - 1; i++) {
+            await this.harness.appendMessage({
                 role: 'user',
-                content: text,
+                content: [{type: 'text', text: userTexts[i]}],
                 timestamp: Date.now()
-            })));
-            await this.agent.waitForIdle();
-
-            let lastAssistant = getLastAssistant(this.agent);
-
-            if (lastAssistant?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] first turn API error ` +
-                    `(attempt ${attempt}/${maxAttempts}): ${lastAssistant.errorMessage}`);
-                if (attempt >= maxAttempts) {
-                    if (this.taskType === 'at') {
-                        return {texts: ['@响应失败']};
-                    }
-                    return {texts: []};
-                }
-                continue;
-            }
-
-            let reminderCount = 0;
-            const maxReminders = 2;
-
-            // eslint-disable-next-line no-unmodified-loop-condition
-            while (isFirstTurnEmpty(firstTurnResult) && reminderCount < maxReminders) {
-                reminderCount++;
-                this.logger.info(
-                    `[ReplyAgent] [${groupId}] first turn no toolCall or empty reply, ` +
-                    `sending reminder ${reminderCount}/${maxReminders}...`);
-                turnCount = 0;
-                await this.agent!.prompt(prompts.replyReminderFirstTurn);
-                await this.agent!.waitForIdle();
-
-                lastAssistant = getLastAssistant(this.agent);
-                if (lastAssistant?.stopReason === 'error') {
-                    this.logger.error(
-                        `[ReplyAgent] [${groupId}] reminder API error: ${lastAssistant.errorMessage}`);
-                    break;
-                }
-            }
-
-            lastAssistant = getLastAssistant(this.agent);
-            if (lastAssistant?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] first turn API error after reminders ` +
-                    `(attempt ${attempt}/${maxAttempts}): ${lastAssistant.errorMessage}`);
-                if (attempt >= maxAttempts) {
-                    if (this.taskType === 'at') {
-                        return {texts: ['@响应失败']};
-                    }
-                    return {texts: []};
-                }
-                continue;
-            }
-
-            const contextWindow = this.modelEntry.model.contextWindow ?? 128000;
-
-            if (lastAssistant && isContextOverflow(lastAssistant, contextWindow)) {
-                if (attempt >= maxAttempts) {
-                    this.logger.error(`[ReplyAgent] [${groupId}] overflow recovery failed after retry`);
-                    if (this.taskType === 'at') {
-                        return {texts: ['@响应失败']};
-                    }
-                    return {texts: []};
-                }
-                const msgs = this.agent.state.messages;
-                if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
-                    this.agent.state.messages = msgs.slice(0, -1);
-                }
-                const allMessages = await this.getAllMessages(groupId);
-                const compacted = await this.doCompact(groupId, allMessages);
-                if (compacted.length === allMessages.length) {
-                    this.logger.error(`[ReplyAgent] [${groupId}] compact failed during overflow recovery`);
-                    if (this.taskType === 'at') {
-                        return {texts: ['@响应失败']};
-                    }
-                    return {texts: []};
-                }
-                this.logger.info(`[ReplyAgent] [${groupId}] overflow recovery: compact done, retrying...`);
-                continue;
-            }
-
-            if (lastAssistant && lastAssistant.stopReason !== 'aborted') {
-                const lastCompactIdStr = await kvGet(this.db, `group:${groupId}:lastCompactId`);
-                await this.saveUsageAnchor(groupId, {
-                    totalTokens: calculateBaselineTokens(lastAssistant.usage),
-                    time: anchorTime,
-                    compactId: lastCompactIdStr ? parseInt(lastCompactIdStr, 10) : undefined
-                });
-            }
-
-            const firstTurnStats = calculateCacheStats(this.agent.state.messages);
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] first turn cache stats: ` +
-                `hitRate=${firstTurnStats.cacheHitRate}%, ` +
-                `promptTokens=${firstTurnStats.promptTokens}, ` +
-                `outputTokens=${firstTurnStats.output}, ` +
-                `cacheRead=${firstTurnStats.cacheRead}, ` +
-                `cacheWrite=${firstTurnStats.cacheWrite}, ` +
-                `totalTokens=${firstTurnStats.totalTokens}`);
-
-            if (isFirstTurnEmpty(firstTurnResult)) {
-                const text = lastAssistant ? extractText(lastAssistant) : '';
-                this.logger.info(
-                    `[ReplyAgent] [${groupId}] first turn no toolCall or empty reply after ${maxReminders} reminders, ` +
-                    `fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-                if (this.taskType === 'at') {
-                    return {texts: ['@响应失败']};
-                }
-                return {texts: []};
-            }
-
-            break;
+            } as AgentMessage);
         }
 
-        if (isFirstTurnEmpty(firstTurnResult)) {
-            if (this.taskType === 'at') {
-                return {texts: ['@响应失败']};
-            }
-            return {texts: []};
+        const assistant = await this.promptWithReminders(userTexts[userTexts.length - 1]);
+
+        if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] first turn failed ` +
+                `(stopReason=${assistant?.stopReason ?? 'undefined'})`);
+            return this.fallbackResult();
         }
 
-        const firstTurnArgs = firstTurnResult!;
-        this.logger.info(`[ReplyAgent] [${groupId}] first turn action=${firstTurnArgs.action}`);
-        this.dumpFirstTurnOutput(groupId, this.debugPrefix, firstTurnArgs, this.agent!.state.messages);
+        this.dumpOutput(this.debugPrefix, assistant);
 
-        if (firstTurnArgs.action === 'FINISH') {
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] FINISH reply=${firstTurnArgs.immediate_reply.slice(0, 80)}${firstTurnArgs.immediate_reply.length > 80 ? '...' : ''}`);
-            return {texts: [firstTurnArgs.immediate_reply]};
+        const params = this.getReplyToolParams();
+        if (!params || !params.reply.trim()) {
+            this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
+            return this.fallbackResult();
         }
 
-        this.logger.info(
-            `[ReplyAgent] [${groupId}] DEEP_RESEARCH immediate_reply=${firstTurnArgs.immediate_reply.slice(0, 80)}${firstTurnArgs.immediate_reply.length > 80 ? '...' : ''}`);
+        const turns: ReplyTurn[] = [
+            {text: params.reply}
+        ];
 
-        this.firstTurnArgs = firstTurnArgs;
-
-        const secondTurnContext: SecondTurnContext = {
-            messages: [...this.agent!.state.messages],
-            firstTurnArgs: {...firstTurnArgs},
-            systemPrompt: this.systemPrompt,
-            modelEntry: this.modelEntry!,
-            mem0Tools: [...this.mem0Tools],
-            taskType: this.taskType,
-            debugPrefix: this.debugPrefix
-        };
-
-        const secondTurnPromise = this.executeSecondTurnStandalone(groupId, secondTurnContext);
-
-        return {
-            texts: [firstTurnArgs.immediate_reply],
-            secondTurnPromise
-        };
-    }
-
-    async generateSecondTurn (groupId: number): Promise<string[]> {
-        if (!this.firstTurnArgs || this.firstTurnArgs.action !== 'DEEP_RESEARCH') {
-            return [];
+        if (!params.requires_deep_research) {
+            return {turns};
         }
 
-        if (!this.agent) {
-            this.logger.error(`[ReplyAgent] [${groupId}] agent not initialized in second turn`);
-            return [];
-        }
-
-        const firstTurnArgs = this.firstTurnArgs;
-
-        // 深度研究
-        this.logger.info(`[ReplyAgent] [${groupId}] DEEP_RESEARCH keyword=${firstTurnArgs.deep_research_keyword || '(empty)'}`);
+        const topic = params.deep_research_topic || params.reply;
         let researchResult: string;
         try {
-            researchResult = await this.doDeepResearch(
-                firstTurnArgs.deep_research_keyword || '',
-                groupId,
-                this.debugPrefix
-            );
-            this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
-            if (!researchResult) {
-                this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
-                researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
-            }
+            researchResult = await this.doDeepResearchWithSystemMessages(topic);
         } catch (err) {
-            this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
+            this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
             researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
         }
 
-        // 第二轮：复用第一轮的 agent，保留完整上下文
-        let secondTurnResult: ReplySecondTurnArgs | null = null;
+        await this.harness.appendMessage({
+            role: 'user',
+            content: [{type: 'text', text: `深度研究结果：\n${researchResult}`}],
+            timestamp: Date.now()
+        } as AgentMessage);
 
-        const replySecondTurnTool: AgentTool<typeof replySecondTurnSchema> = {
-            name: 'reply_second_turn',
-            label: '第二轮回复',
-            description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
-            parameters: replySecondTurnSchema,
-            async execute (_toolCallId, params) {
-                secondTurnResult = params as ReplySecondTurnArgs;
-                return {
-                    content: [{type: 'text', text: `最终回复已生成`}],
-                    details: params,
-                    terminate: true
-                };
-            }
-        };
+        const finalAssistant = await this.promptWithReminders('请根据深度研究结果，使用 reply 工具给出最终回复。');
 
-        // 复用第一轮的 agent，只替换工具列表
-        this.agent.state.tools = [replySecondTurnTool, ...this.mem0Tools];
-
-        const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
-
-        this.logger.debug(`[ReplyAgent] [${groupId}] second turn agent prompt (reusing first-turn agent)...`);
-        secondTurnResult = null;
-        await this.agent.prompt(secondUserPrompt);
-        await this.agent.waitForIdle();
-
-        let lastAssistant2 = getLastAssistant(this.agent);
-
-        if (lastAssistant2?.stopReason === 'error') {
+        if (!finalAssistant || finalAssistant.stopReason === 'error' || finalAssistant.stopReason === 'aborted') {
             this.logger.error(
-                `[ReplyAgent] [${groupId}] second turn API error: ${lastAssistant2.errorMessage}`);
-            if (this.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
+                `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
+                `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
+            turns.push({text: this.taskType === 'at' ? '@深度研究失败' : '', isDeepResearchFinal: true});
+            return {turns, failed: true};
         }
 
-        let reminderCount2 = 0;
-        const maxReminders = 2;
+        this.dumpOutput(this.debugPrefix, finalAssistant);
 
-        // eslint-disable-next-line no-unmodified-loop-condition
-        while (isSecondTurnEmpty(secondTurnResult) && reminderCount2 < maxReminders) {
-            reminderCount2++;
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] second turn no toolCall or empty reply, ` +
-                `sending reminder ${reminderCount2}/${maxReminders}...`);
-            await this.agent.prompt(prompts.replyReminderSecondTurn);
-            await this.agent.waitForIdle();
-
-            lastAssistant2 = getLastAssistant(this.agent);
-            if (lastAssistant2?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] second turn reminder API error: ${lastAssistant2.errorMessage}`);
-                break;
-            }
+        const finalParams = this.getReplyToolParams();
+        if (!finalParams || !finalParams.reply.trim()) {
+            this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
+            turns.push({text: this.taskType === 'at' ? '@深度研究失败' : '', isDeepResearchFinal: true});
+            return {turns, failed: true};
         }
 
-        lastAssistant2 = getLastAssistant(this.agent);
-        if (lastAssistant2?.stopReason === 'error') {
-            this.logger.error(
-                `[ReplyAgent] [${groupId}] second turn API error after reminders: ${lastAssistant2.errorMessage}`);
-            if (this.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        const secondTurnStats = calculateCacheStats(this.agent.state.messages);
-        this.logger.info(
-            `[ReplyAgent] [${groupId}] second turn cache stats: ` +
-            `hitRate=${secondTurnStats.cacheHitRate}%, ` +
-            `promptTokens=${secondTurnStats.promptTokens}, ` +
-            `outputTokens=${secondTurnStats.output}, ` +
-            `cacheRead=${secondTurnStats.cacheRead}, ` +
-            `cacheWrite=${secondTurnStats.cacheWrite}, ` +
-            `totalTokens=${secondTurnStats.totalTokens}`);
-
-        const contextWindow2 = this.modelEntry?.model.contextWindow ?? 128000;
-        if (lastAssistant2 && isContextOverflow(lastAssistant2, contextWindow2)) {
-            this.logger.error(`[ReplyAgent] [${groupId}] second turn context overflow detected`);
-            if (this.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        if (isSecondTurnEmpty(secondTurnResult)) {
-            const text = lastAssistant2 ? extractText(lastAssistant2) : '';
-            this.logger.info(`[ReplyAgent] [${groupId}] second turn no toolCall or empty reply after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            if (this.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        const secondTurnArgs = secondTurnResult!;
-        this.logger.info(`[ReplyAgent] [${groupId}] second turn final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
-        this.dumpSecondTurnOutput(groupId, this.debugPrefix, secondTurnArgs, this.agent!.state.messages);
-        return [secondTurnArgs.final_reply];
+        turns.push({text: finalParams.reply, isDeepResearchFinal: true});
+        return {turns};
     }
 
-    private async executeSecondTurnStandalone (groupId: number, context: SecondTurnContext): Promise<string[]> {
-        const firstTurnArgs = context.firstTurnArgs;
-        const researchKeyword = firstTurnArgs.deep_research_keyword || '';
-        const researchResult = await this.doDeepResearchWithSystemMessages(
-            groupId,
-            researchKeyword,
-            '（深度研究失败，请根据你已有的知识直接回复。）',
-            '（深度研究未能获取结果，请根据你已有的知识直接回复。）',
-            context.debugPrefix
-        );
+    private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
+        let assistant: AssistantMessage | undefined;
+        const MAX_REMINDERS = 2;
 
-        let secondTurnResult: ReplySecondTurnArgs | null = null;
-
-        const replySecondTurnTool: AgentTool<typeof replySecondTurnSchema> = {
-            name: 'reply_second_turn',
-            label: '第二轮回复',
-            description: '第二轮回复工具。在获得深度研究结果后，给出最终回复。',
-            parameters: replySecondTurnSchema,
-            async execute (_toolCallId, params) {
-                secondTurnResult = params as ReplySecondTurnArgs;
-                return {
-                    content: [{type: 'text', text: `最终回复已生成`}],
-                    details: params,
-                    terminate: true
-                };
+        for (let i = 0; i <= MAX_REMINDERS; i++) {
+            this.lastReplyToolParams = null;
+            if (i === 0) {
+                assistant = await this.harness.prompt(lastText);
+            } else {
+                this.logger.info(
+                    `[ReplyAgent] [${this.groupId}] sending reminder ${i}/${MAX_REMINDERS}...`);
+                assistant = await this.harness.prompt(replyReminder());
             }
-        };
 
-        const maxToolCallRounds = this.config.input.max_tool_call_rounds;
-        let turnCount = 0;
-
-        const agent = new Agent({
-            sessionId: `group-${groupId}`,
-            initialState: {
-                systemPrompt: context.systemPrompt,
-                model: context.modelEntry.model,
-                tools: [replySecondTurnTool, ...context.mem0Tools],
-                thinkingLevel: 'high'
-            },
-            getApiKey: () => context.modelEntry.apiKey,
-            afterToolCall: async () => {
-                if (turnCount >= maxToolCallRounds) {
-                    this.logger.warn(
-                        `[ReplyAgent] [${groupId}] second turn tool call rounds exceeded ` +
-                        `${maxToolCallRounds}, forcing termination`);
-                    return {terminate: true};
-                }
-            },
-            prepareNextTurn: async () => {
-                turnCount++;
+            if (!assistant) {
+                continue;
             }
-        });
-
-        agent.state.messages = [...context.messages];
-
-        const secondUserPrompt = `${prompts.replyReminderSecondTurn}\n\n深度研究结果：\n${researchResult}`;
-
-        this.logger.debug(`[ReplyAgent] [${groupId}] second turn standalone prompt...`);
-        secondTurnResult = null;
-        await agent.prompt(secondUserPrompt);
-        await agent.waitForIdle();
-
-        let lastAssistantStandalone = getLastAssistant(agent);
-
-        if (lastAssistantStandalone?.stopReason === 'error') {
-            this.logger.error(
-                `[ReplyAgent] [${groupId}] second turn standalone API error: ${lastAssistantStandalone.errorMessage}`);
-            if (context.taskType === 'at') {
-                return ['@深度研究失败'];
+            if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
+                return assistant;
             }
-            return [];
-        }
-
-        let reminderCount = 0;
-        const maxReminders = 2;
-
-        // eslint-disable-next-line no-unmodified-loop-condition
-        while (isSecondTurnEmpty(secondTurnResult) && reminderCount < maxReminders) {
-            reminderCount++;
-            this.logger.info(
-                `[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply, ` +
-                `sending reminder ${reminderCount}/${maxReminders}...`);
-            await agent.prompt(prompts.replyReminderSecondTurn);
-            await agent.waitForIdle();
-
-            lastAssistantStandalone = getLastAssistant(agent);
-            if (lastAssistantStandalone?.stopReason === 'error') {
-                this.logger.error(
-                    `[ReplyAgent] [${groupId}] second turn standalone reminder API error: ${lastAssistantStandalone.errorMessage}`);
-                break;
+            if (this.getReplyToolParams()?.reply.trim()) {
+                return assistant;
             }
         }
 
-        lastAssistantStandalone = getLastAssistant(agent);
-        if (lastAssistantStandalone?.stopReason === 'error') {
-            this.logger.error(
-                `[ReplyAgent] [${groupId}] second turn standalone API error after reminders: ${lastAssistantStandalone.errorMessage}`);
-            if (context.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        const secondTurnStats = calculateCacheStats(agent.state.messages);
-        this.logger.info(
-            `[ReplyAgent] [${groupId}] second turn standalone cache stats: ` +
-            `hitRate=${secondTurnStats.cacheHitRate}%, ` +
-            `promptTokens=${secondTurnStats.promptTokens}, ` +
-            `outputTokens=${secondTurnStats.output}, ` +
-            `cacheRead=${secondTurnStats.cacheRead}, ` +
-            `cacheWrite=${secondTurnStats.cacheWrite}, ` +
-            `totalTokens=${secondTurnStats.totalTokens}`);
-
-        const standaloneContextWindow = context.modelEntry.model.contextWindow ?? 128000;
-        if (lastAssistantStandalone && isContextOverflow(lastAssistantStandalone, standaloneContextWindow)) {
-            this.logger.error(`[ReplyAgent] [${groupId}] second turn standalone context overflow detected`);
-            if (context.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        if (isSecondTurnEmpty(secondTurnResult)) {
-            const text = lastAssistantStandalone ? extractText(lastAssistantStandalone) : '';
-            this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone no toolCall or empty reply after ${maxReminders} reminders, fallback: ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
-            if (context.taskType === 'at') {
-                return ['@深度研究失败'];
-            }
-            return [];
-        }
-
-        const secondTurnArgs = secondTurnResult!;
-        this.logger.info(`[ReplyAgent] [${groupId}] second turn standalone final_reply=${secondTurnArgs.final_reply.slice(0, 80)}${secondTurnArgs.final_reply.length > 80 ? '...' : ''}`);
-        this.dumpSecondTurnOutput(groupId, context.debugPrefix, secondTurnArgs, agent.state.messages);
-        return [secondTurnArgs.final_reply];
+        return assistant;
     }
 
-    async runPreReplyResearch (groupId: number, topic: string): Promise<void> {
+    private fallbackResult (): GenerateReplyResult {
+        if (this.taskType === 'at') {
+            return {turns: [{text: '@响应失败'}], failed: true};
+        }
+        return {turns: [], failed: true};
+    }
+
+    private async doDeepResearchWithSystemMessages (topic: string): Promise<string> {
         const researchTopic = topic.trim();
-        if (!researchTopic) return;
-        await this.doDeepResearchWithSystemMessages(
-            groupId,
-            researchTopic,
-            '（定时任务预研究失败，请根据已有信息完成本次任务。）',
-            '（定时任务预研究未能获取结果，请根据已有信息完成本次任务。）'
-        );
-    }
-
-    private async doDeepResearchWithSystemMessages (
-        groupId: number,
-        researchKeyword: string,
-        failureFallback: string,
-        emptyFallback: string,
-        debugPrefix?: string,
-    ): Promise<string> {
         const startTime = Math.floor(Date.now() / 1000);
-        await this.insertSystemMessage(groupId, `开始深度研究：${researchKeyword}`, startTime);
+        const startText = `开始深度研究：${researchTopic}`;
+        const startId = await insertSystemMessage(this.db, this.groupId, startText, startTime);
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] system message inserted, id=${startId}, ` +
+            `text=${startText.slice(0, 50)}${startText.length > 50 ? '...' : ''}`);
+        await this.harness.appendMessage({
+            role: 'user',
+            content: [{type: 'text', text: `开始深度研究：${researchTopic}`}],
+            timestamp: startTime * 1000
+        } as AgentMessage);
 
         let researchResult: string | undefined;
         let researchError: string | undefined;
 
         try {
-            researchResult = await this.doDeepResearch(researchKeyword, groupId, debugPrefix);
-            this.logger.debug(`[ReplyAgent] [${groupId}] deep research done length=${researchResult.length}`);
+            researchResult = await this.doDeepResearch(researchTopic);
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] deep research done length=${researchResult.length}`);
             if (!researchResult) {
-                this.logger.error(`[ReplyAgent] [${groupId}] deep research returned empty result`);
+                this.logger.error(`[ReplyAgent] [${this.groupId}] deep research returned empty result`);
                 researchError = '深度研究未能获取结果';
-                researchResult = emptyFallback;
+                researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
             }
         } catch (err) {
-            this.logger.error(`[ReplyAgent] [${groupId}] deep research failed:`, err);
+            this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
             researchError = err instanceof Error ? err.message : String(err);
-            researchResult = failureFallback;
+            researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
         } finally {
             const endTime = Math.floor(Date.now() / 1000);
             let endMsg: string;
             if (researchError) {
-                endMsg = `深度研究结束：${researchKeyword}\n\n${researchError}`;
+                endMsg = `深度研究结束：${researchTopic}\n\n${researchError}`;
             } else if (researchResult) {
-                endMsg = `深度研究结束：${researchKeyword}\n\n${researchResult}`;
+                endMsg = `深度研究结束：${researchTopic}\n\n${researchResult}`;
             } else {
-                endMsg = `深度研究结束：${researchKeyword}`;
+                endMsg = `深度研究结束：${researchTopic}`;
             }
-            await this.insertSystemMessage(groupId, endMsg, endTime);
+            const endId = await insertSystemMessage(this.db, this.groupId, endMsg, endTime);
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] system message inserted, id=${endId}, ` +
+                `text=${endMsg.slice(0, 50)}${endMsg.length > 50 ? '...' : ''}`);
+            await this.harness.appendMessage({
+                role: 'user',
+                content: [{type: 'text', text: endMsg}],
+                timestamp: endTime * 1000
+            } as AgentMessage);
         }
 
         return researchResult;
     }
 
-    private dumpPrompt (
-        groupId: number, taskType: string, systemPrompt: string, userPrompt: string,
-    ): string | undefined {
-        if (!this.config.input.debug_dump_prompt) return;
+    private async doDeepResearch (topic: string): Promise<string> {
+        const modelEntry = resolveModelEntry(this.config, this.config.ai.assignments.deep_research);
+        this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch model=${modelEntry.model.name} topic=${topic}`);
 
-        const dir = join('data', 'debug');
-        mkdirSync(dir, {recursive: true});
+        const context: Context = {
+            messages: [{
+                role: 'user',
+                content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`,
+                timestamp: Date.now()
+            }]
+        };
+        const dumpPrefix = this.dumpDeepResearchPrompt(context);
 
-        const ts = new Date().toISOString()
-            .replace(/:/g, '-');
-        const prefix = `${groupId}-${taskType}-${ts}`;
+        let response: AssistantMessage | undefined;
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1_800_000);
 
-        writeFileSync(join(dir, `${prefix}-system.txt`), systemPrompt, 'utf-8');
-        writeFileSync(join(dir, `${prefix}-user.txt`), userPrompt, 'utf-8');
+            response = await this.models.completeSimple(modelEntry.model, context, {
+                apiKey: modelEntry.apiKey,
+                signal: controller.signal,
+                timeoutMs: 1_800_000,
+                onPayload: payload => {
+                    this.dumpDeepResearchPayload(dumpPrefix, payload);
+                }
+            });
 
-        this.logger.debug(
-            `[ReplyAgent] [${groupId}] prompt dumped to ` +
-            `${prefix}-system.txt (${systemPrompt.length} chars) / ` +
-            `${prefix}-user.txt (${userPrompt.length} chars)`);
+            clearTimeout(timeoutId);
+            this.dumpDeepResearchConversation(context, response);
 
-        return prefix;
+            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+                throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
+            }
+
+            const text = extractText(response);
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch done text length=${text.length}`);
+            return text;
+        } catch (err) {
+            if (!response) {
+                this.dumpDeepResearchConversation(context, undefined, err);
+            }
+            throw err;
+        }
     }
 
-    private dumpFirstTurnOutput (
-        groupId: number, prefix: string | undefined, result: ReplyFirstTurnArgs, messages: AgentMessage[],
-    ): void {
-        if (!prefix) return;
-
-        const dir = join('data', 'debug');
-        const content = JSON.stringify({
-            immediate_reply: result.immediate_reply,
-            action: result.action,
-            deep_research_keyword: result.deep_research_keyword,
-            messages
-        }, null, 2);
-        writeFileSync(join(dir, `${prefix}-first-turn.json`), content, 'utf-8');
-
-        this.logger.debug(
-            `[ReplyAgent] [${groupId}] first turn dumped to ` +
-            `${prefix}-first-turn.json (${content.length} chars)`);
+    async appendBotMessage (storedMessage: StoredMessage): Promise<void> {
+        const text = await messagesToString([storedMessage], sha => this.descQueue.resolve(sha));
+        if (!text.trim()) return;
+        await this.harness.appendMessage({
+            role: 'assistant',
+            content: [{type: 'text', text}],
+            timestamp: storedMessage.time * 1000
+        } as AgentMessage);
     }
 
-    private dumpSecondTurnOutput (
-        groupId: number, prefix: string | undefined, result: ReplySecondTurnArgs, messages: AgentMessage[],
-    ): void {
-        if (!prefix) return;
-
-        const dir = join('data', 'debug');
-        const content = JSON.stringify({
-            final_reply: result.final_reply,
-            messages
-        }, null, 2);
-        writeFileSync(join(dir, `${prefix}-second-turn.json`), content, 'utf-8');
-
-        this.logger.debug(
-            `[ReplyAgent] [${groupId}] second turn dumped to ` +
-            `${prefix}-second-turn.json (${content.length} chars)`);
+    async buildPreviewPrompt (task: ReplyTask): Promise<{ systemPrompt: string; userMessages: string[] }> {
+        const userMessages = await buildUserPromptArray({
+            groupId: this.groupId,
+            latestMessages: [task.triggerMessage],
+            task,
+            descQueue: this.descQueue
+        });
+        return {
+            systemPrompt: this.systemPromptText,
+            userMessages
+        };
     }
+
+    async triggerCompact (_groupId?: number, _force = false): Promise<void> {
+        await this.waitForIdle();
+        await this.harness.compact();
+        await this.waitForIdle();
+    }
+
+    async waitForIdle (): Promise<void> {
+        await this.harness.waitForIdle();
+    }
+
+    getBranch (): ReturnType<Session['getBranch']> {
+        return this.session.getBranch();
+    }
+
+    // ==================== Debug Dump ====================
 
     private createDebugPrefix (groupId: number, label: string): string | undefined {
         if (!this.config.input.debug_dump_prompt) return;
@@ -1178,12 +475,38 @@ export class ReplyAgent {
         return `${groupId}-${label}-${ts}`;
     }
 
-    private dumpDeepResearchPrompt (
-        groupId: number | undefined, prefix: string | undefined, context: Context,
-    ): string | undefined {
+    private dumpSystemPrompt (prefix: string | undefined, systemPrompt: string): void {
+        if (!prefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(join(dir, `${prefix}-system.txt`), systemPrompt, 'utf-8');
+    }
+
+    private dumpUserMessage (prefix: string | undefined, index: number, text: string): void {
+        if (!prefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(join(dir, `${prefix}-user-${index}.txt`), text, 'utf-8');
+    }
+
+    private dumpOutput (prefix: string | undefined, assistant: AssistantMessage): void {
+        if (!prefix) return;
+
+        const dir = join('data', 'debug');
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(
+            join(dir, `${prefix}-output.json`),
+            JSON.stringify(assistant, null, 2),
+            'utf-8'
+        );
+    }
+
+    private dumpDeepResearchPrompt (context: Context): string | undefined {
         if (!this.config.input.debug_dump_prompt) return;
 
-        const debugPrefix = prefix || this.createDebugPrefix(groupId ?? 0, 'deep-research');
+        const debugPrefix = this.debugPrefix || this.createDebugPrefix(this.groupId, 'deep-research');
         if (!debugPrefix) return;
 
         const dir = join('data', 'debug');
@@ -1204,15 +527,13 @@ export class ReplyAgent {
         );
 
         this.logger.debug(
-            `[ReplyAgent] [${groupId ?? 0}] deep research prompt dumped to ` +
+            `[ReplyAgent] [${this.groupId}] deep research prompt dumped to ` +
             `${debugPrefix}-deep-research-*`);
 
         return debugPrefix;
     }
 
-    private dumpDeepResearchPayload (
-        groupId: number | undefined, prefix: string | undefined, payload: unknown,
-    ): void {
+    private dumpDeepResearchPayload (prefix: string | undefined, payload: unknown): void {
         if (!this.config.input.debug_dump_prompt || !prefix) return;
 
         const dir = join('data', 'debug');
@@ -1222,18 +543,16 @@ export class ReplyAgent {
         writeFileSync(join(dir, `${prefix}-deep-research-payload.json`), content, 'utf-8');
 
         this.logger.debug(
-            `[ReplyAgent] [${groupId ?? 0}] deep research provider payload dumped to ` +
+            `[ReplyAgent] [${this.groupId}] deep research provider payload dumped to ` +
             `${prefix}-deep-research-payload.json (${content.length} chars)`);
     }
 
     private dumpDeepResearchConversation (
-        groupId: number | undefined,
-        prefix: string | undefined,
         context: Context,
         response?: AssistantMessage,
         error?: unknown,
     ): void {
-        if (!this.config.input.debug_dump_prompt || !prefix) return;
+        if (!this.config.input.debug_dump_prompt || !this.debugPrefix) return;
 
         const dir = join('data', 'debug');
         mkdirSync(dir, {recursive: true});
@@ -1250,223 +569,10 @@ export class ReplyAgent {
             } : error
         }, null, 2);
 
-        writeFileSync(join(dir, `${prefix}-deep-research-conversation.json`), content, 'utf-8');
+        writeFileSync(join(dir, `${this.debugPrefix}-deep-research-conversation.json`), content, 'utf-8');
 
         this.logger.debug(
-            `[ReplyAgent] [${groupId ?? 0}] deep research conversation dumped to ` +
-            `${prefix}-deep-research-conversation.json (${content.length} chars)`);
-    }
-
-    private buildSystemPrompt (_groupId?: number): string {
-        const botName = this.config.input.bot_name || '机器人';
-        const jailBreak = prompts.jailBreak;
-        const parts = [jailBreak, prompts.replyIdentity(botName)];
-        return parts.join('\n\n');
-    }
-
-    private async buildUserPrompt (
-        groupId: number, history: StoredMessage[], latest: StoredMessage[], task: ReplyTask,
-    ): Promise<string[]> {
-        const parts: string[] = [];
-        const persona = this.config.input.bot_persona || '';
-        if (persona) parts.push(persona);
-        if (typeof groupId === 'number') {
-            const groupCustomPrompts = this.config.input.group_custom_prompts;
-            if (groupCustomPrompts) {
-                const customPrompt = groupCustomPrompts[groupId];
-                if (customPrompt) {
-                    parts.push(prompts.groupCustomPromptStart);
-                    parts.push(customPrompt);
-                    parts.push(prompts.groupCustomPromptEnd);
-                }
-            }
-        }
-
-        if (history.length > 0) {
-            parts.push(prompts.replyHistoryStart);
-            const historyMsgs = await messagesToString(history, sha => this.descQueue.resolve(sha));
-            parts.push(...historyMsgs.split('---\n').map(s => `${s}---\n`));
-        }
-
-        parts.push(prompts.replyLatestStart);
-        parts.push(await messagesToString(latest, sha => this.descQueue.resolve(sha)));
-
-        const memoryBlock = await this.buildMemoryBlock(groupId, latest, task);
-        if (memoryBlock) {
-            parts.push(memoryBlock);
-        }
-
-        if (task.type === 'at') {
-            parts.push(`注意：以上最新消息中，有人@了你`);
-        } else if (task.type === 'scheduled') {
-            parts.push(prompts.replyScheduledTaskNotice);
-        }
-
-        parts.push(prompts.replyStart);
-
-        return parts;
-    }
-
-    private async generateMemoryKeywords (
-        latest: StoredMessage[], task: ReplyTask,
-    ): Promise<string[]> {
-        const assignmentKey = this.config.ai.assignments.memory_keyword;
-        if (!assignmentKey) return [];
-        const modelEntry = this.config.ai.models[assignmentKey];
-        if (!modelEntry) {
-            this.logger.warn(`[ReplyAgent] memory_keyword model "${assignmentKey}" not found`);
-            return [];
-        }
-        if (!this.config.ai.mem0) return [];
-
-        const latestText = await messagesToString(latest, sha => this.descQueue.resolve(sha));
-        if (!latestText.trim()) return [];
-
-        this.logger.debug(
-            `[ReplyAgent] generating memory keywords with ${modelEntry.model.name}`);
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
-
-        try {
-            const response = await complete(
-                modelEntry.model,
-                {
-                    systemPrompt: prompts.memoryKeywordSystem,
-                    messages: [{
-                        role: 'user',
-                        content: prompts.memoryKeywordUser(latestText, task.type),
-                        timestamp: Date.now()
-                    }]
-                },
-                {apiKey: modelEntry.apiKey, signal: controller.signal, timeoutMs: 60000}
-            );
-
-            clearTimeout(timeoutId);
-
-            const text = extractText(response);
-            const keywords = parseKeywordJson(text).slice(0, 5);
-            this.logger.debug(`[ReplyAgent] memory keywords: ${keywords.join(', ')}`);
-            return keywords;
-        } catch (err) {
-            clearTimeout(timeoutId);
-            this.logger.error('[ReplyAgent] generate memory keywords failed:', err);
-            return [];
-        }
-    }
-
-    private async searchMemories (
-        groupId: number, keywords: string[],
-    ): Promise<{ memory: string; score: number }[]> {
-        if (keywords.length === 0 || !this.config.ai.mem0) return [];
-
-        try {
-            const mem0Client = new Memory(this.config.ai.mem0);
-            const userId = `group-${groupId}`;
-            const query = keywords.join(' ');
-
-            const results = await mem0Client.search(query, {
-                topK: 25,
-                filters: {user_id: userId}
-            });
-
-            const sorted = results.results
-                .map(r => ({memory: r.memory, score: r.score ?? 0}))
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 10);
-
-            this.logger.debug(`[ReplyAgent] memory search returned ${sorted.length} results`);
-            return sorted;
-        } catch (err) {
-            this.logger.error('[ReplyAgent] search memories failed:', err);
-            return [];
-        }
-    }
-
-    private async buildMemoryBlock (
-        groupId: number, latest: StoredMessage[], task: ReplyTask,
-    ): Promise<string | null> {
-        if (latest.length === 0 || !this.config.ai.mem0) return null;
-
-        const keywords = await this.generateMemoryKeywords(latest, task);
-        if (keywords.length === 0) return null;
-
-        const memories = await this.searchMemories(groupId, keywords);
-
-        const lines: string[] = [];
-        lines.push(prompts.memoryBlockHeader);
-        lines.push(`${prompts.memoryBlockKeywordsPrefix}${keywords.join('、')}`);
-
-        if (memories.length === 0) {
-            lines.push(prompts.memoryBlockNoResult);
-        } else {
-            lines.push(prompts.memoryBlockResultPrefix);
-            for (const {memory, score} of memories) {
-                const percent = (score * 100).toFixed(1);
-                lines.push(`- ${memory} (相关度: ${percent}%)`);
-            }
-        }
-
-        lines.push(prompts.memoryBlockFooter);
-        return lines.join('\n\n');
-    }
-
-    private async doDeepResearch (
-        keyword: string, groupId?: number, debugPrefix?: string,
-    ): Promise<string> {
-        const modelEntry = this.config.ai.models[this.config.ai.assignments.deep_research];
-        if (!modelEntry) throw new Error('Deep research model not configured');
-        this.logger.debug(`[ReplyAgent] doDeepResearch model=${modelEntry.model.name} keyword=${keyword}`);
-
-        const context: Context = {
-            messages: [{
-                role: 'user',
-                content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${keyword}`,
-                timestamp: Date.now()
-            }]
-        };
-        const dumpPrefix = this.dumpDeepResearchPrompt(groupId, debugPrefix, context);
-
-        let response: AssistantMessage | undefined;
-        try {
-            response = await complete(
-                modelEntry.model,
-                context,
-                {
-                    apiKey: modelEntry.apiKey,
-                    timeoutMs: 1800000,
-                    onPayload: payload => {
-                        this.dumpDeepResearchPayload(groupId, dumpPrefix, payload);
-                    }
-                }
-            );
-            this.dumpDeepResearchConversation(groupId, dumpPrefix, context, response);
-
-            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-                throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
-            }
-
-            const text = extractText(response);
-            const usage = response.usage;
-            const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-            const cacheHitRate = promptTokens > 0 ?
-                (usage.cacheRead / promptTokens * 100).toFixed(2) :
-                '0.00';
-            this.logger.info(
-                `[ReplyAgent] doDeepResearch cache stats: ` +
-                `hitRate=${cacheHitRate}%, promptTokens=${promptTokens}, ` +
-                `outputTokens=${usage.output}, ` +
-                `cacheRead=${usage.cacheRead}, ` +
-                `cacheWrite=${usage.cacheWrite}, ` +
-                `totalTokens=${usage.totalTokens}`);
-
-            this.logger.debug(`[ReplyAgent] doDeepResearch done text length=${text.length}`);
-            return text;
-        } catch (err) {
-            if (!response) {
-                this.dumpDeepResearchConversation(groupId, dumpPrefix, context, undefined, err);
-            }
-            throw err;
-        }
+            `[ReplyAgent] [${this.groupId}] deep research conversation dumped to ` +
+            `${this.debugPrefix}-deep-research-conversation.json (${content.length} chars)`);
     }
 }

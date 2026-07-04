@@ -1,12 +1,8 @@
 import Database from 'better-sqlite3';
 import {drizzle} from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
-import {eq, desc} from 'drizzle-orm';
-import {Logger} from '@lib/util/logger';
-import {ReplyAgent} from '~/util/reply-agent';
-import type {DescQueue} from '~/util/desc-queue';
-import type {StoredMessage} from '~/message-format';
-import type {AppConfig} from '~/config';
+import {eq} from 'drizzle-orm';
+import type {StoredSegment} from '~/message-format';
 
 export {schema};
 
@@ -16,6 +12,13 @@ export function createDb (path = './data.db') {
 }
 
 export type Db = ReturnType<typeof createDb>;
+
+export interface JsonlSessionMetadata {
+    id: string;
+    createdAt: string;
+    cwd: string;
+    path: string;
+}
 
 /** KV Store helpers */
 export async function kvGet (db: Db, key: string): Promise<string | undefined> {
@@ -39,87 +42,111 @@ export async function kvDelete (db: Db, key: string): Promise<void> {
     await db.delete(schema.kvStore).where(eq(schema.kvStore.key, key));
 }
 
+export async function getHarnessMetadata (
+    db: Db, groupId: number
+): Promise<JsonlSessionMetadata | null> {
+    const raw = await kvGet(db, `harness:group:${groupId}:metadata`);
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw) as JsonlSessionMetadata;
+    } catch {
+        return null;
+    }
+}
+
+export async function setHarnessMetadata (
+    db: Db, groupId: number, metadata: JsonlSessionMetadata
+): Promise<void> {
+    await kvSet(db, `harness:group:${groupId}:metadata`, JSON.stringify(metadata));
+}
+
 export async function clearGroupMessages (db: Db, groupId: number): Promise<void> {
     await db.delete(schema.messages)
         .where(eq(schema.messages.groupId, groupId));
     await kvDelete(db, `group:${groupId}:lastTriggerId`);
-    await kvDelete(db, `group:${groupId}:lastCompactId`);
-    await kvDelete(db, `group:${groupId}:lastUsageAnchor`);
+}
+
+export async function insertSystemMessage (
+    db: Db,
+    groupId: number,
+    text: string,
+    time?: number,
+): Promise<number> {
+    const segments: StoredSegment[] = [{type: 'system', text}];
+    const rows = await db.insert(schema.messages).values({
+        messageId: 0,
+        groupId,
+        userId: 0,
+        time: time ?? Math.floor(Date.now() / 1000),
+        senderName: '系统',
+        senderCard: null,
+        isBot: true,
+        isAtBot: false,
+        specialType: 'system',
+        segments,
+        rawMessage: text
+    })
+        .returning({id: schema.messages.id});
+
+    return rows[0].id;
 }
 
 export async function runMigrations (db: Db): Promise<void> {
     const sqlite = (db as {$client: Database.Database}).$client;
 
-    // Check if messages table has special_type column
-    const messagesColumns = sqlite.prepare(
-        'PRAGMA table_info(messages)'
+    const tables = sqlite.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table'"
     ).all() as Array<{ name: string }>;
-    const hasSpecialType = messagesColumns.some(c => c.name === 'special_type');
-    if (!hasSpecialType) {
+    const tableNames = new Set(tables.map(t => t.name));
+
+    if (tableNames.has('messages')) {
+        const messagesColumns = sqlite.prepare(
+            'PRAGMA table_info(messages)'
+        ).all() as Array<{ name: string }>;
+        const hasSpecialType = messagesColumns.some(c => c.name === 'special_type');
+        if (!hasSpecialType) {
+            sqlite.exec(`
+                ALTER TABLE messages ADD COLUMN special_type TEXT NOT NULL DEFAULT 'normal'
+            `);
+        }
+    } else {
         sqlite.exec(`
-            ALTER TABLE messages ADD COLUMN special_type TEXT NOT NULL DEFAULT 'normal'
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                message_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                time INTEGER NOT NULL,
+                sender_name TEXT NOT NULL,
+                sender_card TEXT,
+                is_bot INTEGER DEFAULT false NOT NULL,
+                is_at_bot INTEGER DEFAULT false NOT NULL,
+                special_type TEXT DEFAULT 'normal' NOT NULL,
+                segments TEXT NOT NULL,
+                raw_message TEXT,
+                created_at INTEGER
+            );
+            CREATE INDEX idx_messages_group_id ON messages(group_id);
+            CREATE INDEX idx_messages_group_time ON messages(group_id, time);
         `);
     }
 
-    // Check if kv_store table exists
-    const tables = sqlite.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='kv_store'"
-    ).all() as Array<{ name: string }>;
-    if (tables.length === 0) {
+    if (!tableNames.has('images')) {
+        sqlite.exec(`
+            CREATE TABLE images (
+                sha256 TEXT PRIMARY KEY NOT NULL,
+                description TEXT
+            );
+        `);
+    }
+
+    if (!tableNames.has('kv_store')) {
         sqlite.exec(`
             CREATE TABLE kv_store (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at INTEGER
-            )
+            );
         `);
     }
-}
-
-/**
- * Run initial compaction for all groups that have messages.
- * This should be called once after migration.
- */
-export async function runFullCompaction (
-    db: Db, config: AppConfig, descQueue: DescQueue,
-): Promise<void> {
-    const logger = new Logger();
-    logger.info('[Migration] Running full compaction for all groups...');
-
-    const groups = await db
-        .selectDistinct({groupId: schema.messages.groupId})
-        .from(schema.messages);
-
-    logger.info(`[Migration] Found ${groups.length} groups with messages`);
-
-    for (const {groupId} of groups) {
-        try {
-            const agent = new ReplyAgent(db, descQueue, config);
-            const allRows = await db
-                .select()
-                .from(schema.messages)
-                .where(eq(schema.messages.groupId, groupId))
-                .orderBy(desc(schema.messages.id));
-
-            allRows.reverse();
-
-            const messages: StoredMessage[] = allRows.map(row => ({
-                time: row.time,
-                messageId: row.messageId,
-                senderId: row.userId,
-                senderName: row.senderName,
-                senderCard: row.senderCard ?? undefined,
-                isBot: row.isBot,
-                isAtBot: row.isAtBot,
-                segments: row.segments as StoredMessage['segments']
-            }));
-
-            await agent.doCompact(groupId, messages);
-            logger.info(`[Migration] [${groupId}] compact done`);
-        } catch (err) {
-            logger.error(`[Migration] [${groupId}] compact failed:`, err);
-        }
-    }
-
-    logger.info('[Migration] Full compaction complete');
 }

@@ -4,6 +4,7 @@ import type {DescQueue} from '~/util/desc-queue';
 import type {GroupReplyManager} from '~/util/reply-manager';
 import {Memory} from 'mem0ai/oss';
 import type {AppConfig} from '~/config';
+import type {MutableModels} from '@earendil-works/pi-ai';
 
 declare global {
     var __db__: Db | undefined;
@@ -11,6 +12,7 @@ declare global {
     var __config__: AppConfig | undefined;
     var __memory__: Memory | undefined;
     var __replyManagers__: Map<number, GroupReplyManager> | undefined;
+    var __models__: MutableModels | undefined;
 }
 
 export {};

@@ -1,13 +1,14 @@
 import './util/disable-mem0-telemetry';
 
 import {createBot} from '@lib';
-import {config} from '@/config';
+import {config, models} from '@/config';
 import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';
 import {createDb, schema, runMigrations} from './db';
 import {createWebPanel} from './web/server';
 import {DescQueue} from './util/desc-queue';
 import {GroupReplyManager} from './util/reply-manager';
 import {ScheduledTaskManager} from './util/scheduled-tasks';
+import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
 import {Memory} from 'mem0ai/oss';
 
@@ -19,10 +20,11 @@ const db = createDb();
 await runMigrations(db);
 const queue = new DescQueue(db);
 
-// 把 db / queue / config 挂到 globalThis，让 Astro web 复用
+// 把 db / queue / config / models 挂到 globalThis，让 Astro web 复用
 globalThis.__db__ = db;
 globalThis.__queue__ = queue;
 globalThis.__config__ = config;
+globalThis.__models__ = models;
 
 let memory: Memory | undefined;
 if (config.ai.mem0) {
@@ -56,7 +58,10 @@ bot.on('meta_event.lifecycle.connect', async () => {
 
         for (const groupId of config.input.group_whitelist) {
             if (!replyManagers.has(groupId)) {
-                replyManagers.set(groupId, new GroupReplyManager(groupId, bot, db, queue, config, botSelfId, botName));
+                replyManagers.set(
+                    groupId,
+                    await GroupReplyManager.create(groupId, bot, db, queue, config, botSelfId, botName, models)
+                );
                 logger.debug(`[Bot] pre-initialized ReplyManager for group ${groupId}`);
             }
         }
@@ -70,12 +75,15 @@ bot.on('meta_event.lifecycle.connect', async () => {
     }
 });
 
-function getReplyManager (groupId: number): GroupReplyManager | undefined {
+async function getReplyManager (groupId: number): Promise<GroupReplyManager | undefined> {
     logger.debug(`[Bot] getReplyManager group=${groupId} botInfoReady=${botInfoReady}`);
     if (!botInfoReady) return;
     if (!config.input.group_whitelist.includes(groupId)) return;
     if (!replyManagers.has(groupId)) {
-        replyManagers.set(groupId, new GroupReplyManager(groupId, bot, db, queue, config, botSelfId, botName));
+        replyManagers.set(
+            groupId,
+            await GroupReplyManager.create(groupId, bot, db, queue, config, botSelfId, botName, models)
+        );
     }
     return replyManagers.get(groupId)!;
 }
@@ -117,10 +125,61 @@ bot.on('message.group', async e => {
         await e.reply('Ciallo ～(∠・ω< )⌒★!');
     }
 
-    const manager = getReplyManager(e.group_id);
+    const manager = await getReplyManager(e.group_id);
     if (manager) {
         manager.onMessage(stored, rows[0].id);
     } else {
         logger.debug(`[Bot] [${e.group_id}] no manager, skip reply logic`);
     }
 });
+
+let shuttingDown = false;
+async function shutdown (signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`[Shutdown] received ${signal}, starting graceful shutdown...`);
+
+    try {
+        bot.dispose();
+        logger.info('[Shutdown] bot disposed');
+    } catch (err) {
+        logger.error('[Shutdown] failed to dispose bot:', err);
+    }
+
+    try {
+        queue.stop();
+        logger.info('[Shutdown] description queue stopped');
+    } catch (err) {
+        logger.error('[Shutdown] failed to stop description queue:', err);
+    }
+
+    try {
+        panel.stop();
+        logger.info('[Shutdown] web panel stopped');
+    } catch (err) {
+        logger.error('[Shutdown] failed to stop web panel:', err);
+    }
+
+    try {
+        logger.info('[Shutdown] waiting for reply agents to become idle...');
+        for (const manager of replyManagers.values()) {
+            await manager.getAgent().waitForIdle();
+        }
+        logger.info('[Shutdown] all reply agents idle');
+    } catch (err) {
+        logger.error('[Shutdown] failed while waiting for reply agents:', err);
+    }
+
+    try {
+        await closeAllSessions();
+        logger.info('[Shutdown] all sessions closed');
+    } catch (err) {
+        logger.error('[Shutdown] failed to close sessions:', err);
+    }
+
+    logger.info('[Shutdown] graceful shutdown complete');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

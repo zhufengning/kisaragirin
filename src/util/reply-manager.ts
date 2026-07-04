@@ -1,6 +1,7 @@
 import type {Bot} from '@lib/types';
 import type {Message} from '@lib/types/messages';
-import {schema, type Db, kvGet, kvSet} from '~/db';
+import type {Models} from '@earendil-works/pi-ai';
+import {schema, type Db, kvGet, kvSet, insertSystemMessage} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage, StoredSegment} from '~/message-format';
@@ -33,6 +34,7 @@ export class GroupReplyManager {
     private botName: string;
     private logger: Logger;
     private agent: ReplyAgent;
+    private models: Models;
 
     private _lastTriggerId: number = 0;
     private pendingAtTimeout: NodeJS.Timeout | null = null;
@@ -53,9 +55,10 @@ export class GroupReplyManager {
             .catch(err => this.logger.error(`[ReplyManager] failed to save lastTriggerId:`, err));
     }
 
-    constructor (
+    private constructor (
         groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
         config: AppConfig, botSelfId: number, botName: string,
+        models: Models, agent: ReplyAgent,
     ) {
         this.groupId = groupId;
         this.bot = bot;
@@ -64,8 +67,9 @@ export class GroupReplyManager {
         this.config = config;
         this.botSelfId = botSelfId;
         this.botName = botName;
+        this.models = models;
+        this.agent = agent;
         this.logger = new Logger();
-        this.agent = new ReplyAgent(db, descQueue, config);
 
         // Load lastTriggerId from kvStore
         kvGet(db, `group:${groupId}:lastTriggerId`).then(value => {
@@ -75,6 +79,22 @@ export class GroupReplyManager {
             }
         })
             .catch(err => this.logger.error(`[ReplyManager] failed to load lastTriggerId:`, err));
+    }
+
+    static async create (
+        groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
+        config: AppConfig, botSelfId: number, botName: string,
+        models: Models,
+    ): Promise<GroupReplyManager> {
+        const agent = await ReplyAgent.create({
+            groupId,
+            db,
+            descQueue,
+            config,
+            models,
+            memory: config.ai.mem0 ?? null
+        });
+        return new GroupReplyManager(groupId, bot, db, descQueue, config, botSelfId, botName, models, agent);
     }
 
     getAgent (): ReplyAgent {
@@ -125,23 +145,9 @@ export class GroupReplyManager {
             `[ReplyManager] [${this.groupId}] scheduled task "${task.name}" triggered`);
 
         const now = Math.floor(Date.now() / 1000);
+        const rowId = await insertSystemMessage(this.db, this.groupId, prompt, now);
         const segments: StoredSegment[] = [{type: 'system', text: prompt}];
-        const rows = await this.db.insert(schema.messages).values({
-            messageId: 0,
-            groupId: this.groupId,
-            userId: 0,
-            time: now,
-            senderName: '系统',
-            senderCard: null,
-            isBot: true,
-            isAtBot: false,
-            specialType: 'system',
-            segments,
-            rawMessage: prompt
-        })
-            .returning({id: schema.messages.id});
 
-        const rowId = rows[0].id;
         const stored: StoredMessage = {
             id: rowId,
             time: now,
@@ -304,7 +310,6 @@ export class GroupReplyManager {
             this.logger.info(
                 `[ReplyManager] [${this.groupId}] scheduled task "${task.scheduledTaskName ?? ''}" ` +
                 `pre-research: ${task.preResearchTopic}`);
-            await agent.runPreReplyResearch(this.groupId, task.preResearchTopic);
         }
 
         // 获取当前最新消息的 id（用于更新 lastTriggerId）
@@ -325,38 +330,62 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        const result = await agent.generateReply(this.groupId, this.lastTriggerId, task);
+        const result = await agent.generateReply(task);
         this.logger.info(
-            `[ReplyManager] [${this.groupId}] first turn reply: ${result.texts.length} message(s)`);
+            `[ReplyManager] [${this.groupId}] reply: ${result.turns.length} turn(s), failed=${result.failed ?? false}`);
 
         let firstTurnMessageId: number | undefined;
         let firstTurnReplyText: string | undefined;
         let firstTurnReplyTime: number | undefined;
 
-        for (let i = 0; i < result.texts.length; i++) {
-            const replyText = result.texts[i];
+        for (let i = 0; i < result.turns.length; i++) {
+            const turn = result.turns[i];
+            const replyText = turn.text;
+            const isFirstTurn = i === 0;
+            const isDeepResearchFinal = turn.isDeepResearchFinal ?? false;
             this.logger.info(
-                `[ReplyManager] [${this.groupId}] sending first turn reply ${i + 1}/${result.texts.length}: ` +
+                `[ReplyManager] [${this.groupId}] sending reply ${i + 1}/${result.turns.length}` +
+                `${isDeepResearchFinal ? ' (deep research final)' : ''}: ` +
                 `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
 
             const segments: Message[] = [];
-            if (task.type === 'at' && i === 0) {
+            if (isFirstTurn && task.type === 'at') {
                 segments.push({type: 'reply', data: {id: task.triggerMessageId}});
+            } else if (!isFirstTurn && firstTurnMessageId) {
+                segments.push({type: 'reply', data: {id: firstTurnMessageId}});
             }
             segments.push({type: 'text', data: {text: replyText}});
 
             const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
-            firstTurnMessageId = sendResult.message_id;
-            firstTurnReplyText = replyText;
+
+            if (isFirstTurn) {
+                firstTurnMessageId = sendResult.message_id;
+                firstTurnReplyText = replyText;
+                firstTurnReplyTime = Math.floor(Date.now() / 1000);
+            }
 
             const now = Math.floor(Date.now() / 1000);
-            firstTurnReplyTime = now;
             const dbSegments: StoredSegment[] = [{type: 'text', text: replyText}];
-            if (task.type === 'at' && i === 0) {
+            if (isFirstTurn && task.type === 'at') {
                 dbSegments.unshift({
                     type: 'reply',
                     id: task.triggerMessageId,
                     message: task.triggerMessage
+                });
+            } else if (!isFirstTurn && firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
+                dbSegments.unshift({
+                    type: 'reply',
+                    id: firstTurnMessageId,
+                    message: {
+                        time: firstTurnReplyTime,
+                        messageId: firstTurnMessageId,
+                        senderId: this.botSelfId,
+                        senderName: this.botName,
+                        senderCard: botCard ?? undefined,
+                        isBot: true,
+                        isAtBot: false,
+                        segments: [{type: 'text', text: firstTurnReplyText}]
+                    }
                 });
             }
             const insertRows = await this.db.insert(schema.messages).values({
@@ -374,72 +403,22 @@ export class GroupReplyManager {
                 .returning({id: schema.messages.id});
 
             if (insertRows[0]) {
-                this.onBotMessage(insertRows[0].id);
+                const rowId = insertRows[0].id;
+                this.onBotMessage(rowId);
+
+                const botStoredMessage: StoredMessage = {
+                    id: rowId,
+                    time: now,
+                    messageId: sendResult.message_id,
+                    senderId: this.botSelfId,
+                    senderName: this.botName,
+                    senderCard: botCard ?? undefined,
+                    isBot: true,
+                    isAtBot: false,
+                    segments: dbSegments
+                };
+                await agent.appendBotMessage(botStoredMessage);
             }
-        }
-
-        if (result.secondTurnPromise) {
-            this.logger.info(`[ReplyManager] [${this.groupId}] starting second turn in background`);
-            result.secondTurnPromise.then(async secondTurnTexts => {
-                if (secondTurnTexts.length === 0) return;
-
-                this.logger.info(
-                    `[ReplyManager] [${this.groupId}] second turn reply: ${secondTurnTexts.length} message(s)`);
-
-                for (let i = 0; i < secondTurnTexts.length; i++) {
-                    const replyText = secondTurnTexts[i];
-                    this.logger.info(
-                        `[ReplyManager] [${this.groupId}] sending second turn reply ` +
-                        `${i + 1}/${secondTurnTexts.length}: ` +
-                        `${replyText.slice(0, 80)}${replyText.length > 80 ? '...' : ''}`);
-
-                    const segments: Message[] = [];
-                    if (firstTurnMessageId) {
-                        segments.push({type: 'reply', data: {id: firstTurnMessageId}});
-                    }
-                    segments.push({type: 'text', data: {text: replyText}});
-
-                    const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
-
-                    const now = Math.floor(Date.now() / 1000);
-                    const dbSegments2: StoredSegment[] = [{type: 'text', text: replyText}];
-                    if (firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
-                        dbSegments2.unshift({
-                            type: 'reply',
-                            id: firstTurnMessageId,
-                            message: {
-                                time: firstTurnReplyTime,
-                                messageId: firstTurnMessageId,
-                                senderId: this.botSelfId,
-                                senderName: this.botName,
-                                senderCard: botCard ?? undefined,
-                                isBot: true,
-                                isAtBot: false,
-                                segments: [{type: 'text', text: firstTurnReplyText}]
-                            }
-                        });
-                    }
-                    const insertRows = await this.db.insert(schema.messages).values({
-                        messageId: sendResult.message_id,
-                        groupId: this.groupId,
-                        userId: this.botSelfId,
-                        time: now,
-                        senderName: this.botName,
-                        senderCard: botCard,
-                        isBot: true,
-                        isAtBot: false,
-                        segments: dbSegments2 as StoredSegment[],
-                        rawMessage: replyText
-                    })
-                        .returning({id: schema.messages.id});
-
-                    if (insertRows[0]) {
-                        this.onBotMessage(insertRows[0].id);
-                    }
-                }
-            }).catch(err => {
-                this.logger.error(`[ReplyManager] [${this.groupId}] second turn background error:`, err);
-            });
         }
 
         this.lastTriggerId = currentLatestId;

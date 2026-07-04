@@ -11,13 +11,13 @@ interface ScheduledJobRecord {
 
 export class ScheduledTaskManager {
     private config: AppConfig;
-    private getReplyManager: (groupId: number) => GroupReplyManager | undefined;
+    private getReplyManager: (groupId: number) => Promise<GroupReplyManager | undefined>;
     private logger: Logger;
     private jobs: ScheduledJobRecord[] = [];
 
     constructor (
         config: AppConfig,
-        getReplyManager: (groupId: number) => GroupReplyManager | undefined,
+        getReplyManager: (groupId: number) => Promise<GroupReplyManager | undefined>,
     ) {
         this.config = config;
         this.getReplyManager = getReplyManager;
@@ -98,7 +98,7 @@ export class ScheduledTaskManager {
 
         try {
             const job = new Cron(cron, options, async () => {
-                const manager = this.getReplyManager(groupId);
+                const manager = await this.getReplyManager(groupId);
                 if (!manager) {
                     this.logger.warn(
                         `[ScheduledTasks] [${groupId}] task "${taskName}" skipped: reply manager unavailable`);

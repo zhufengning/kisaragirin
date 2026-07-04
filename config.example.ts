@@ -1,27 +1,38 @@
-import { InputConfig, type AppConfig } from './src/config';
-import type { Model, Api } from '@earendil-works/pi-ai';
+import {InputConfig, type AppConfig} from './src/config';
+import type {Model, Api} from '@earendil-works/pi-ai';
 
 const anthropicCompatBase = {
     api: 'anthropic-messages' as const,
     reasoning: false,
     input: ['text', 'image'] as ('text' | 'image')[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
     contextWindow: 128000,
-    maxTokens: 8192,
+    maxTokens: 8192
 };
 
 const MINIMAX_KEY = '';
+
+const minimaxM3Model = {
+    model: {
+        id: 'MiniMax-M3',
+        name: 'MiniMax M3',
+        provider: 'minimax',
+        baseUrl: 'https://api.minimaxi.com/anthropic',
+        ...anthropicCompatBase
+    } satisfies Model<Api>,
+    apiKey: MINIMAX_KEY
+};
 
 export const config: AppConfig = {
     onebot: {
         host: '127.0.0.1',
         port: 6102,
         access_token: '',
-        mode: 'ws',
+        mode: 'ws'
     },
     log: {
         level: 'debug',
-        file: 'data/app.log',
+        file: 'data/app.log'
     },
     input: {
         ...new InputConfig(),
@@ -45,26 +56,18 @@ export const config: AppConfig = {
             // ],
         },
         /** 是否将每次回复的 prompt 与模型输出保存到 data/debug/，默认 false */
-        debug_dump_prompt: false,
+        debug_dump_prompt: false
     },
     web: {
         host: '0.0.0.0',
         port: 8080,
         username: 'admin',
-        password: '',
+        password: ''
     },
     ai: {
         models: {
-            'minimax-m3': {
-                model: {
-                    id: 'MiniMax-M3',
-                    name: 'MiniMax M3',
-                    provider: 'minimax',
-                    baseUrl: 'https://api.minimaxi.com/anthropic',
-                    ...anthropicCompatBase,
-                } satisfies Model<Api>,
-                apiKey: MINIMAX_KEY,
-            },
+            'minimax-m3': minimaxM3Model,
+            'agent_harness': minimaxM3Model,
             'hermes': {
                 model: {
                     id: 'sec-bot',
@@ -74,18 +77,17 @@ export const config: AppConfig = {
                     api: 'openai-completions' as const,
                     reasoning: false,
                     input: ['text', 'image'] as ('text' | 'image')[],
-                    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
                     contextWindow: 128000,
-                    maxTokens: 8192,
+                    maxTokens: 8192
                 } satisfies Model<Api>,
-                apiKey: '',
-            },
+                apiKey: ''
+            }
         },
         assignments: {
             vision: 'minimax-m3',
-            reply: 'minimax-m3',
-            deep_research: 'hermes',
-            memory_keyword: 'minimax-m3',
+            agent_harness: 'minimax-m3',
+            deep_research: 'hermes'
         },
         mem0: {
             embedder: {
@@ -94,8 +96,8 @@ export const config: AppConfig = {
                     apiKey: '',
                     model: 'Qwen/Qwen3-Embedding-8B',
                     baseURL: 'https://api.siliconflow.cn/v1',
-                    embeddingDims: 2560,
-                },
+                    embeddingDims: 2560
+                }
             },
             vectorStore: {
                 provider: 'qdrant',
@@ -103,18 +105,18 @@ export const config: AppConfig = {
                     collectionName: 'memories',
                     dimension: 2560,
                     host: '127.0.0.1',
-                    port: 6333,
-                },
+                    port: 6333
+                }
             },
             llm: {
                 provider: 'anthropic',
                 config: {
                     apiKey: MINIMAX_KEY,
                     model: 'MiniMax-M3',
-                    baseURL: 'https://api.minimaxi.com/anthropic',
-                },
+                    baseURL: 'https://api.minimaxi.com/anthropic'
+                }
             },
-            historyDbPath: 'data/mem0-history.db',
-        },
-    },
+            historyDbPath: 'data/mem0-history.db'
+        }
+    }
 };

@@ -42,7 +42,7 @@ export const POST: APIRoute = async ({ request }) => {
         }
 
         const agent = manager.getAgent();
-        const compacted = await agent.triggerCompact(groupId, true);
+        const compacted = await agent.triggerCompact();
 
         return new Response(JSON.stringify({
             success: true,

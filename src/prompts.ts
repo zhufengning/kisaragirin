@@ -1,21 +1,33 @@
-const RULES = `1. 认清自己的身份：你是群聊机器人，不是人类。对群友保持礼貌、谦逊，不冒犯群友。2. 不要强调自己的 bot 身份，系统错误不应暴露给群友。3. 回复应简洁、自然，直接讨论话题本身，不要复述群友的原话或重复已有内容。4. 回复使用纯文本，禁止 markdown 语法，禁止括号动作/状态描述。5. 每次输入消息都必须输出回复。6. 每条消息都有唯一的消息ID，格式为(#数字)，如(#123)。7. 严禁在回应某个话题时复述话题内容。最新消息中只有单个话题的直接回复；多个话题时通过 reply 工具的 ref 字段引用对应消息，正文只写评价内容，不包含消息ID。`;
+import type {AgentTool} from '@earendil-works/pi-agent-core';
+import {messagesToString, type StoredMessage} from './message-format';
+import type {DescQueue} from './util/desc-queue';
 
-export const prompts = {
-    jailBreak: '',
-    visionSystem: '你是一个为盲人描述图片的助手。请先分辨图片类型、来源，然后用中文全面描述图片内容，不超过200字。篇幅允许的情况下包含完整的图片内文字内容。禁止根据外貌推断具体的人物、角色，这种推断从来没对过。输出格式："图片类型：...\n来源：...\n图片描述：...。"。图片类型包括：表情包（长宽差不多的一般都是表情包）、梗图（长宽差不多的也有可能是梗图，注意表情包侧重情绪，梗图侧重搞笑）、艺术作品（插画等，色图也算。如果细节很不丰富，那有可能是表情包而不是插画）、照片、社交媒体截图、...(还有其它情况的话可以自行发挥。禁止将动图作为图片类型，类型描述的是图片内容而不是格式)。图片类型首先通过平台水印判断，如果没有且是截图，则通过界面判断，无法判断就写“无”。',
-    visionUser: '请描述这张图片',
-    visionAnimated (totalFrames: number, extractedFrames: number) {
-        return `这是一张动图，共 ${totalFrames} 帧，以下展示其中 ${extractedFrames} 个关键帧。请描述这张动图的整体内容、动作和变化。\n请描述这张图片`;
-    },
-    replyIdentity (botName: string) {
-        return `你是QQ群中的机器人，你的名字是${botName || '（暂无）'}。你使用自然、亲切的中文与群友交流。\n你遵循的规则：\n ${RULES}\n`;
-    },
-    replyHistoryStart: '===== 历史消息 =====',
-    replyLatestStart: '===== 最新消息 =====',
-    groupCustomPromptStart: '----- 本群专属提示 -----',
-    groupCustomPromptEnd: '----- 本群专属提示结束 -----',
-    replyStart: `请根据上述上下文决定如何回复。请你先输出思考过程，完成所有所需的记忆操作后，再使用 reply_first_turn 工具给出你的回复策略：“回复并结束”和“回复并调用深度研究agent，稍后获得结果后再详细回复”。选择FINISH之后你无法再做出任何后续回复，你无法在后台处理任何操作。深度研究agent是一个运行于Linux虚拟机上的agent，你可以将你想要执行的需求转述给它，最终获得执行报告。深度研究agent让你可以阅读网页、文件，调用搜索引擎或在linux环境中进行计算，就像操作你自己的电脑一样。深度研究是严肃的，冰冷的机器，只允许用来处理必须获取外部信息的场景，严禁“探讨回复方向”、“生成回复草稿”这类用法。第一轮回复不超过50字，深度研究后的回复不超过150字。对于url你应当始终调用深度研究，而不是推测其中的内容。调用深度研究时必须完整传递最新消息提及的所有url。你的传给深度研究的研究主题仅仅是作为深度研究agent提示词的一小部分拼接进其中，因此，调用深度研究时禁止添加限制（例如，只允许访问特定url等），你必须允许深度研究自由探索。\n\n你可以使用的记忆工具：\n- search_memory: 当你需要回忆用户的偏好、过去提到的事实、或之前对话中的关键信息时使用。\n- add_memory: 当你从对话中了解到关于群友的重要事实、偏好、习惯、或约定时使用，内容应简洁事实化。严禁将“本群专属提示”和“你遵循的规则”中的任何内容添加进记忆。使用中文。记忆必须精确绑定到群友的昵称和id，bot则使用bot名字并添加(me)后缀，不要使用“用户”、“群友”等模糊的称呼。
-    
+export function replyToolDescription (): string {
+    return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。';
+}
+
+export interface ReplyToolParameterDescriptions {
+    reply: string;
+    requiresDeepResearch: string;
+    deepResearchTopic: string;
+}
+
+export function replyToolParameterDescriptions (): ReplyToolParameterDescriptions {
+    return {
+        reply: '最终回复给群的文本内容',
+        requiresDeepResearch: '是否需要先进行深度研究再最终回复',
+        deepResearchTopic: '深度研究的主题，requires_deep_research 为 true 时提供'
+    };
+}
+
+const rules = `1. 认清自己的身份：你是群聊机器人，不是人类。对群友保持礼貌、谦逊，不冒犯群友。2. 不要强调自己的 bot 身份，系统错误不应暴露给群友。3. 回复应简洁、自然，直接讨论话题本身，不要复述群友的原话或重复已有内容。4. 回复使用纯文本，禁止 markdown 语法，禁止括号动作/状态描述。5. 每次输入消息都必须输出回复。6. 每条消息都有唯一的消息ID，格式为(#数字)，如(#123)。7. 严禁在回应某个话题时复述话题内容。最新消息中只有单个话题的直接回复；多个话题时通过 reply 工具的 ref 字段引用对应消息，正文只写评价内容，不包含消息ID。`;
+
+const replyToolInstructions = `请根据上述上下文决定如何回复。请你先输出思考过程，完成所有所需的记忆操作后，再使用 reply 工具给出你的回复。选择 reply 之后你无法再做出任何后续回复，你无法在后台处理任何操作。深度研究agent是一个运行于Linux虚拟机上的agent，你可以将你想要执行的需求转述给它，最终获得执行报告。深度研究是严肃的，冰冷的机器，只允许用来处理必须获取外部信息的场景，严禁“探讨回复方向”、“生成回复草稿”这类用法。对于url你应当始终调用深度研究，而不是推测其中的内容。调用深度研究时必须完整传递最新消息提及的所有url。你的传给深度研究的研究主题仅仅是作为深度研究agent提示词的一小部分拼接进其中，因此，调用深度研究时禁止添加限制（例如，只允许访问特定url等），你必须允许深度研究自由探索。
+
+字数限制：普通回复不超过50字，深度研究后的回复不超过150字。
+
+你可以使用的工具见上文“可用工具”。
+
 <Chain_of_Thought>
 正式开始回复前，按照以下条目仔细思考，**每条字数多点不许偷懒**
 思考需用konatan_planning~标签包裹，不重复思考不打草稿。输出完思考内容后才可调用回复工具进行回复。
@@ -58,11 +70,105 @@ export const prompts = {
 </kisaragirin_planning~>
 
 </Chain_of_Thought>
-`,
-    replyReminderFirstTurn: '请使用 reply_first_turn 工具进行回复决策。',
-    replyReminderSecondTurn: '请使用 reply_second_turn 工具给出最终回复。',
-    replyScheduledTaskNotice: '注意：以上最新消息中包含定时任务触发的系统消息，请按该系统消息中的任务提示完成本次回复。',
-    deepResearchSystem: `你是一个研究助手。请尽快对用户给出的关键词或主题进行研究，提供详尽、准确、有洞察力的分析报告。报告应结构化、逻辑清晰、内容充实。请保持高效，已有结果的部分不必继续深入，不要在无关紧要的地方浪费时间。不要使用delegate_task。字数要求1000字以内。输出报告时不要添加分割线（\`---\`)
+`;
+
+function formatToolParameters (schema: unknown): string {
+    if (!schema || typeof schema !== 'object') return JSON.stringify(schema);
+    return JSON.stringify(schema, null, 2);
+}
+
+export function formatToolsDescription (tools: AgentTool[]): string {
+    if (tools.length === 0) return '无可用工具。';
+
+    return tools
+        .map(tool => {
+            const params = formatToolParameters(tool.parameters);
+            return `- ${tool.name}（${tool.label}）: ${tool.description}\n参数: ${params}`;
+        })
+        .join('\n');
+}
+
+export function replySystemPrompt ({
+    botName,
+    botPersona,
+    toolsDescription,
+    groupCustomPrompt
+}: {
+    botName: string;
+    botPersona: string;
+    toolsDescription: string;
+    groupCustomPrompt?: string;
+}): string {
+    const parts: string[] = [
+        prompts.jailBreak,
+        prompts.replyIdentity(botName),
+        botPersona,
+        '## 可用工具',
+        toolsDescription,
+        replyToolInstructions
+    ];
+
+    if (groupCustomPrompt) {
+        parts.push(`${prompts.groupCustomPromptStart}\n${groupCustomPrompt}\n${prompts.groupCustomPromptEnd}`);
+    }
+
+    return parts.join('\n\n');
+}
+
+interface BuildUserPromptTask {
+    type: 'at' | 'silence' | 'scheduled';
+    scheduledTaskName?: string;
+}
+
+export async function buildUserPromptArray ({
+    groupId: _groupId,
+    latestMessages,
+    task,
+    descQueue
+}: {
+    groupId: number;
+    latestMessages: StoredMessage[];
+    task: BuildUserPromptTask;
+    descQueue: DescQueue;
+}): Promise<string[]> {
+    if (latestMessages.length === 0) return [];
+
+    const body = await messagesToString(latestMessages, sha => descQueue.resolve(sha));
+
+    let notice: string;
+    switch (task.type) {
+    case 'at':
+        notice = '有人@我，请优先回应。\n';
+        break;
+    case 'scheduled': {
+        const name = task.scheduledTaskName ? ` [${task.scheduledTaskName}]` : '';
+        notice = `定时任务触发${name}，请按系统消息中的任务提示完成本次回复。\n`;
+        break;
+    }
+    default:
+        notice = '闲时触发，可尝试加入已有话题。\n';
+    }
+
+    return [`${notice}${body}`];
+}
+
+export function replyReminder (): string {
+    return '请使用 reply 工具进行回复。';
+}
+
+export const prompts = {
+    jailBreak: '',
+    visionSystem: '你是一个为盲人描述图片的助手。请先分辨图片类型、来源，然后用中文全面描述图片内容，不超过200字。篇幅允许的情况下包含完整的图片内文字内容。禁止根据外貌推断具体的人物、角色，这种推断从来没对过。输出格式："图片类型：...\n来源：...\n图片描述：...。"。图片类型包括：表情包（长宽差不多的一般都是表情包）、梗图（长宽差不多的也有可能是梗图，注意表情包侧重情绪，梗图侧重搞笑）、艺术作品（插画等，色图也算。如果细节很不丰富，那有可能是表情包而不是插画）、照片、社交媒体截图、...(还有其它情况的话可以自行发挥。禁止将动图作为图片类型，类型描述的是图片内容而不是格式)。图片类型首先通过平台水印判断，如果没有且是截图，则通过界面判断，无法判断就写“无”。',
+    visionUser: '请描述这张图片',
+    visionAnimated (totalFrames: number, extractedFrames: number) {
+        return `这是一张动图，共 ${totalFrames} 帧，以下展示其中 ${extractedFrames} 个关键帧。请描述这张动图的整体内容、动作和变化。\n请描述这张图片`;
+    },
+    replyIdentity (botName: string) {
+        return `你是QQ群中的机器人，你的名字是${botName || '（暂无）'}。你使用自然、亲切的中文与群友交流。\n你遵循的规则：\n ${rules}\n`;
+    },
+    groupCustomPromptStart: '----- 本群专属提示 -----',
+    groupCustomPromptEnd: '----- 本群专属提示结束 -----',
+    deepResearchSystem: `你是一个研究助手。请尽快对用户给出的关键词或主题进行研究，提供详尽、准确、有洞察力的分析报告。报告应结构化、逻辑清晰、内容充实。请保持高效，已有结果的部分不必继续深入，不要在无关紧要的地方浪费时间。不要使用delegate_task。字数要求1000字以内。输出报告时不要添加分割线（\`---\`）
 
 ## 工作路径
 
@@ -92,28 +198,5 @@ export const prompts = {
 | juejin | 正常 | 工作正常（中文技术内容）|
 | startpage | 正常 | 工作正常 |
 | sogou | 正常 | 工作正常 |
-`,
-    compactSummarySystem: `你是上下文摘要助手。你的任务是将一段QQ群聊天记录压缩成简短的摘要，使得后续AI可以基于摘要理解对话背景并继续参与讨论。
-
-摘要要求：
-- 保留所有关键话题、决策、约定和重要信息
-- 保留提及的具体人名、事件、数字
-- 删除无意义的闲聊、重复内容和表情包互动
-- 用简洁的中文总结，不超过300字
-- 按话题分段，每段用「主题：」开头
-- 如果对话中有明确的待办事项或约定，单独列出`,
-    memoryKeywordSystem: '你是一个关键词提取助手。请根据给出的QQ群最新消息，生成3到5个用于搜索历史记忆的查询关键词。所有关键词将合并为一次语义搜索（用空格连接），请确保各关键词聚焦不同方面、语义互补、避免重复。关键词应聚焦于：用户身份、偏好、习惯、约定、过去提到的重要事实或人名。只输出一个JSON数组字符串，数组元素为查询字符串，不要输出任何解释、markdown或代码块。注意，最新消息中可能混入带`(me)`的消息，请忽略这些消息。',
-    memoryKeywordUser (latestMessages: string, taskType: string) {
-        const taskTypeLabel = taskType === 'at' ?
-            '有人@机器人' :
-            taskType === 'scheduled' ?
-                '定时任务触发' :
-                '闲时触发';
-        return `以下是最新消息（消息类型：${taskTypeLabel}），请生成用于搜索历史记忆的查询关键词：\n\n${latestMessages}`;
-    },
-    memoryBlockHeader: '===== 相关记忆 =====\n系统根据最新消息预生成以下查询关键词，并检索到相关历史记忆。以下记忆仅供参考，请结合上下文判断是否使用。',
-    memoryBlockKeywordsPrefix: '查询关键词：',
-    memoryBlockResultPrefix: '检索结果：',
-    memoryBlockNoResult: '未检索到相关记忆。',
-    memoryBlockFooter: '===== 相关记忆结束 ====='
+`
 };
