@@ -2,6 +2,7 @@ import './util/disable-mem0-telemetry';
 
 import {createBot} from '@lib';
 import {config, models} from '@/config';
+import {registerCustomProviders} from './util/models-factory';
 import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';
 import {createDb, schema, runMigrations} from './db';
 import {createWebPanel} from './web/server';
@@ -14,6 +15,9 @@ import {Memory} from 'mem0ai/oss';
 
 configureLogger(config.log.level, config.log.file);
 const logger = new Logger();
+
+registerCustomProviders(models, config);
+logger.debug('[Bot] registered providers from ai.models');
 
 const bot = createBot(config.onebot);
 const db = createDb();
