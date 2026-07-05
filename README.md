@@ -37,7 +37,7 @@ yarn web:build && yarn start
 | 页面 | 功能 |
 |------|------|
 | `/` | 群列表 |
-| `/group/{id}` | 群消息浏览，支持手动 compact |
+| `/group/{id}` | 群消息 CRUD 浏览：分页表格、按发送者/内容搜索、单条/批量删除、详情弹窗、手动 compact |
 | `/group/{id}/preview` | Prompt 预览 |
 | `/group/{id}/harness` | 会话日志查看 |
 | `/images` | 图片管理 |

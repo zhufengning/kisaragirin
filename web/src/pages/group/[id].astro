@@ -1,7 +1,7 @@
 ---
 import Layout from '@layouts/Layout.astro';
 import { db, schema } from '@lib/db';
-import { eq, sql } from 'drizzle-orm';
+import { eq, and, or, like, sql } from 'drizzle-orm';
 import type { StoredMessage, StoredSegment } from '../../../../src/message-format';
 
 const groupId = Number(Astro.params.id);
@@ -11,29 +11,48 @@ if (!groupId || isNaN(groupId)) {
 
 const PAGE_SIZE = 50;
 const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
+const searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
+const sortDirParam = Astro.url.searchParams.get('sort')?.toLowerCase();
+const sortDesc = sortDirParam === 'asc' ? false : true; // 默认新在前（降序）
 
-// 先获取总消息数
+// 搜索条件：发送者名称/名片、原始消息文本、segments JSON
+const baseCondition = eq(schema.messages.groupId, groupId);
+let whereClause = baseCondition;
+
+if (searchQuery) {
+    const searchPattern = `%${searchQuery}%`;
+    whereClause = and(
+        baseCondition,
+        or(
+            like(schema.messages.senderName, searchPattern),
+            like(schema.messages.senderCard, searchPattern),
+            like(schema.messages.rawMessage, searchPattern),
+            sql`json_extract(${schema.messages.segments}, '$') LIKE ${searchPattern}`
+        )
+    ) ?? baseCondition;
+}
+
+// 总消息数
 const countResult = await db
     .select({ count: sql<number>`count(*)` })
     .from(schema.messages)
-    .where(eq(schema.messages.groupId, groupId));
+    .where(whereClause);
 const totalCount = countResult[0]?.count || 0;
 const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 const validPage = Math.min(currentPage, totalPages);
 
-// 分页查询消息
+// 分页查询消息，默认按 ID 降序（新消息在前），方向可通过 sort 参数切换
+const orderColumn = schema.messages.id;
 const rows = await db
     .select()
     .from(schema.messages)
-    .where(eq(schema.messages.groupId, groupId))
-    .orderBy(sql`${schema.messages.time} DESC`)
+    .where(whereClause)
+    .orderBy(sql`${orderColumn} ${sortDesc ? sql`DESC` : sql`ASC`}`)
     .limit(PAGE_SIZE)
     .offset((validPage - 1) * PAGE_SIZE);
 
-// 反转回时间正序显示
-rows.reverse();
-
-const messages: StoredMessage[] = rows.map(r => ({
+const messages = rows.map(r => ({
+    id: r.id,
     time: r.time,
     messageId: r.messageId,
     senderId: r.userId,
@@ -42,7 +61,10 @@ const messages: StoredMessage[] = rows.map(r => ({
     isBot: r.isBot,
     isAtBot: r.isAtBot,
     segments: r.segments as StoredMessage['segments'],
+    specialType: r.specialType,
 }));
+
+type MessageItem = typeof messages[number];
 
 function formatSender(msg: StoredMessage): string {
     const id = msg.senderId;
@@ -86,85 +108,158 @@ function formatMessageRaw(msg: StoredMessage): string {
     return `${atMark}[${sender}]: ${body}`;
 }
 
-const lines: string[] = [];
-let lastTime: number | null = null;
-for (const msg of messages) {
-    if (lastTime === null || msg.time - lastTime > 180) {
-        const d = new Date(msg.time * 1000);
-        const pad = (n: number) => String(n).padStart(2, '0');
-        lines.push(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`);
-    }
-    lastTime = msg.time;
-    lines.push(formatMessageRaw(msg));
+function formatPreview(msg: MessageItem): string {
+    const raw = formatMessageRaw(msg);
+    return raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
 }
-const text = lines.join('\n');
 
-// 构建分页URL
+function formatTime(timestamp: number): string {
+    const d = new Date(timestamp * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatSenderCell(msg: MessageItem): { name: string; idLabel: string } {
+    const id = msg.senderId;
+    const name = msg.senderCard || msg.senderName || '';
+    if (id == null) return { name: 'unknown', idLabel: '' };
+    if (!name) return { name: `(${id})`, idLabel: '' };
+    return {
+        name: msg.isBot ? `${name}(me)` : name,
+        idLabel: String(id)
+    };
+}
+
+function typeBadgeClass(type: string): string {
+    switch (type) {
+        case 'compact': return 'type-badge type-compact';
+        case 'system': return 'type-badge type-system';
+        default: return 'type-badge type-normal';
+    }
+}
+
+function typeLabel(type: string): string {
+    switch (type) {
+        case 'compact': return 'compact';
+        case 'system': return 'system';
+        default: return 'normal';
+    }
+}
+
+function sortUrl() {
+    const url = new URL(Astro.url);
+    url.searchParams.delete('page');
+    if (sortDesc) {
+        url.searchParams.set('sort', 'asc');
+    } else {
+        url.searchParams.delete('sort');
+    }
+    return url.pathname + url.search;
+}
+
 function pageUrl(page: number) {
     const url = new URL(Astro.url);
     url.searchParams.set('page', String(page));
     return url.pathname + url.search;
 }
+
+function searchUrl(search: string) {
+    const url = new URL(Astro.url);
+    url.searchParams.delete('page');
+    if (search) {
+        url.searchParams.set('search', search);
+    } else {
+        url.searchParams.delete('search');
+    }
+    return url.pathname + url.search;
+}
+
+const sortIndicator = sortDesc ? '▼' : '▲';
+const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息在前' : '当前：旧消息在前，点击改为新消息在前';
 ---
 
 <Layout title={`群 ${groupId} 消息`}>
     <h1>
-    <a href="/">← 群列表</a> · 群 {groupId}
-    <span class="meta">({totalCount} 条消息)</span>
-    · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a>
-    · <a href={`/group/${groupId}/harness`} class="preview-link">Harness 日志 →</a>
-    · <button id="compact-btn" class="compact-btn">手动 Compact</button>
-    · <button id="clear-btn" class="clear-btn">清空</button>
-</h1>
+        <a href="/">← 群列表</a> · 群 {groupId}
+        <span class="meta">({totalCount} 条消息{searchQuery ? ` · 搜索: "${searchQuery}"` : ''})</span>
+        · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a>
+        · <a href={`/group/${groupId}/harness`} class="preview-link">Harness 日志 →</a>
+    </h1>
 
-<script is:inline define:vars={{ groupId }}>
-    const compactBtn = document.getElementById('compact-btn');
-    compactBtn.addEventListener('click', async () => {
-        if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;
-        compactBtn.disabled = true;
-        compactBtn.textContent = 'Compacting...';
-        try {
-            const res = await fetch(`/api/compact?groupId=${groupId}`, { method: 'POST' });
-            const data = await res.json();
-            if (data.success) {
-                alert(data.compacted ? 'Compact 成功！' : '无需 compact');
-                location.reload();
-            } else {
-                alert('Compact 失败：' + (data.error || '未知错误'));
-            }
-        } catch (err) {
-            alert('Compact 失败：' + err.message);
-        } finally {
-            compactBtn.disabled = false;
-            compactBtn.textContent = '手动 Compact';
-        }
-    });
+    <!-- 工具栏 -->
+    <div class="toolbar">
+        <form class="search-bar" method="GET" action={Astro.url.pathname}>
+            <input
+                type="text"
+                name="search"
+                value={searchQuery}
+                placeholder="搜索发送者或消息内容..."
+                class="search-input"
+            />
+            <button type="submit" class="btn btn-sm">🔍 搜索</button>
+            {searchQuery && (
+                <a href={searchUrl('')} class="btn btn-secondary btn-sm">清除</a>
+            )}
+        </form>
 
-    const clearBtn = document.getElementById('clear-btn');
-    clearBtn.addEventListener('click', async () => {
-        if (!confirm(`确定要清空群 ${groupId} 的所有消息吗？此操作不可恢复。`)) return;
-        clearBtn.disabled = true;
-        clearBtn.textContent = '清空中...';
-        try {
-            const res = await fetch(`/api/group/${groupId}/clear`, { method: 'POST' });
-            const data = await res.json();
-            if (data.success) {
-                alert('已清空所有消息');
-                location.reload();
-            } else {
-                alert('清空失败：' + (data.error || '未知错误'));
-            }
-        } catch (err) {
-            alert('清空失败：' + err.message);
-        } finally {
-            clearBtn.disabled = false;
-            clearBtn.textContent = '清空';
-        }
-    });
-</script>
+        <div class="actions">
+            <button id="compact-btn" class="btn btn-secondary btn-sm">手动 Compact</button>
+            <button id="clear-btn" class="btn btn-danger btn-sm">清空全部</button>
+            <button id="batch-delete-btn" class="btn btn-danger btn-sm" disabled>批量删除</button>
+        </div>
+    </div>
 
-    <pre class="messages">{text}</pre>
-    {messages.length === 0 && <p class="empty">暂无消息</p>}
+    <!-- 消息表格 -->
+    <div class="table-wrap">
+        <table class="message-table">
+            <thead>
+                <tr>
+                    <th class="col-check">
+                        <input type="checkbox" id="select-all" title="全选" />
+                    </th>
+                    <th class="col-id">
+                        <a href={sortUrl()} class="sort-header" title={sortTitle}>
+                            ID {sortIndicator}
+                        </a>
+                    </th>
+                    <th class="col-time">时间</th>
+                    <th class="col-sender">发送者</th>
+                    <th class="col-type">类型</th>
+                    <th class="col-preview">消息预览</th>
+                    <th class="col-actions">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {messages.map(msg => {
+                    const sender = formatSenderCell(msg);
+                    return (
+                        <tr class="message-row" data-id={msg.id} data-time={formatTime(msg.time)} data-sender={formatSender(msg)} data-type={msg.specialType} data-preview={formatPreview(msg)} data-segments={JSON.stringify(msg.segments)}>
+                            <td class="col-check">
+                                <input type="checkbox" class="row-checkbox" value={msg.id} />
+                            </td>
+                            <td class="col-id">{msg.id}</td>
+                            <td class="col-time">{formatTime(msg.time)}</td>
+                            <td class="col-sender">
+                                <div class="sender-name">{sender.name}</div>
+                                {sender.idLabel && <div class="sender-id">{sender.idLabel}</div>}
+                            </td>
+                            <td class="col-type">
+                                <span class={typeBadgeClass(msg.specialType)}>{typeLabel(msg.specialType)}</span>
+                            </td>
+                            <td class="col-preview">{formatPreview(msg)}</td>
+                            <td class="col-actions">
+                                <button type="button" class="btn btn-sm btn-secondary detail-btn" data-id={msg.id}>详情</button>
+                                <button type="button" class="btn btn-sm btn-danger delete-btn" data-id={msg.id}>删除</button>
+                            </td>
+                        </tr>
+                    );
+                })}
+            </tbody>
+        </table>
+        {messages.length === 0 && (
+            <p class="empty">{searchQuery ? '没有找到匹配的消息' : '暂无消息'}</p>
+        )}
+    </div>
 
     <!-- 分页导航 -->
     {totalPages > 1 && (
@@ -188,20 +283,363 @@ function pageUrl(page: number) {
             </a>
         </nav>
     )}
+
+    <!-- 详情弹窗 -->
+    <div id="detail-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">消息详情</h3>
+                <button type="button" class="modal-close" id="modal-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="detail-field">
+                    <span class="detail-label">ID</span>
+                    <span id="modal-id" class="detail-value"></span>
+                </div>
+                <div class="detail-field">
+                    <span class="detail-label">时间</span>
+                    <span id="modal-time" class="detail-value"></span>
+                </div>
+                <div class="detail-field">
+                    <span class="detail-label">发送者</span>
+                    <span id="modal-sender" class="detail-value"></span>
+                </div>
+                <div class="detail-field">
+                    <span class="detail-label">类型</span>
+                    <span id="modal-type" class="detail-value"></span>
+                </div>
+                <div class="detail-field detail-stack">
+                    <span class="detail-label">完整内容</span>
+                    <pre id="modal-preview" class="detail-preview"></pre>
+                </div>
+                <div class="detail-field detail-stack">
+                    <span class="detail-label">原始 Segments (JSON)</span>
+                    <pre id="modal-segments" class="detail-json"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="modal-close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
 </Layout>
 
+<script is:inline define:vars={{ groupId }}>
+    const compactBtn = document.getElementById('compact-btn');
+    compactBtn?.addEventListener('click', async () => {
+        if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;
+        compactBtn.disabled = true;
+        compactBtn.textContent = 'Compacting...';
+        try {
+            const res = await fetch(`/api/compact?groupId=${groupId}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.compacted ? 'Compact 成功！' : '无需 compact');
+                location.reload();
+            } else {
+                alert('Compact 失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('Compact 失败：' + err.message);
+        } finally {
+            compactBtn.disabled = false;
+            compactBtn.textContent = '手动 Compact';
+        }
+    });
+
+    const clearBtn = document.getElementById('clear-btn');
+    clearBtn?.addEventListener('click', async () => {
+        if (!confirm(`确定要清空群 ${groupId} 的所有消息吗？此操作不可恢复。`)) return;
+        clearBtn.disabled = true;
+        clearBtn.textContent = '清空中...';
+        try {
+            const res = await fetch(`/api/group/${groupId}/clear`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                alert('已清空所有消息');
+                location.reload();
+            } else {
+                alert('清空失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('清空失败：' + err.message);
+        } finally {
+            clearBtn.disabled = false;
+            clearBtn.textContent = '清空全部';
+        }
+    });
+
+    async function deleteMessageIds(ids) {
+        if (ids.length === 0) return;
+        const noun = ids.length === 1 ? '这条消息' : `${ids.length} 条消息`;
+        if (!confirm(`确定要删除 ${noun} 吗？此操作不可恢复。`)) return;
+        try {
+            const res = await fetch('/api/messages/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('删除失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('删除失败：' + err.message);
+        }
+    }
+
+    const selectAll = document.getElementById('select-all');
+    const rowCheckboxes = document.querySelectorAll('.row-checkbox');
+    const batchDeleteBtn = document.getElementById('batch-delete-btn');
+
+    function updateBatchButton() {
+        const checked = document.querySelectorAll('.row-checkbox:checked');
+        if (batchDeleteBtn) {
+            batchDeleteBtn.disabled = checked.length === 0;
+            batchDeleteBtn.textContent = checked.length > 0 ? `批量删除 (${checked.length})` : '批量删除';
+        }
+    }
+
+    selectAll?.addEventListener('change', () => {
+        const checked = selectAll.checked;
+        rowCheckboxes.forEach(cb => { cb.checked = checked; });
+        updateBatchButton();
+    });
+
+    rowCheckboxes.forEach(cb => {
+        cb.addEventListener('change', updateBatchButton);
+    });
+
+    batchDeleteBtn?.addEventListener('click', () => {
+        const checked = Array.from(document.querySelectorAll('.row-checkbox:checked'));
+        const ids = checked.map(cb => Number(cb.value));
+        void deleteMessageIds(ids);
+    });
+
+    document.querySelector('.message-table')?.addEventListener('click', (e) => {
+        const target = e.target;
+        const deleteBtn = target.closest('.delete-btn');
+        if (deleteBtn) {
+            const id = Number(deleteBtn.dataset.id);
+            void deleteMessageIds([id]);
+            return;
+        }
+
+        const detailBtn = target.closest('.detail-btn');
+        if (detailBtn) {
+            const row = detailBtn.closest('.message-row');
+            openDetailModal(row);
+            return;
+        }
+
+        const row = target.closest('.message-row');
+        if (row && !target.closest('input, button')) {
+            openDetailModal(row);
+        }
+    });
+
+    const detailModal = document.getElementById('detail-modal');
+    const modalClose = document.getElementById('modal-close');
+    const modalCloseBtn = document.getElementById('modal-close-btn');
+
+    function closeDetailModal() {
+        detailModal?.classList.add('hidden');
+    }
+
+    function openDetailModal(row) {
+        if (!row || !detailModal) return;
+        document.getElementById('modal-title').textContent = `消息详情 #${row.dataset.id}`;
+        document.getElementById('modal-id').textContent = row.dataset.id;
+        document.getElementById('modal-time').textContent = row.dataset.time;
+        document.getElementById('modal-sender').textContent = row.dataset.sender;
+        document.getElementById('modal-type').textContent = row.dataset.type;
+        document.getElementById('modal-preview').textContent = row.dataset.preview;
+
+        let segmentsText = row.dataset.segments;
+        try {
+            segmentsText = JSON.stringify(JSON.parse(segmentsText), null, 2);
+        } catch {
+            // 保持原样
+        }
+        document.getElementById('modal-segments').textContent = segmentsText;
+
+        detailModal.classList.remove('hidden');
+    }
+
+    modalClose?.addEventListener('click', closeDetailModal);
+    modalCloseBtn?.addEventListener('click', closeDetailModal);
+    detailModal?.addEventListener('click', (e) => {
+        if (e.target === detailModal) closeDetailModal();
+    });
+</script>
+
 <style>
-    .messages {
+    .preview-link {
         font-size: 14px;
-        line-height: 1.7;
-        word-break: break-word;
-        white-space: pre-wrap;
+        color: var(--accent);
+        text-decoration: none;
+    }
+    .preview-link:hover {
+        text-decoration: underline;
+    }
+    .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+    .search-bar {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        flex: 1;
+        min-width: 260px;
+    }
+    .search-input {
+        flex: 1;
+        min-width: 200px;
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .search-input:focus {
+        outline: none;
+        border-color: var(--accent);
+    }
+    .search-input::placeholder {
+        color: var(--text-secondary);
+    }
+    .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    .table-wrap {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        padding: 14px 18px;
+        overflow: hidden;
     }
-    .empty { color: var(--text-secondary); text-align: center; padding: 40px; }
+    .message-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+    }
+    .message-table th,
+    .message-table td {
+        padding: 12px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+    }
+    .message-table th {
+        background: var(--surface-hover);
+        color: var(--text-secondary);
+        font-weight: 500;
+        font-size: 13px;
+        white-space: nowrap;
+    }
+    .message-table tbody tr {
+        transition: background 0.15s;
+    }
+    .message-table tbody tr:hover {
+        background: var(--surface-hover);
+        cursor: pointer;
+    }
+    .message-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    .col-check {
+        width: 40px;
+        text-align: center;
+    }
+    .col-check input {
+        accent-color: var(--accent);
+        cursor: pointer;
+    }
+    .sort-header {
+        color: inherit;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .sort-header:hover {
+        color: var(--text);
+        text-decoration: none;
+    }
+    .col-id {
+        width: 80px;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+        color: var(--text-secondary);
+    }
+    .col-time {
+        width: 160px;
+        white-space: nowrap;
+    }
+    .col-sender {
+        width: 140px;
+    }
+    .sender-name {
+        color: var(--text);
+        font-weight: 500;
+    }
+    .sender-id {
+        color: var(--text-secondary);
+        font-size: 12px;
+    }
+    .col-type {
+        width: 90px;
+    }
+    .type-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        text-transform: uppercase;
+    }
+    .type-normal {
+        background: var(--bg);
+        color: var(--text-secondary);
+    }
+    .type-compact {
+        background: rgba(108, 122, 224, 0.15);
+        color: var(--accent);
+    }
+    .type-system {
+        background: rgba(224, 108, 117, 0.15);
+        color: var(--danger);
+    }
+    .col-preview {
+        min-width: 200px;
+        color: var(--text);
+        word-break: break-word;
+        line-height: 1.5;
+    }
+    .col-actions {
+        width: 140px;
+        white-space: nowrap;
+    }
+    .col-actions .btn {
+        margin-right: 6px;
+    }
+    .col-actions .btn:last-child {
+        margin-right: 0;
+    }
+    .empty {
+        color: var(--text-secondary);
+        text-align: center;
+        padding: 48px;
+        margin: 0;
+    }
     .pagination {
         display: flex;
         justify-content: center;
@@ -233,48 +671,116 @@ function pageUrl(page: number) {
         font-size: 14px;
         color: var(--text-secondary);
     }
-    .preview-link {
-        font-size: 14px;
-        color: var(--accent);
-        text-decoration: none;
+    .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+        padding: 24px;
     }
-    .preview-link:hover {
-        text-decoration: underline;
+    .modal.hidden {
+        display: none;
     }
-    .compact-btn {
-        padding: 4px 12px;
-        border-radius: var(--radius-sm);
+    .modal-content {
+        background: var(--surface);
         border: 1px solid var(--border);
-        background: var(--surface-hover);
+        border-radius: var(--radius);
+        width: 100%;
+        max-width: 720px;
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+    }
+    .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+    }
+    .modal-header h3 {
+        font-size: 18px;
+        font-weight: 600;
+    }
+    .modal-close {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 24px;
+        cursor: pointer;
+        line-height: 1;
+    }
+    .modal-close:hover {
         color: var(--text);
+    }
+    .modal-body {
+        padding: 20px;
+        overflow-y: auto;
+    }
+    .modal-footer {
+        display: flex;
+        justify-content: flex-end;
+        padding: 16px 20px;
+        border-top: 1px solid var(--border);
+    }
+    .detail-field {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+        align-items: baseline;
+    }
+    .detail-field.detail-stack {
+        flex-direction: column;
+        gap: 8px;
+    }
+    .detail-label {
+        color: var(--text-secondary);
         font-size: 13px;
-        cursor: pointer;
-        vertical-align: middle;
+        min-width: 100px;
+        flex-shrink: 0;
     }
-    .compact-btn:hover:not(:disabled) {
-        background: var(--border);
+    .detail-value {
+        color: var(--text);
+        font-size: 14px;
     }
-    .compact-btn:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-    .clear-btn {
-        padding: 4px 12px;
+    .detail-preview,
+    .detail-json {
+        background: var(--bg);
+        border: 1px solid var(--border);
         border-radius: var(--radius-sm);
-        border: 1px solid var(--danger);
-        background: rgba(224, 108, 117, 0.15);
-        color: var(--danger);
+        padding: 12px;
         font-size: 13px;
-        cursor: pointer;
-        vertical-align: middle;
+        line-height: 1.6;
+        word-break: break-word;
+        white-space: pre-wrap;
+        overflow-x: auto;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     }
-    .clear-btn:hover:not(:disabled) {
-        background: rgba(224, 108, 117, 0.25);
+    .detail-json {
+        max-height: 320px;
+        overflow-y: auto;
     }
-    .clear-btn:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
+    @media (max-width: 768px) {
+        .toolbar {
+            flex-direction: column;
+        }
+        .message-table {
+            font-size: 13px;
+        }
+        .message-table th,
+        .message-table td {
+            padding: 10px;
+        }
+        .col-time,
+        .col-sender,
+        .col-type {
+            width: auto;
+        }
     }
 </style>
-
-

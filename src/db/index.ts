@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import {drizzle} from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
-import {eq} from 'drizzle-orm';
+import {eq, inArray} from 'drizzle-orm';
 import type {StoredSegment} from '~/message-format';
 
 export {schema};
@@ -64,6 +64,13 @@ export async function clearGroupMessages (db: Db, groupId: number): Promise<void
     await db.delete(schema.messages)
         .where(eq(schema.messages.groupId, groupId));
     await kvDelete(db, `group:${groupId}:lastTriggerId`);
+}
+
+export async function deleteMessagesByIds (db: Db, ids: number[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const result = await db.delete(schema.messages)
+        .where(inArray(schema.messages.id, ids));
+    return result.changes ?? 0;
 }
 
 export async function insertSystemMessage (

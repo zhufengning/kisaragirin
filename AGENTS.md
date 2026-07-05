@@ -44,12 +44,12 @@ yarn
 
 ```
 src/
-  index.ts              -- 入口：初始化 bot、db、queue、web panel
-  config.ts             -- 根目录 TS 配置，使用 `@earendil-works/pi-ai` 的 `Model<Api>` 类型定义模型
-  message-format.ts     -- OneBot 消息 ↔ 存储格式转换 + 渲染
-  db/
-    schema.ts           -- Drizzle SQLite 表定义（messages / images / kv_store）
-    index.ts            -- Database 连接工厂 + KV Store 工具 + 迁移逻辑
+      index.ts              -- 入口：初始化 bot、db、queue、web panel
+      config.ts             -- 根目录 TS 配置，使用 `@earendil-works/pi-ai` 的 `Model<Api>` 类型定义模型
+      message-format.ts     -- OneBot 消息 ↔ 存储格式转换 + 渲染
+      db/
+        schema.ts           -- Drizzle SQLite 表定义（messages / images / kv_store）
+        index.ts            -- Database 连接工厂 + KV Store 工具 + 迁移逻辑 + 消息批量删除 helper
   util/
     desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个）
     image-store.ts      -- 图片下载 + 本地存储
@@ -77,7 +77,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       Layout.astro    -- 暗色主题全局布局
     pages/
       index.astro     -- 群列表
-      group/[id].astro       -- 群消息浏览（分页，仅原始数据）
+      group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
@@ -85,6 +85,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       api/
         images/...           -- 图片文件服务 + 描述管理 API
         memories/...         -- mem0 REST API 封装
+        messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
         compact.ts           -- 手动触发群消息 compact API
         harness.ts           -- AgentHarness 会话条目 API（调用 agent.getBranch）
