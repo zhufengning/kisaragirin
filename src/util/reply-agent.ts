@@ -361,12 +361,10 @@ export class ReplyAgent {
 
     async generateFinalTurn (task: ReplyTask, topic: string, lastTriggerId: number): Promise<ReplyTurn> {
         const researchTopic = topic.trim() || String(task.triggerMessage);
-        let researchResult: string;
         try {
-            researchResult = await this.doDeepResearchWithSystemMessages(researchTopic);
+            await this.doDeepResearchWithSystemMessages(researchTopic);
         } catch (err) {
             this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
-            researchResult = '（深度研究失败，请打个圆场。）';
         }
 
         const latestMessages = await this.fetchMessagesSince(lastTriggerId);
@@ -379,12 +377,6 @@ export class ReplyAgent {
                 timestamp: Date.now()
             } as AgentMessage);
         }
-
-        await this.harness.appendMessage({
-            role: 'user',
-            content: [{type: 'text', text: `深度研究结果：\n${researchResult}`}],
-            timestamp: Date.now()
-        } as AgentMessage);
 
         const finalAssistant = await this.promptWithReminders('请根据深度研究结果，使用 reply 工具给出最终回复。');
 
@@ -483,7 +475,14 @@ export class ReplyAgent {
         try {
             researchResult = await this.doDeepResearch(researchTopic);
             this.logger.debug(`[ReplyAgent] [${this.groupId}] deep research done length=${researchResult.length}`);
-            if (!researchResult) {
+            if (researchResult) {
+                const resultTime = Math.floor(Date.now() / 1000);
+                const resultText = `深度研究结果：${researchTopic}\n\n${researchResult}`;
+                const resultId = await insertSystemMessage(this.db, this.groupId, resultText, resultTime);
+                this.logger.info(
+                    `[ReplyAgent] [${this.groupId}] deep research result message inserted, id=${resultId}, ` +
+                    `topic=${researchTopic.slice(0, 50)}${researchTopic.length > 50 ? '...' : ''}`);
+            } else {
                 this.logger.error(`[ReplyAgent] [${this.groupId}] deep research returned empty result`);
                 researchError = '深度研究未能获取结果';
                 researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
