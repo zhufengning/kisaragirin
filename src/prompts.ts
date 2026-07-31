@@ -2,6 +2,10 @@ export function replyToolDescription (): string {
     return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。';
 }
 
+export function replyToolResultText (): string {
+    return 'success';
+}
+
 export interface ReplyToolParameterDescriptions {
     reply: string;
     requiresDeepResearch: string;

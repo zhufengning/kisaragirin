@@ -1,7 +1,7 @@
 import {Type} from '@earendil-works/pi-ai';
 import type {AgentTool} from '@earendil-works/pi-agent-core';
 import {Logger} from '@lib/util/logger';
-import {replyToolDescription, replyToolParameterDescriptions} from '~/prompts';
+import {replyToolDescription, replyToolParameterDescriptions, replyToolResultText} from '~/prompts';
 
 const parameterDescriptions = replyToolParameterDescriptions();
 
@@ -37,7 +37,7 @@ export function createReplyTool (options: CreateReplyToolOptions): AgentTool<typ
             }
 
             return {
-                content: [{type: 'text', text: params.reply}],
+                content: [{type: 'text', text: replyToolResultText()}],
                 details: {
                     requiresDeepResearch: params.requires_deep_research,
                     deepResearchTopic: params.deep_research_topic
