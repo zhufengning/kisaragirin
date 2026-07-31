@@ -120,6 +120,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
 - **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
+- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 mem0 取符合度最高的 3 条记忆，注入到最后一条 user message 末尾（带 `----- 相关记忆（自动检索） -----` 分割线）
 - **回复工具** (`reply`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
@@ -154,6 +155,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
+- `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
 - `ai.mem0`：可选 mem0 OSS 配置，启用后 `search_memory` / `add_memory` 工具会加入 harness
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`

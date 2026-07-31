@@ -87,7 +87,8 @@ export const config: AppConfig = {
         assignments: {
             vision: 'minimax-m3',
             agent_harness: 'minimax-m3',
-            deep_research: 'hermes'
+            deep_research: 'hermes',
+            memory_keyword: 'minimax-m3'
         },
         mem0: {
             embedder: {

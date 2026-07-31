@@ -55,6 +55,8 @@ export interface AiConfig {
         deep_research: string;
         /** Agent harness 模型 */
         agent_harness: string;
+        /** 记忆关键词生成模型 */
+        memory_keyword?: string;
     };
     mem0?: MemoryConfig;
 }

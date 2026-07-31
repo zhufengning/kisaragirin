@@ -1,14 +1,14 @@
 import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
-import type {MemoryConfig} from 'mem0ai/oss';
+import {Memory, type MemoryConfig} from 'mem0ai/oss';
 import {schema, type Db, setHarnessMetadata, type JsonlSessionMetadata, insertSystemMessage} from '~/db';
 import type {AppConfig} from '~/config';
 import {eq, asc, and, gt, lte} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage} from '~/message-format';
-import {prompts, replyReminder, replyToolInstructions} from '~/prompts';
+import {prompts, replyReminder, replyToolInstructions, memoryKeywordPrompt, memorySearchSeparator} from '~/prompts';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
@@ -126,6 +126,7 @@ export class ReplyAgent {
     private debugPrefix?: string;
     private lastReplyToolParams: ReplyToolParams | null = null;
     private toolCallRoundCount = 0;
+    private memory: Memory | null = null;
 
     private constructor (options: {
         db: Db;
@@ -136,6 +137,7 @@ export class ReplyAgent {
         session: Session<JsonlSessionMetadata>;
         harness: AgentHarness;
         systemPromptText: string;
+        memory: Memory | null;
     }) {
         this.db = options.db;
         this.descQueue = options.descQueue;
@@ -145,6 +147,7 @@ export class ReplyAgent {
         this.session = options.session;
         this.harness = options.harness;
         this.systemPromptText = options.systemPromptText;
+        this.memory = options.memory;
         this.logger = new Logger();
     }
 
@@ -194,6 +197,8 @@ export class ReplyAgent {
             thinkingLevel: 'high'
         });
 
+        const memoryInstance = memory ? new Memory(memory) : null;
+
         const agent = new ReplyAgent({
             db,
             descQueue,
@@ -202,7 +207,8 @@ export class ReplyAgent {
             groupId,
             session,
             harness,
-            systemPromptText: systemPrompt()
+            systemPromptText: systemPrompt(),
+            memory: memoryInstance
         });
 
         agentRef.current = agent;
@@ -297,6 +303,83 @@ export class ReplyAgent {
         }));
     }
 
+    private async generateMemoryKeywords (messagesText: string): Promise<string[]> {
+        if (!this.config.ai.assignments.memory_keyword) return [];
+
+        try {
+            const modelEntry = resolveModelEntry(this.config, this.config.ai.assignments.memory_keyword);
+            const context: Context = {
+                messages: [{
+                    role: 'user',
+                    content: `${memoryKeywordPrompt}\n\n${messagesText}`,
+                    timestamp: Date.now()
+                }]
+            };
+
+            const response = await this.models.completeSimple(modelEntry.model, context, {
+                apiKey: modelEntry.apiKey,
+                timeoutMs: 30000
+            });
+
+            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+                this.logger.warn(
+                    `[ReplyAgent] [${this.groupId}] memory keyword generation failed: ` +
+                    `stopReason=${response.stopReason} error=${response.errorMessage ?? 'none'}`);
+                return [];
+            }
+
+            const text = response.content
+                .filter((c): c is Extract<typeof c, {type: 'text'}> => c.type === 'text')
+                .map(c => c.text)
+                .join('')
+                .trim();
+
+            const keywords = text.split('\n')
+                .map(k => k.trim())
+                .filter(k => k.length > 0);
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory keywords: ${keywords.join(', ')}`);
+            return keywords;
+        } catch (err) {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] memory keyword generation error: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+            return [];
+        }
+    }
+
+    private async searchMemories (keywords: string[]): Promise<string[]> {
+        if (!this.memory || keywords.length === 0) return [];
+
+        const userId = `group-${this.groupId}`;
+        const allResults: Array<{memory: string; score: number}> = [];
+
+        for (const keyword of keywords) {
+            try {
+                const results = await this.memory.search(keyword, {topK: 5, filters: {user_id: userId}});
+                for (const r of results.results) {
+                    allResults.push({memory: r.memory, score: r.score ?? 0});
+                }
+            } catch (err) {
+                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for "${keyword}":`, err);
+            }
+        }
+
+        const uniqueMemories = new Map<string, number>();
+        for (const r of allResults) {
+            const existing = uniqueMemories.get(r.memory);
+            if (!existing || r.score > existing) {
+                uniqueMemories.set(r.memory, r.score);
+            }
+        }
+
+        const sorted = Array.from(uniqueMemories.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3);
+
+        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
+        return sorted.map(([memory, score]) => `- ${memory} (相关度: ${(score * 100).toFixed(1)}%)`);
+    }
+
     private getReplyToolParams (): ReplyToolParams | null {
         return this.lastReplyToolParams;
     }
@@ -316,6 +399,12 @@ export class ReplyAgent {
 
         if (userTexts.length === 0) {
             return {text: '', requiresDeepResearch: false, failed: true};
+        }
+
+        const keywords = await this.generateMemoryKeywords(userTexts.join('\n'));
+        const memories = await this.searchMemories(keywords);
+        if (memories.length > 0) {
+            userTexts[userTexts.length - 1] += memorySearchSeparator + memories.join('\n');
         }
 
         this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
@@ -348,8 +437,6 @@ export class ReplyAgent {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
             return {text: '', requiresDeepResearch: false, failed: true};
         }
-
-        await this.appendBotMessageFromText(params.reply, Date.now());
 
         return {
             text: params.reply,
@@ -442,15 +529,6 @@ export class ReplyAgent {
         }
 
         return assistant;
-    }
-
-    private async appendBotMessageFromText (text: string, timestampMs: number): Promise<void> {
-        if (!text.trim()) return;
-        await this.harness.appendMessage({
-            role: 'assistant',
-            content: [{type: 'text', text}],
-            timestamp: timestampMs
-        } as AgentMessage);
     }
 
     private fallbackResult (): GenerateReplyResult {
