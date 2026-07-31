@@ -298,8 +298,11 @@ export async function singleMessageToString (
         for (const seg of msg.segments) {
             collectImageSha256FromSegment(seg, shaSet);
         }
-        for (const sha of shaSet) {
-            descCache.set(sha, await resolveDesc(sha));
+        const entries = await Promise.all(
+            Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
+        );
+        for (const [sha, desc] of entries) {
+            descCache.set(sha, desc);
         }
     }
 
@@ -318,7 +321,7 @@ export async function messagesToString (
 ): Promise<string> {
     if (messages.length === 0) return '';
 
-    // 单次渲染：先收集所有 sha256，批量查询并缓存
+    // 单次渲染：先收集所有 sha256，批量并发查询并缓存
     const descCache = new Map<string, string | undefined>();
     if (resolveDesc) {
         const shaSet = new Set<string>();
@@ -327,8 +330,11 @@ export async function messagesToString (
                 collectImageSha256FromSegment(seg, shaSet);
             }
         }
-        for (const sha of shaSet) {
-            descCache.set(sha, await resolveDesc(sha));
+        const entries = await Promise.all(
+            Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
+        );
+        for (const [sha, desc] of entries) {
+            descCache.set(sha, desc);
         }
     }
 

@@ -2,9 +2,9 @@ import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@ea
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
 import {Memory, type MemoryConfig} from 'mem0ai/oss';
-import {schema, type Db, setHarnessMetadata, type JsonlSessionMetadata, insertSystemMessage} from '~/db';
+import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
 import type {AppConfig} from '~/config';
-import {eq, asc, and, gt, lte} from 'drizzle-orm';
+import {eq, asc, and, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage} from '~/message-format';
@@ -158,12 +158,11 @@ export class ReplyAgent {
         config: AppConfig;
         models: Models;
         memory?: MemoryConfig | null;
-        lastTriggerId?: number;
     }): Promise<ReplyAgent> {
-        const {groupId, db, descQueue, config, models, memory, lastTriggerId} = options;
+        const {groupId, db, descQueue, config, models, memory} = options;
 
         const logger = new Logger();
-        const {session, metadata, isNew} = await getOrCreateGroupSession(groupId, config, db);
+        const {session, isNew} = await getOrCreateGroupSession(groupId, config, db);
 
         const harnessEntry = resolveModelEntry(config, config.ai.assignments.agent_harness);
         const env = new NodeExecutionEnv({cwd: process.cwd()});
@@ -228,18 +227,33 @@ export class ReplyAgent {
         });
 
         if (isNew) {
-            await agent.seedFromDatabase(lastTriggerId ?? 0);
-            await setHarnessMetadata(db, groupId, metadata);
+            logger.info(`[ReplyAgent] [${groupId}] new session created, no history imported`);
+            const latest = await db
+                .select({id: schema.messages.id})
+                .from(schema.messages)
+                .where(eq(schema.messages.groupId, groupId))
+                .orderBy(desc(schema.messages.id))
+                .limit(1);
+            if (latest.length > 0) {
+                await setGroupLastTriggerId(db, groupId, latest[0].id);
+                logger.info(`[ReplyAgent] [${groupId}] lastTriggerId set to ${latest[0].id}`);
+            }
         }
 
         logger.info(`[ReplyAgent] [${groupId}] harness created, isNew=${isNew}`);
         return agent;
     }
 
-    private async seedFromDatabase (lastTriggerId: number): Promise<void> {
-        if (lastTriggerId <= 0) {
-            return;
+    /**
+     * 手动导入指定时间范围内的历史消息到 harness 会话。
+     * 忽略所有压缩（compact）消息。返回实际导入的消息条数。
+     */
+    async importMessagesByDateRange (startTime: number, endTime: number): Promise<number> {
+        if (startTime > endTime) {
+            throw new Error(`invalid date range: start=${startTime} > end=${endTime}`);
         }
+
+        await this.waitForIdle();
 
         const rows = await this.db
             .select()
@@ -247,11 +261,14 @@ export class ReplyAgent {
             .where(
                 and(
                     eq(schema.messages.groupId, this.groupId),
-                    lte(schema.messages.id, lastTriggerId)
+                    gte(schema.messages.time, startTime),
+                    lte(schema.messages.time, endTime),
+                    ne(schema.messages.specialType, 'compact')
                 )
             )
             .orderBy(asc(schema.messages.id));
 
+        let imported = 0;
         for (const row of rows) {
             const msg: StoredMessage = {
                 id: row.id,
@@ -273,7 +290,14 @@ export class ReplyAgent {
                 content: [{type: 'text', text}],
                 timestamp: msg.time * 1000
             } as AgentMessage);
+            imported++;
         }
+
+        await this.waitForIdle();
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] imported ${imported} messages ` +
+            `from ${startTime} to ${endTime}`);
+        return imported;
     }
 
     private async fetchMessagesSince (lastTriggerId: number): Promise<StoredMessage[]> {

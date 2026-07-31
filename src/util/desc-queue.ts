@@ -9,6 +9,36 @@ import {withRetry} from './agent-retry';
 import {preprocessImage} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
 
+/**
+ * 单次 describe 的兜底超时（毫秒）。
+ * 模型请求可能永久挂起（SDK 自带超时并不总是触发），若不加保护，
+ * worker 会卡死在 describe() 里，processing 集合中的 sha256 永不释放，
+ * 导致队列状态永远显示还剩 1 张。
+ */
+const DESCRIBE_TIMEOUT_MS = 6 * 60 * 1000;
+/** abort 后等待 Agent run 完全结束的宽限时间 */
+const ABORT_SETTLE_GRACE_MS = 5 * 1000;
+
+function withTimeout<T> (promise: Promise<T>, ms: number, onTimeout: () => void | Promise<void>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => {
+            void Promise.resolve(onTimeout()).finally(() => {
+                reject(new Error(`describe timed out after ${ms}ms`));
+            });
+        }, ms);
+        promise.then(
+            value => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            err => {
+                clearTimeout(timer);
+                reject(err);
+            }
+        );
+    });
+}
+
 export class DescQueue {
     private queue: string[] = [];
     private processing = new Set<string>();
@@ -147,12 +177,19 @@ export class DescQueue {
                 agent.reset();
                 this.logger.debug(
                     `[DescQueue] agent reset, prompt length=${inputText.length}, image count=${result.frames.length}`);
-                await agent.prompt(
-                    inputText,
-                    result.frames.map(f => ({type: 'image' as const, data: f.base64, mimeType: f.mimeType})),
+                const frames = result.frames.map(f => ({type: 'image' as const, data: f.base64, mimeType: f.mimeType}));
+                await withTimeout(
+                    (async () => {
+                        await agent.prompt(inputText, frames);
+                        this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
+                        await agent.waitForIdle();
+                    })(),
+                    DESCRIBE_TIMEOUT_MS,
+                    async () => {
+                        agent.abort();
+                        await withTimeout(agent.waitForIdle(), ABORT_SETTLE_GRACE_MS, () => {});
+                    },
                 );
-                this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
-                await agent.waitForIdle();
                 this.logger.debug(`[DescQueue] agent idle`);
             },
             {

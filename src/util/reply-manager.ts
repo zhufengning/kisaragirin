@@ -1,7 +1,7 @@
 import type {Bot} from '@lib/types';
 import type {Message} from '@lib/types/messages';
 import type {Models} from '@earendil-works/pi-ai';
-import {schema, type Db, kvGet, kvSet, insertSystemMessage} from '~/db';
+import {schema, type Db, getGroupLastTriggerId, setGroupLastTriggerId, insertSystemMessage} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage, StoredSegment} from '~/message-format';
@@ -52,7 +52,7 @@ export class GroupReplyManager {
 
     set lastTriggerId (value: number) {
         this._lastTriggerId = value;
-        kvSet(this.db, `group:${this.groupId}:lastTriggerId`, String(value))
+        setGroupLastTriggerId(this.db, this.groupId, value)
             .catch(err => this.logger.error(`[ReplyManager] failed to save lastTriggerId:`, err));
     }
 
@@ -79,25 +79,22 @@ export class GroupReplyManager {
         config: AppConfig, botSelfId: number, botName: string,
         models: Models,
     ): Promise<GroupReplyManager> {
-        let lastTriggerId = 0;
-        try {
-            const value = await kvGet(db, `group:${groupId}:lastTriggerId`);
-            if (value) {
-                lastTriggerId = parseInt(value, 10);
-            }
-        } catch (err) {
-            new Logger().error(`[ReplyManager] failed to load lastTriggerId for group ${groupId}:`, err);
-        }
-
         const agent = await ReplyAgent.create({
             groupId,
             db,
             descQueue,
             config,
             models,
-            memory: config.ai.mem0 ?? null,
-            lastTriggerId
+            memory: config.ai.mem0 ?? null
         });
+
+        let lastTriggerId = 0;
+        try {
+            lastTriggerId = await getGroupLastTriggerId(db, groupId);
+        } catch (err) {
+            new Logger().error(`[ReplyManager] failed to load lastTriggerId for group ${groupId}:`, err);
+        }
+
         return new GroupReplyManager(
             groupId, bot, db, descQueue, config, botSelfId, botName, models, agent, lastTriggerId
         );

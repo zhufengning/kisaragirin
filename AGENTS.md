@@ -77,7 +77,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       Layout.astro    -- 暗色主题全局布局
     pages/
       index.astro     -- 群列表
-      group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗）
+      group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗 + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
@@ -89,6 +89,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
         compact.ts           -- 手动触发群消息 compact API
         harness.ts           -- AgentHarness 会话条目 API（调用 agent.getBranch）
+        group/[id]/import.ts -- 按日期范围导入历史消息 API（调用 agent.importMessagesByDateRange）
 ```
 
 ### 关键组件关系
@@ -97,7 +98,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentHarness`
-- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `Session`；新 session 会从数据库读取该群历史消息并注入 harness
+- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `Session`；新 session 不再自动从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息），历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
 - `models-factory.ts` / `credential-store.ts` 负责 pi-ai `Models` 单例、自定义 provider 注册与凭据填充；运行时 `config.ts` 导出 `models` 单例供 bot 使用
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
@@ -109,10 +110,11 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
-- `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为最后一条 bot 回复的数据库 id；`ReplyAgent` 初始化时只将 `lastTriggerId` 及之前的历史消息 seed 进 harness
+- `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为最后一条 bot 回复的数据库 id；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
 - webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact
+- webui 的导入 API（`/api/group/{id}/import`）调用 `agent.importMessagesByDateRange(startTime, endTime)`，按本地时区当天起止时间戳查询消息导入 harness，忽略所有 compact 消息
 
 ### Agent Loop 与记忆机制
 

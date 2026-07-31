@@ -42,6 +42,21 @@ export async function kvDelete (db: Db, key: string): Promise<void> {
     await db.delete(schema.kvStore).where(eq(schema.kvStore.key, key));
 }
 
+function lastTriggerKey (groupId: number): string {
+    return `group:${groupId}:lastTriggerId`;
+}
+
+export async function getGroupLastTriggerId (db: Db, groupId: number): Promise<number> {
+    const raw = await kvGet(db, lastTriggerKey(groupId));
+    if (!raw) return 0;
+    const value = parseInt(raw, 10);
+    return Number.isNaN(value) ? 0 : value;
+}
+
+export async function setGroupLastTriggerId (db: Db, groupId: number, value: number): Promise<void> {
+    await kvSet(db, lastTriggerKey(groupId), String(value));
+}
+
 export async function getHarnessMetadata (
     db: Db, groupId: number
 ): Promise<JsonlSessionMetadata | null> {
@@ -63,7 +78,7 @@ export async function setHarnessMetadata (
 export async function clearGroupMessages (db: Db, groupId: number): Promise<void> {
     await db.delete(schema.messages)
         .where(eq(schema.messages.groupId, groupId));
-    await kvDelete(db, `group:${groupId}:lastTriggerId`);
+    await kvDelete(db, lastTriggerKey(groupId));
 }
 
 export async function deleteMessagesByIds (db: Db, ids: number[]): Promise<number> {

@@ -203,6 +203,11 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
         </form>
 
         <div class="actions">
+            <div class="import-box">
+                <input type="date" id="import-start" class="date-input" title="开始日期" />
+                <input type="date" id="import-end" class="date-input" title="结束日期" />
+                <button id="import-btn" class="btn btn-secondary btn-sm">导入历史</button>
+            </div>
             <button id="compact-btn" class="btn btn-secondary btn-sm">手动 Compact</button>
             <button id="clear-btn" class="btn btn-danger btn-sm">清空全部</button>
             <button id="batch-delete-btn" class="btn btn-danger btn-sm" disabled>批量删除</button>
@@ -325,6 +330,57 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
 </Layout>
 
 <script is:inline define:vars={{ groupId }}>
+    const importStart = document.getElementById('import-start');
+    const importEnd = document.getElementById('import-end');
+    const importBtn = document.getElementById('import-btn');
+
+    function formatDate(d) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    if (importStart && importEnd) {
+        const today = new Date();
+        const weekAgo = new Date();
+        weekAgo.setDate(today.getDate() - 7);
+        importStart.value = formatDate(weekAgo);
+        importEnd.value = formatDate(today);
+    }
+
+    importBtn?.addEventListener('click', async () => {
+        const start = importStart?.value;
+        const end = importEnd?.value;
+        if (!start || !end) {
+            alert('请选择开始和结束日期');
+            return;
+        }
+        if (start > end) {
+            alert('开始日期不能晚于结束日期');
+            return;
+        }
+        if (!confirm(`确定导入 ${start} 至 ${end} 的历史消息到会话吗？（忽略压缩消息）`)) return;
+        importBtn.disabled = true;
+        importBtn.textContent = '导入中...';
+        try {
+            const res = await fetch(`/api/group/${groupId}/import`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ startDate: start, endDate: end }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(`已导入 ${data.imported} 条消息`);
+            } else {
+                alert('导入失败：' + (data.error || '未知错误'));
+            }
+        } catch (err) {
+            alert('导入失败：' + err.message);
+        } finally {
+            importBtn.disabled = false;
+            importBtn.textContent = '导入历史';
+        }
+    });
+
     const compactBtn = document.getElementById('compact-btn');
     compactBtn?.addEventListener('click', async () => {
         if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;
@@ -521,6 +577,25 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
+    }
+    .import-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .date-input {
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .date-input:focus {
+        outline: none;
+        border-color: var(--accent);
     }
     .table-wrap {
         background: var(--surface);
