@@ -398,7 +398,7 @@ export class ReplyAgent {
 
         const sorted = Array.from(uniqueMemories.entries())
             .sort((a, b) => b[1] - a[1])
-            .slice(0, 3);
+            .slice(0, 5);
 
         this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
         return sorted.map(([memory, score]) => `- ${memory} (相关度: ${(score * 100).toFixed(1)}%)`);

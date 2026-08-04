@@ -22,7 +22,7 @@ yarn
 
 ## 约束
 
-- 遵循指令，而不是越俎代庖。对非代码文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
+- 遵循指令，而不是越俎代庖。对非{代码、文档}的文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
 - 优先使用成熟的库，避免造轮子。允许重构来保证代码始终为最优结构。
 - `src/prompts.ts` 统一管理所有 LLM prompt，禁止在业务代码中硬编码 prompt
 - 打日志必须用`lib/utl/logger.ts`
@@ -122,7 +122,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
 - **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
-- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 mem0 取符合度最高的 3 条记忆，注入到最后一条 user message 末尾（带 `----- 相关记忆（自动检索） -----` 分割线）
+- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 mem0 取符合度最高的 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
 - **回复工具** (`reply`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）

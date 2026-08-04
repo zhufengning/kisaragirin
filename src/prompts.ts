@@ -80,9 +80,7 @@ export const memoryKeywordPrompt = `从以下群聊消息中提取用于搜索�
 关键词应该是：群友提到的人名、事件、话题、技术术语、或任何可能有历史记忆关联的内容。
 输出格式：每行一个关键词，不要编号，不要其他内容。最多输出5个关键词。`;
 
-export const memorySearchSeparator = `\n----- 相关记忆（自动检索） -----
-以下是与当前对话相关的历史记忆，供你参考：
-`;
+export const memorySearchSeparator = `\n--- 记忆自动检索 ---\n`;
 
 export const prompts = {
     jailBreak: '',

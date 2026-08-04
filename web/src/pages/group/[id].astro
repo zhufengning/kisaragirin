@@ -601,12 +601,13 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        overflow: hidden;
+        overflow-x: auto;
     }
     .message-table {
         width: 100%;
         border-collapse: collapse;
         font-size: 14px;
+        min-width: 850px;
     }
     .message-table th,
     .message-table td {
