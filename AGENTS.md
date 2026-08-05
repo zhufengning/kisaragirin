@@ -24,7 +24,7 @@ yarn
 
 - 遵循指令，而不是越俎代庖。对非{代码、文档}的文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
 - 优先使用成熟的库，避免造轮子。允许重构来保证代码始终为最优结构。
-- `src/prompts.ts` 统一管理所有 LLM prompt，禁止在业务代码中硬编码 prompt
+- `src/prompts.ts` 统一管理所有 LLM prompt（`Prompts` 类，带默认值，可被 `input.prompts` 覆盖），禁止在业务代码中硬编码 prompt
 - 打日志必须用`lib/utl/logger.ts`
 - `lib/` 是上游 SDK，不写业务逻辑
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
@@ -63,7 +63,7 @@ src/
     reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
     mem0-tool.ts        -- mem0 记忆工具（search_memory / add_memory），注册为 AgentTool 供 reply-agent 调用
-  prompts.ts            -- 所有 LLM prompt 的统一入口
+  prompts.ts            -- `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可被 `input.prompts` 覆盖）
   web/
     server.ts           -- Node.js HTTP server，加载 Astro handler
 
@@ -110,6 +110,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
+- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例被 `reply-agent.ts` / `reply-tool.ts` / `desc-queue.ts` 共用
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为最后一条 bot 回复的数据库 id；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
@@ -154,6 +155,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
 - `input.max_tool_call_rounds`：每轮回复中允许的非 `reply` 工具调用轮数上限，默认 5
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
+- `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/index.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
@@ -192,7 +194,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/reply-tool.ts` — 回复工具（`reply`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
 - `src/util/mem0-tool.ts` — mem0 记忆工具（`search_memory` / `add_memory`），注册为 `AgentTool`
-- `src/prompts.ts` — 所有 LLM prompt 的统一入口
+- `src/prompts.ts` — `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可通过 `input.prompts` 覆盖）
 - `src/web/server.ts` — Web 面板 Node adapter
 - `lib/types/messages.ts` — OneBot 消息段类型
 

@@ -1,5 +1,6 @@
 import type {Model, Api} from '@earendil-works/pi-ai';
 import type {MemoryConfig} from 'mem0ai/oss';
+import type {Prompts} from './prompts';
 
 export interface OneBotConfig {
     host: string;
@@ -24,6 +25,8 @@ export class InputConfig {
     bot_persona?: string;
     group_custom_prompts?: Record<number, string>;
     scheduled_tasks?: Record<number, ScheduledGroupTask[]>;
+    /** 覆盖 src/prompts.ts 中 `Prompts` 类的默认 prompt（如 rules、deepResearchSystem 等） */
+    prompts: Partial<Prompts> = {};
     debug_dump_prompt = false;
 }
 

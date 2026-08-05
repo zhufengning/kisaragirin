@@ -39,6 +39,11 @@ export const config: AppConfig = {
         group_whitelist: [],
         bot_name: '',
         bot_persona: '',
+        /** 覆盖 src/prompts.ts 中 `Prompts` 类的默认 prompt（rules、deepResearchSystem 等）。未覆盖的成员使用 prompts.ts 中的通用默认值 */
+        prompts: {
+            // rules: `1. 认清自己的身份：你是群聊机器人，不是人类。\n2. 回复应简洁、自然，直接讨论话题本身。`,
+            // deepResearchSystem: `你是一个研究助手。请对用户给出的主题进行研究，提供准确、有条理的分析报告。`,
+        },
         /** 按群号配置的专属提示词，注入在 system prompt 人设之后 */
         group_custom_prompts: {
             // 123456789: '本群是技术讨论群，请以技术讨论为主，减少闲聊。\n当群友讨论CTF题目时，可以使用深度研究帮助搜索writeup。',

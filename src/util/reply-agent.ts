@@ -8,7 +8,7 @@ import {eq, asc, and, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage} from '~/message-format';
-import {prompts, replyReminder, replyToolInstructions, memoryKeywordPrompt, memorySearchSeparator} from '~/prompts';
+import {prompts} from '~/prompts';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
@@ -49,7 +49,7 @@ function buildSystemPrompt ({
         botPersona,
         '## 可用工具',
         toolsDescription,
-        replyToolInstructions
+        prompts.replyToolInstructions
     ];
 
     if (groupCustomPrompt) {
@@ -335,7 +335,7 @@ export class ReplyAgent {
             const context: Context = {
                 messages: [{
                     role: 'user',
-                    content: `${memoryKeywordPrompt}\n\n${messagesText}`,
+                    content: `${prompts.memoryKeywordPrompt}\n\n${messagesText}`,
                     timestamp: Date.now()
                 }]
             };
@@ -428,7 +428,7 @@ export class ReplyAgent {
         const keywords = await this.generateMemoryKeywords(userTexts.join('\n'));
         const memories = await this.searchMemories(keywords);
         if (memories.length > 0) {
-            userTexts[userTexts.length - 1] += memorySearchSeparator + memories.join('\n');
+            userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
         }
 
         this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
@@ -537,7 +537,7 @@ export class ReplyAgent {
             } else {
                 this.logger.info(
                     `[ReplyAgent] [${this.groupId}] sending reminder ${i}/${MAX_REMINDERS}...`);
-                assistant = await this.harness.prompt(replyReminder());
+                assistant = await this.harness.prompt(prompts.replyReminder());
             }
 
             if (!assistant) {

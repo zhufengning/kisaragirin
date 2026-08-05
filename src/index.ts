@@ -2,6 +2,7 @@ import './util/disable-mem0-telemetry';
 
 import {createBot} from '@lib';
 import {config, models} from '@/config';
+import {applyPromptsOverrides} from './prompts';
 import {registerCustomProviders} from './util/models-factory';
 import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';
 import {createDb, schema, runMigrations} from './db';
@@ -14,6 +15,7 @@ import {Logger, configureLogger} from '@lib/util/logger';
 import {Memory} from 'mem0ai/oss';
 
 configureLogger(config.log.level, config.log.file);
+applyPromptsOverrides(config.input.prompts);
 const logger = new Logger();
 
 registerCustomProviders(models, config);

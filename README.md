@@ -80,6 +80,23 @@ input: {
 }
 ```
 
+## Prompt 配置
+
+所有 LLM prompt 的默认值集中在 `src/prompts.ts` 的 `Prompts` 类中（群聊回复规则、深度研究提示词、回复工具描述、记忆关键词提取 prompt 等）。可在 `config.ts` 的 `input.prompts` 字段中覆盖任意成员：
+
+```typescript
+input: {
+    // ... 其他配置
+    prompts: {
+        rules: `1. ...\n2. ...`,
+        deepResearchSystem: `你是一个研究助手。...`,
+    },
+}
+```
+
+- 字符串字段直接给值即可覆盖；方法（如 `replyIdentity`）需提供同签名函数，若函数内部引用了其他成员请使用普通函数以保证 `this` 绑定
+- 未覆盖的成员使用 `src/prompts.ts` 中的默认值
+
 ## 技术栈
 
 - **Bot**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
