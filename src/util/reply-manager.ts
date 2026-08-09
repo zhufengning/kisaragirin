@@ -324,6 +324,12 @@ export class GroupReplyManager {
 
         const firstTurn = await agent.generateFirstTurn(task);
         if (firstTurn.failed || !firstTurn.text) {
+            if (firstTurn.processedUpToId) {
+                this.logger.info(
+                    `[ReplyManager] [${this.groupId}] first turn failed, advancing lastTriggerId ` +
+                    `to ${firstTurn.processedUpToId}`);
+                this.lastTriggerId = firstTurn.processedUpToId;
+            }
             if (task.type === 'at') {
                 this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, sending fallback`);
                 const segments: Message[] = [{type: 'text', data: {text: '@响应失败'}}];
@@ -363,7 +369,7 @@ export class GroupReplyManager {
 
         const topic = firstTurn.deepResearchTopic || firstTurn.text;
         const finalTurn = await agent.generateFinalTurn(task, topic, this.lastTriggerId);
-        await this.sendTurn(task, {
+        const finalTurnSendResult = await this.sendTurn(task, {
             text: finalTurn.text,
             isFirstTurn: false,
             isDeepResearchFinal: true,
@@ -372,6 +378,9 @@ export class GroupReplyManager {
             firstTurnReplyTime: firstTurnSendResult.time,
             botCard
         });
+        if (finalTurnSendResult.rowId !== null) {
+            this.lastTriggerId = finalTurnSendResult.rowId;
+        }
     }
 
     private async sendTurn (

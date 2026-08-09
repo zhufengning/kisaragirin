@@ -105,6 +105,8 @@ export interface FirstTurnResult {
     requiresDeepResearch: boolean;
     deepResearchTopic?: string;
     failed?: boolean;
+    /** 已写入 harness session 的最大数据库消息 id，失败时用于推进 lastTriggerId 避免重复发送 */
+    processedUpToId?: number;
 }
 
 export interface GenerateReplyResult {
@@ -425,6 +427,8 @@ export class ReplyAgent {
             return {text: '', requiresDeepResearch: false, failed: true};
         }
 
+        const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
+
         const keywords = await this.generateMemoryKeywords(userTexts.join('\n'));
         const memories = await this.searchMemories(keywords);
         if (memories.length > 0) {
@@ -445,13 +449,20 @@ export class ReplyAgent {
             } as AgentMessage);
         }
 
-        const assistant = await this.promptWithReminders(userTexts[userTexts.length - 1]);
+        let assistant: AssistantMessage | undefined;
+        try {
+            assistant = await this.promptWithReminders(userTexts[userTexts.length - 1]);
+        } catch (err) {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] first turn prompt threw: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+        }
 
         if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] first turn failed ` +
                 `(stopReason=${assistant?.stopReason ?? 'undefined'})`);
-            return {text: '', requiresDeepResearch: false, failed: true};
+            return {text: '', requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
         this.dumpOutput(this.debugPrefix, assistant);
@@ -459,7 +470,7 @@ export class ReplyAgent {
         const params = this.getReplyToolParams();
         if (!params || !params.reply.trim()) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
-            return {text: '', requiresDeepResearch: false, failed: true};
+            return {text: '', requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
         return {
@@ -489,7 +500,14 @@ export class ReplyAgent {
             } as AgentMessage);
         }
 
-        const finalAssistant = await this.promptWithReminders('请根据深度研究结果，使用 reply 工具给出最终回复。');
+        let finalAssistant: AssistantMessage | undefined;
+        try {
+            finalAssistant = await this.promptWithReminders('请根据深度研究结果，使用 reply 工具给出最终回复。');
+        } catch (err) {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] deep research final turn prompt threw: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+        }
 
         if (!finalAssistant || finalAssistant.stopReason === 'error' || finalAssistant.stopReason === 'aborted') {
             this.logger.error(
