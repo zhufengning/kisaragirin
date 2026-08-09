@@ -8,31 +8,46 @@ if (!groupId || isNaN(groupId)) {
 ---
 
 <Layout title={`群 ${groupId} Harness 日志`}>
-    <h1><a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} Harness 日志</h1>
+    <div class="harness-page">
+        <header class="page-header">
+            <div class="page-title-row">
+                <a class="back-link" href={`/group/${groupId}`}>← 消息列表</a>
+                <h1>群 {groupId} <span class="title-muted">Harness 日志</span></h1>
+            </div>
+            <p class="page-desc">只读查看 AgentHarness 会话分支，按角色筛选与展开长内容。</p>
+        </header>
 
-    <div class="controls">
-        <span class="controls-label">筛选：</span>
-        <button class="filter-btn active" data-filter="all">全部</button>
-        <button class="filter-btn" data-filter="user">User</button>
-        <button class="filter-btn" data-filter="assistant">Assistant</button>
-        <button class="filter-btn" data-filter="tool">Tool</button>
-        <button class="filter-btn" data-filter="compaction">Compaction</button>
-        <button id="refresh-btn" class="refresh-btn">刷新</button>
+        <div class="controls">
+            <div class="filter-group" role="tablist" aria-label="条目筛选">
+                <button class="filter-btn active" data-filter="all" type="button">全部</button>
+                <button class="filter-btn" data-filter="user" type="button">User</button>
+                <button class="filter-btn" data-filter="assistant" type="button">Assistant</button>
+                <button class="filter-btn" data-filter="tool" type="button">Tool</button>
+                <button class="filter-btn" data-filter="compaction" type="button">Compaction</button>
+            </div>
+            <div class="controls-right">
+                <span id="entry-count" class="entry-count"></span>
+                <button id="refresh-btn" class="refresh-btn" type="button">刷新</button>
+            </div>
+        </div>
+
+        <div id="loading" class="loading" style="display: block;">加载中...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="entries-container" class="entries-container" style="display: none;"></div>
     </div>
-
-    <div id="loading" class="loading" style="display: block;">加载中...</div>
-    <div id="error" class="error" style="display: none;"></div>
-    <div id="entries-container" class="entries-container" style="display: none;"></div>
 
     <script is:inline define:vars={{ groupId }}>
         const container = document.getElementById('entries-container');
         const loading = document.getElementById('loading');
         const errorEl = document.getElementById('error');
         const refreshBtn = document.getElementById('refresh-btn');
+        const entryCountEl = document.getElementById('entry-count');
         const filterButtons = document.querySelectorAll('.filter-btn');
 
         let currentFilter = 'all';
         let currentEntries = [];
+
+        const COLLAPSE_CHARS = 800;
 
         function formatTimestamp(iso) {
             if (!iso) return '';
@@ -42,27 +57,66 @@ if (!groupId || isNaN(groupId)) {
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         }
 
-        function appendText(parent, text) {
-            if (text == null || text === '') return;
-            const span = document.createElement('span');
-            span.className = 'block-text';
-            span.textContent = text;
-            parent.appendChild(span);
+        function textLength(value) {
+            if (value == null) return 0;
+            if (typeof value === 'string') return value.length;
+            try {
+                return JSON.stringify(value).length;
+            } catch {
+                return String(value).length;
+            }
         }
 
-        function appendCodeBlock(parent, label, value) {
+        function makeCollapsible(contentEl, charCount) {
+            if (charCount <= COLLAPSE_CHARS) return contentEl;
+
+            const wrap = document.createElement('div');
+            wrap.className = 'collapsible collapsed';
+
+            const inner = document.createElement('div');
+            inner.className = 'collapsible-body';
+            inner.appendChild(contentEl);
+            wrap.appendChild(inner);
+
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'collapse-toggle';
+            toggle.textContent = `展开全部（约 ${charCount.toLocaleString()} 字符）`;
+            toggle.addEventListener('click', () => {
+                const collapsed = wrap.classList.toggle('collapsed');
+                toggle.textContent = collapsed
+                    ? `展开全部（约 ${charCount.toLocaleString()} 字符）`
+                    : '收起';
+            });
+            wrap.appendChild(toggle);
+            return wrap;
+        }
+
+        function appendText(parent, text) {
+            if (text == null || text === '') return;
+            const span = document.createElement('div');
+            span.className = 'block-text';
+            span.textContent = String(text);
+            parent.appendChild(makeCollapsible(span, String(text).length));
+        }
+
+        function appendCodeBlock(parent, label, value, opts = {}) {
             const wrap = document.createElement('div');
             wrap.className = 'code-block';
+            if (opts.variant) wrap.classList.add(`code-block--${opts.variant}`);
+
             if (label) {
                 const lbl = document.createElement('div');
                 lbl.className = 'code-block-label';
                 lbl.textContent = label;
                 wrap.appendChild(lbl);
             }
+
             const pre = document.createElement('pre');
-            pre.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            pre.textContent = text;
             wrap.appendChild(pre);
-            parent.appendChild(wrap);
+            parent.appendChild(makeCollapsible(wrap, textLength(text)));
         }
 
         function renderContentBlock(parent, block) {
@@ -74,17 +128,28 @@ if (!groupId || isNaN(groupId)) {
                 callWrap.className = 'tool-call';
                 const header = document.createElement('div');
                 header.className = 'tool-call-header';
-                header.textContent = `tool-call: ${block.name || 'unknown'}`;
+                header.innerHTML = `<span class="tool-call-icon">⚙</span><span>tool-call</span><code>${escapeHtml(block.name || 'unknown')}</code>`;
                 callWrap.appendChild(header);
-                appendCodeBlock(callWrap, 'arguments', block.arguments || {});
+                appendCodeBlock(callWrap, 'arguments', block.arguments || {}, { variant: 'nested' });
                 parent.appendChild(callWrap);
             } else if (block.type === 'image') {
-                appendText(parent, `[image: ${block.mimeType || 'unknown'}]`);
+                const img = document.createElement('div');
+                img.className = 'block-meta';
+                img.textContent = `[image: ${block.mimeType || 'unknown'}]`;
+                parent.appendChild(img);
             } else if (block.type === 'thinking') {
-                appendCodeBlock(parent, 'thinking', block.thinking || '');
+                appendCodeBlock(parent, 'thinking', block.thinking || '', { variant: 'thinking' });
             } else {
                 appendCodeBlock(parent, block.type, block);
             }
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
         }
 
         function renderMessageBody(parent, message) {
@@ -95,6 +160,8 @@ if (!groupId || isNaN(groupId)) {
                 for (const block of content) {
                     renderContentBlock(parent, block);
                 }
+            } else if (content != null) {
+                appendCodeBlock(parent, 'content', content);
             }
         }
 
@@ -105,8 +172,16 @@ if (!groupId || isNaN(groupId)) {
             return badge;
         }
 
-        function createEntryElement(entry) {
-            const el = document.createElement('div');
+        function roleVariant(role) {
+            if (role === 'user') return 'user';
+            if (role === 'assistant') return 'assistant';
+            if (role === 'toolResult') return 'tool';
+            if (role === 'system') return 'system';
+            return 'default';
+        }
+
+        function createEntryElement(entry, index) {
+            const el = document.createElement('article');
             el.className = 'entry';
             el.dataset.type = entry.type;
 
@@ -115,6 +190,11 @@ if (!groupId || isNaN(groupId)) {
 
             const meta = document.createElement('div');
             meta.className = 'entry-meta';
+
+            const indexEl = document.createElement('span');
+            indexEl.className = 'entry-index';
+            indexEl.textContent = String(index + 1);
+            meta.appendChild(indexEl);
 
             const body = document.createElement('div');
             body.className = 'entry-body';
@@ -126,48 +206,60 @@ if (!groupId || isNaN(groupId)) {
             if (entry.type === 'message') {
                 const role = entry.message?.role || 'unknown';
                 el.dataset.role = role;
-                const variant = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : role === 'toolResult' ? 'tool' : 'default';
-                meta.appendChild(createBadge(`message · ${role}`, variant));
+                el.classList.add(`entry--${roleVariant(role)}`);
+                meta.appendChild(createBadge(`message · ${role}`, roleVariant(role)));
                 renderMessageBody(body, entry.message);
             } else if (entry.type === 'compaction') {
                 el.dataset.role = 'compaction';
+                el.classList.add('entry--compaction');
                 meta.appendChild(createBadge('compaction', 'compaction'));
                 appendText(body, entry.summary || '');
             } else if (entry.type === 'model_change') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('model-change', 'default'));
                 appendText(body, `${entry.provider || 'unknown'} / ${entry.modelId || 'unknown'}`);
             } else if (entry.type === 'active_tools_change') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('active-tools-change', 'default'));
                 appendText(body, (entry.activeToolNames || []).join(', '));
             } else if (entry.type === 'thinking_level_change') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('thinking-level-change', 'default'));
                 appendText(body, entry.thinkingLevel || '');
             } else if (entry.type === 'branch_summary') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('branch-summary', 'default'));
                 appendText(body, entry.summary || '');
             } else if (entry.type === 'custom') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge(`custom · ${entry.customType || 'unknown'}`, 'default'));
                 appendCodeBlock(body, 'data', entry.data);
             } else if (entry.type === 'custom_message') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge(`custom-message · ${entry.customType || 'unknown'}`, 'default'));
-                appendText(body, typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content));
+                appendText(body, typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content, null, 2));
             } else if (entry.type === 'label') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('label', 'default'));
                 appendText(body, `${entry.targetId || 'null'} → ${entry.label || '(none)'}`);
             } else if (entry.type === 'session_info') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('session-info', 'default'));
                 appendText(body, entry.name || '');
             } else if (entry.type === 'leaf') {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge('leaf', 'default'));
                 appendText(body, `target: ${entry.targetId || 'null'}`);
             } else {
+                el.classList.add('entry--meta');
                 meta.appendChild(createBadge(entry.type || 'unknown', 'default'));
                 appendCodeBlock(body, 'entry', entry);
             }
 
             const idSpan = document.createElement('span');
             idSpan.className = 'entry-id';
-            idSpan.textContent = entry.id || '';
+            idSpan.title = entry.id || '';
+            idSpan.textContent = entry.id ? entry.id.slice(0, 8) : '';
 
             header.appendChild(meta);
             header.appendChild(ts);
@@ -199,6 +291,10 @@ if (!groupId || isNaN(groupId)) {
             container.innerHTML = '';
 
             const filtered = entries.filter(e => matchesFilter(e, currentFilter));
+            entryCountEl.textContent = filtered.length === entries.length
+                ? `${entries.length} 条`
+                : `${filtered.length} / ${entries.length} 条`;
+
             if (filtered.length === 0) {
                 const empty = document.createElement('p');
                 empty.className = 'empty';
@@ -208,8 +304,8 @@ if (!groupId || isNaN(groupId)) {
                 return;
             }
 
-            for (const entry of filtered) {
-                container.appendChild(createEntryElement(entry));
+            for (let i = 0; i < filtered.length; i++) {
+                container.appendChild(createEntryElement(filtered[i], i));
             }
             container.style.display = 'block';
         }
@@ -218,6 +314,7 @@ if (!groupId || isNaN(groupId)) {
             loading.style.display = 'block';
             errorEl.style.display = 'none';
             container.style.display = 'none';
+            entryCountEl.textContent = '';
 
             try {
                 const res = await fetch(`/api/harness?groupId=${groupId}`);
@@ -253,180 +350,441 @@ if (!groupId || isNaN(groupId)) {
 </Layout>
 
 <style>
+    .harness-page {
+        --h-user: #6c7ae0;
+        --h-assistant: #3ecf8e;
+        --h-tool: #e6b450;
+        --h-compaction: #b07ce8;
+        --h-system: #7aa2f7;
+        --h-meta: #7a7a8c;
+        max-width: 1100px;
+        margin: 0 auto;
+    }
+
+    .page-header {
+        margin-bottom: 18px;
+    }
+
+    .page-title-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 6px;
+    }
+
+    .back-link {
+        font-size: 13px;
+        color: var(--text-secondary);
+        width: fit-content;
+    }
+
+    .back-link:hover {
+        color: var(--accent);
+        text-decoration: none;
+    }
+
+    .harness-page h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+    }
+
+    .title-muted {
+        color: var(--text-secondary);
+        font-weight: 500;
+    }
+
+    .page-desc {
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+
     .controls {
+        position: sticky;
+        top: 56px;
+        z-index: 5;
         display: flex;
         align-items: center;
+        justify-content: space-between;
         flex-wrap: wrap;
-        gap: 10px;
-        margin-bottom: 16px;
-        padding: 12px 16px;
-        background: var(--surface);
+        gap: 12px;
+        margin-bottom: 18px;
+        padding: 10px 12px;
+        background: rgba(24, 24, 28, 0.92);
         border: 1px solid var(--border);
         border-radius: var(--radius);
+        backdrop-filter: blur(10px);
     }
-    .controls-label {
-        font-size: 14px;
-        color: var(--text-secondary);
+
+    .filter-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 3px;
+        background: var(--bg);
+        border-radius: 10px;
+        border: 1px solid var(--border);
     }
+
     .filter-btn,
     .refresh-btn {
-        padding: 6px 14px;
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: var(--bg);
-        color: var(--text);
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        background: transparent;
+        color: var(--text-secondary);
         font-size: 13px;
+        font-weight: 500;
         cursor: pointer;
-        transition: background 0.15s, border-color 0.15s;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
-    .filter-btn:hover,
-    .refresh-btn:hover {
+
+    .filter-btn:hover {
+        color: var(--text);
         background: var(--surface-hover);
     }
+
     .filter-btn.active {
         background: var(--accent);
+        color: #fff;
+        box-shadow: 0 0 0 1px rgba(108, 122, 224, 0.35);
+    }
+
+    .controls-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-left: auto;
+    }
+
+    .entry-count {
+        font-size: 12px;
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .refresh-btn {
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text);
+    }
+
+    .refresh-btn:hover {
         border-color: var(--accent);
         color: #fff;
+        background: rgba(108, 122, 224, 0.2);
     }
-    .refresh-btn {
-        margin-left: auto;
-        background: var(--surface-hover);
-    }
+
     .loading {
         text-align: center;
-        padding: 40px;
+        padding: 48px 20px;
         color: var(--text-secondary);
+        font-size: 14px;
     }
+
     .error {
-        padding: 16px;
+        padding: 14px 16px;
         background: rgba(220, 38, 38, 0.1);
         border: 1px solid rgba(220, 38, 38, 0.3);
         border-radius: var(--radius);
         color: #ef4444;
         margin-bottom: 16px;
+        font-size: 14px;
     }
-    .entries-container {
+
+    /* 动态创建的节点不带 Astro scope 属性，必须用 :global */
+    :global(.entries-container) {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 14px;
+        padding-bottom: 40px;
     }
-    .empty {
+
+    :global(.empty) {
         color: var(--text-secondary);
         text-align: center;
-        padding: 40px;
-    }
-    .entry {
+        padding: 48px 20px;
         background: var(--surface);
-        border: 1px solid var(--border);
+        border: 1px dashed var(--border);
         border-radius: var(--radius);
-        overflow: hidden;
     }
-    .entry-header {
+
+    :global(.entry) {
+        position: relative;
+        background: linear-gradient(180deg, rgba(24, 24, 28, 0.98), rgba(20, 20, 24, 0.98));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    :global(.entry::before) {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--h-meta, #7a7a8c);
+    }
+
+    :global(.entry--user::before) { background: var(--h-user, #6c7ae0); }
+    :global(.entry--assistant::before) { background: var(--h-assistant, #3ecf8e); }
+    :global(.entry--tool::before) { background: var(--h-tool, #e6b450); }
+    :global(.entry--compaction::before) { background: var(--h-compaction, #b07ce8); }
+    :global(.entry--system::before) { background: var(--h-system, #7aa2f7); }
+    :global(.entry--meta::before) { background: var(--h-meta, #7a7a8c); }
+
+    :global(.entry-header) {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 10px 14px;
-        background: var(--surface-hover);
-        border-bottom: 1px solid var(--border);
+        padding: 10px 14px 10px 16px;
+        background: rgba(255, 255, 255, 0.02);
+        border-bottom: 1px solid rgba(42, 42, 50, 0.9);
         flex-wrap: wrap;
     }
-    .entry-meta {
+
+    :global(.entry-meta) {
         display: flex;
         align-items: center;
         gap: 8px;
+        min-width: 0;
     }
-    .badge {
+
+    :global(.entry-index) {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 28px;
+        height: 22px;
+        padding: 0 6px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
+    }
+
+    :global(.badge) {
         display: inline-flex;
         align-items: center;
         padding: 3px 10px;
         border-radius: 9999px;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 600;
+        letter-spacing: 0.01em;
         border: 1px solid var(--border);
+        white-space: nowrap;
     }
-    .badge-user {
-        background: rgba(108, 122, 224, 0.15);
-        color: var(--accent);
+
+    :global(.badge-user) {
+        background: rgba(108, 122, 224, 0.14);
+        color: #aab4ff;
         border-color: rgba(108, 122, 224, 0.35);
     }
-    .badge-assistant {
-        background: rgba(46, 204, 113, 0.12);
-        color: #2ecc71;
-        border-color: rgba(46, 204, 113, 0.3);
+
+    :global(.badge-assistant) {
+        background: rgba(62, 207, 142, 0.12);
+        color: #6ee7b0;
+        border-color: rgba(62, 207, 142, 0.3);
     }
-    .badge-tool {
-        background: rgba(241, 196, 15, 0.12);
-        color: #f1c40f;
-        border-color: rgba(241, 196, 15, 0.3);
+
+    :global(.badge-tool) {
+        background: rgba(230, 180, 80, 0.12);
+        color: #f0c674;
+        border-color: rgba(230, 180, 80, 0.32);
     }
-    .badge-compaction {
-        background: rgba(155, 89, 182, 0.15);
-        color: #9b59b6;
-        border-color: rgba(155, 89, 182, 0.35);
+
+    :global(.badge-compaction) {
+        background: rgba(176, 124, 232, 0.14);
+        color: #d2b0ff;
+        border-color: rgba(176, 124, 232, 0.35);
     }
-    .badge-default {
-        background: rgba(144, 144, 160, 0.12);
+
+    :global(.badge-system) {
+        background: rgba(122, 162, 247, 0.12);
+        color: #9db8ff;
+        border-color: rgba(122, 162, 247, 0.3);
+    }
+
+    :global(.badge-default) {
+        background: rgba(144, 144, 160, 0.1);
         color: var(--text-secondary);
         border-color: var(--border);
     }
-    .timestamp {
+
+    :global(.timestamp) {
         font-size: 12px;
         color: var(--text-secondary);
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-variant-numeric: tabular-nums;
     }
-    .entry-id {
+
+    :global(.entry-id) {
         margin-left: auto;
-        font-size: 12px;
-        color: var(--text-secondary);
+        font-size: 11px;
+        color: #6a6a78;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
-    .entry-body {
-        padding: 12px 14px;
-        font-size: 13px;
-        line-height: 1.6;
+
+    :global(.entry-body) {
+        padding: 14px 16px 16px;
+        font-size: 13.5px;
+        line-height: 1.65;
         word-break: break-word;
-        white-space: pre-wrap;
         display: flex;
         flex-direction: column;
-        gap: 10px;
+        gap: 12px;
+        color: var(--text);
     }
-    .block-text {
-        white-space: pre-wrap;
-    }
-    .tool-call {
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--bg);
-        overflow: hidden;
-    }
-    .tool-call-header {
-        padding: 6px 10px;
-        background: rgba(241, 196, 15, 0.1);
-        color: #f1c40f;
-        font-size: 12px;
-        font-weight: 500;
-    }
-    .code-block {
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--bg);
-        overflow: hidden;
-    }
-    .code-block-label {
-        padding: 5px 10px;
-        font-size: 11px;
-        color: var(--text-secondary);
-        background: var(--surface-hover);
-        border-bottom: 1px solid var(--border);
-    }
-    .code-block pre {
-        padding: 10px;
-        margin: 0;
-        font-size: 12px;
-        line-height: 1.5;
+
+    /* 关键：text / compaction 等纯文本必须保留换行 */
+    :global(.block-text) {
         white-space: pre-wrap;
         word-break: break-word;
-        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        color: #e6e6ef;
+    }
+
+    :global(.block-meta) {
+        color: var(--text-secondary);
+        font-size: 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    :global(.tool-call) {
+        border: 1px solid rgba(230, 180, 80, 0.28);
+        border-radius: 10px;
+        background: rgba(230, 180, 80, 0.04);
+        overflow: hidden;
+    }
+
+    :global(.tool-call-header) {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: rgba(230, 180, 80, 0.1);
+        color: #f0c674;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    :global(.tool-call-header code) {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 600;
+        color: #ffe3a0;
+        background: rgba(0, 0, 0, 0.25);
+        padding: 1px 7px;
+        border-radius: 5px;
+    }
+
+    :global(.tool-call-icon) {
+        opacity: 0.85;
+    }
+
+    :global(.code-block) {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #121218;
+        overflow: hidden;
+    }
+
+    :global(.code-block--thinking) {
+        border-color: rgba(122, 162, 247, 0.25);
+        background: rgba(122, 162, 247, 0.05);
+    }
+
+    :global(.code-block--nested) {
+        border: none;
+        border-top: 1px solid rgba(230, 180, 80, 0.18);
+        border-radius: 0;
+        background: transparent;
+    }
+
+    :global(.code-block-label) {
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--text-secondary);
+        background: rgba(255, 255, 255, 0.02);
+        border-bottom: 1px solid var(--border);
+    }
+
+    :global(.code-block--thinking .code-block-label) {
+        color: #9db8ff;
+        border-bottom-color: rgba(122, 162, 247, 0.2);
+        background: rgba(122, 162, 247, 0.06);
+    }
+
+    :global(.code-block pre) {
+        padding: 12px 14px;
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #d7d7e2;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Cascadia Code', monospace;
+        overflow-x: auto;
+    }
+
+    :global(.code-block--thinking pre) {
+        color: #c5d4ff;
+        font-style: italic;
+    }
+
+    :global(.collapsible) {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    :global(.collapsible.collapsed .collapsible-body) {
+        max-height: 220px;
+        overflow: hidden;
+        mask-image: linear-gradient(180deg, #000 55%, transparent 100%);
+        -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent 100%);
+    }
+
+    :global(.collapse-toggle) {
+        align-self: flex-start;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text-secondary);
+        font-size: 12px;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+
+    :global(.collapse-toggle:hover) {
+        color: var(--text);
+        border-color: var(--accent);
+        background: rgba(108, 122, 224, 0.15);
+    }
+
+    @media (max-width: 720px) {
+        .controls {
+            top: 56px;
+        }
+
+        :global(.entry-id) {
+            display: none;
+        }
     }
 </style>
