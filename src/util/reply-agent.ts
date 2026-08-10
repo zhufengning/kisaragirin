@@ -513,7 +513,7 @@ export class ReplyAgent {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
                 `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
-            return {text: this.taskType === 'at' ? '@深度研究失败' : '', isDeepResearchFinal: true};
+            return {text: '深度研究失败', isDeepResearchFinal: true};
         }
 
         this.dumpOutput(this.debugPrefix, finalAssistant);
@@ -521,7 +521,7 @@ export class ReplyAgent {
         const finalParams = this.getReplyToolParams();
         if (!finalParams || !finalParams.reply.trim()) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
-            return {text: this.taskType === 'at' ? '@深度研究失败' : '', isDeepResearchFinal: true};
+            return {text: '深度研究失败', isDeepResearchFinal: true};
         }
 
         return {text: finalParams.reply, isDeepResearchFinal: true};
@@ -541,7 +541,7 @@ export class ReplyAgent {
         const topic = first.deepResearchTopic || first.text;
         const finalTurn = await this.generateFinalTurn(task, topic, task.lastTriggerId ?? 0);
         turns.push(finalTurn);
-        return {turns, failed: finalTurn.text === '@深度研究失败' || finalTurn.text === ''};
+        return {turns, failed: finalTurn.text === '深度研究失败' || finalTurn.text === ''};
     }
 
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {

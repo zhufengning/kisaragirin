@@ -14,7 +14,7 @@
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
 - 按群专属提示词（在 system prompt 人设之后注入群专属指令）
-- Web面板：AgentHarness 会话日志查看（只读，按群过滤）
+- Web面板：AgentHarness 会话日志查看（只读，按群过滤，新在前排序 + 前端分页，错误/中止消息高亮，支持条目 JSON 原文切换）
 
 ## 包管理
 
@@ -79,7 +79,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       index.astro     -- 群列表
       group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗 + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
-      group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch）
+      group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
       memories.astro         -- mem0 记忆管理（增删改查 + 语义搜索）
       api/
@@ -128,7 +128,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
-- **失败回退**：@触发返回 `@响应失败`（第一轮）或 `@深度研究失败`（第二轮），闲时触发则静默失败
+- **失败回退**：@触发第一轮失败返回 `@响应失败`，闲时触发则静默失败；深度研究第二轮失败时，引用第一轮即时回复消息并回复 `深度研究失败`（所有触发类型）
 - 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息

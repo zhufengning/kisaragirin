@@ -34,6 +34,7 @@ if (!groupId || isNaN(groupId)) {
         <div id="loading" class="loading" style="display: block;">加载中...</div>
         <div id="error" class="error" style="display: none;"></div>
         <div id="entries-container" class="entries-container" style="display: none;"></div>
+        <div id="pagination" class="pagination" style="display: none;"></div>
     </div>
 
     <script is:inline define:vars={{ groupId }}>
@@ -42,12 +43,15 @@ if (!groupId || isNaN(groupId)) {
         const errorEl = document.getElementById('error');
         const refreshBtn = document.getElementById('refresh-btn');
         const entryCountEl = document.getElementById('entry-count');
+        const paginationEl = document.getElementById('pagination');
         const filterButtons = document.querySelectorAll('.filter-btn');
 
         let currentFilter = 'all';
         let currentEntries = [];
+        let currentPage = 0;
 
         const COLLAPSE_CHARS = 800;
+        const PAGE_SIZE = 50;
 
         function formatTimestamp(iso) {
             if (!iso) return '';
@@ -209,6 +213,23 @@ if (!groupId || isNaN(groupId)) {
                 el.classList.add(`entry--${roleVariant(role)}`);
                 meta.appendChild(createBadge(`message · ${role}`, roleVariant(role)));
                 renderMessageBody(body, entry.message);
+                const msg = entry.message;
+                if (msg && (msg.stopReason === 'error' || msg.stopReason === 'aborted')) {
+                    el.classList.add('entry--error');
+                    const errWrap = document.createElement('div');
+                    errWrap.className = 'code-block code-block--error';
+                    const errLabel = document.createElement('div');
+                    errLabel.className = 'code-block-label';
+                    errLabel.textContent = msg.stopReason === 'aborted' ? '已中止' : '调用错误';
+                    errWrap.appendChild(errLabel);
+                    const errPre = document.createElement('pre');
+                    errPre.textContent = msg.errorMessage || '(无错误详情)';
+                    errWrap.appendChild(errPre);
+                    body.appendChild(errWrap);
+                    if (msg.diagnostics && msg.diagnostics.length > 0) {
+                        appendCodeBlock(body, 'diagnostics', msg.diagnostics, { variant: 'error' });
+                    }
+                }
             } else if (entry.type === 'compaction') {
                 el.dataset.role = 'compaction';
                 el.classList.add('entry--compaction');
@@ -261,10 +282,32 @@ if (!groupId || isNaN(groupId)) {
             idSpan.title = entry.id || '';
             idSpan.textContent = entry.id ? entry.id.slice(0, 8) : '';
 
+            const jsonBtn = document.createElement('button');
+            jsonBtn.type = 'button';
+            jsonBtn.className = 'json-toggle';
+            jsonBtn.textContent = 'JSON';
+
+            const jsonView = document.createElement('pre');
+            jsonView.className = 'entry-json';
+            jsonView.style.display = 'none';
+            try {
+                jsonView.textContent = JSON.stringify(entry, null, 2);
+            } catch {
+                jsonView.textContent = String(entry);
+            }
+            jsonBtn.addEventListener('click', () => {
+                const hidden = jsonView.style.display === 'none' || !jsonView.style.display;
+                jsonView.style.display = hidden ? 'block' : 'none';
+                jsonBtn.classList.toggle('active', hidden);
+                jsonBtn.textContent = hidden ? '收起' : 'JSON';
+            });
+
             header.appendChild(meta);
             header.appendChild(ts);
+            header.appendChild(jsonBtn);
             header.appendChild(idSpan);
             el.appendChild(header);
+            body.appendChild(jsonView);
             el.appendChild(body);
             return el;
         }
@@ -286,6 +329,47 @@ if (!groupId || isNaN(groupId)) {
             return false;
         }
 
+        function renderPagination(totalPages) {
+            if (totalPages <= 1) {
+                paginationEl.style.display = 'none';
+                return;
+            }
+            paginationEl.innerHTML = '';
+            paginationEl.style.display = 'flex';
+
+            const prevBtn = document.createElement('button');
+            prevBtn.type = 'button';
+            prevBtn.className = 'page-btn';
+            prevBtn.textContent = '上一页';
+            prevBtn.disabled = currentPage === 0;
+            prevBtn.addEventListener('click', () => {
+                if (currentPage > 0) {
+                    currentPage--;
+                    renderEntries(currentEntries);
+                }
+            });
+
+            const pageInfo = document.createElement('span');
+            pageInfo.className = 'page-info';
+            pageInfo.textContent = `${currentPage + 1} / ${totalPages}`;
+
+            const nextBtn = document.createElement('button');
+            nextBtn.type = 'button';
+            nextBtn.className = 'page-btn';
+            nextBtn.textContent = '下一页';
+            nextBtn.disabled = currentPage >= totalPages - 1;
+            nextBtn.addEventListener('click', () => {
+                if (currentPage < totalPages - 1) {
+                    currentPage++;
+                    renderEntries(currentEntries);
+                }
+            });
+
+            paginationEl.appendChild(prevBtn);
+            paginationEl.appendChild(pageInfo);
+            paginationEl.appendChild(nextBtn);
+        }
+
         function renderEntries(entries) {
             currentEntries = entries;
             container.innerHTML = '';
@@ -295,19 +379,27 @@ if (!groupId || isNaN(groupId)) {
                 ? `${entries.length} 条`
                 : `${filtered.length} / ${entries.length} 条`;
 
+            const sorted = filtered.slice().reverse();
+            const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+            if (currentPage > totalPages - 1) currentPage = totalPages - 1;
+            const start = currentPage * PAGE_SIZE;
+            const pageItems = sorted.slice(start, start + PAGE_SIZE);
+
             if (filtered.length === 0) {
                 const empty = document.createElement('p');
                 empty.className = 'empty';
                 empty.textContent = '暂无符合条件的条目';
                 container.appendChild(empty);
                 container.style.display = 'block';
+                paginationEl.style.display = 'none';
                 return;
             }
 
-            for (let i = 0; i < filtered.length; i++) {
-                container.appendChild(createEntryElement(filtered[i], i));
+            for (let i = 0; i < pageItems.length; i++) {
+                container.appendChild(createEntryElement(pageItems[i], start + i));
             }
             container.style.display = 'block';
+            renderPagination(totalPages);
         }
 
         async function loadEntries() {
@@ -315,6 +407,7 @@ if (!groupId || isNaN(groupId)) {
             errorEl.style.display = 'none';
             container.style.display = 'none';
             entryCountEl.textContent = '';
+            currentPage = 0;
 
             try {
                 const res = await fetch(`/api/harness?groupId=${groupId}`);
@@ -339,6 +432,7 @@ if (!groupId || isNaN(groupId)) {
                 filterButtons.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentFilter = btn.dataset.filter;
+                currentPage = 0;
                 renderEntries(currentEntries);
             });
         });
@@ -536,6 +630,7 @@ if (!groupId || isNaN(groupId)) {
     :global(.entry--compaction::before) { background: var(--h-compaction, #b07ce8); }
     :global(.entry--system::before) { background: var(--h-system, #7aa2f7); }
     :global(.entry--meta::before) { background: var(--h-meta, #7a7a8c); }
+    :global(.entry--error::before) { background: #ef5350; }
 
     :global(.entry-header) {
         display: flex;
@@ -705,6 +800,21 @@ if (!groupId || isNaN(groupId)) {
         background: rgba(122, 162, 247, 0.05);
     }
 
+    :global(.code-block--error) {
+        border-color: rgba(239, 68, 68, 0.35);
+        background: rgba(239, 68, 68, 0.06);
+    }
+
+    :global(.code-block--error .code-block-label) {
+        color: #fca5a5;
+        border-bottom-color: rgba(239, 68, 68, 0.25);
+        background: rgba(239, 68, 68, 0.08);
+    }
+
+    :global(.code-block--error pre) {
+        color: #fca5a5;
+    }
+
     :global(.code-block--nested) {
         border: none;
         border-top: 1px solid rgba(230, 180, 80, 0.18);
@@ -776,6 +886,84 @@ if (!groupId || isNaN(groupId)) {
         color: var(--text);
         border-color: var(--accent);
         background: rgba(108, 122, 224, 0.15);
+    }
+
+    :global(.json-toggle) {
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+
+    :global(.json-toggle:hover),
+    :global(.json-toggle.active) {
+        color: #fff;
+        border-color: var(--accent);
+        background: rgba(108, 122, 224, 0.2);
+    }
+
+    :global(.entry-json) {
+        margin: 0;
+        padding: 12px 14px;
+        border: 1px solid rgba(122, 162, 247, 0.3);
+        border-radius: 10px;
+        background: #0e0e13;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow-x: auto;
+        max-height: 60vh;
+        overflow-y: auto;
+        color: #c5d4ff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Cascadia Code', monospace;
+    }
+
+    .pagination {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin: 18px 0 40px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--surface);
+    }
+
+    :global(.page-btn) {
+        padding: 6px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--surface-hover);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    :global(.page-btn:hover:not(:disabled)) {
+        border-color: var(--accent);
+        color: #fff;
+        background: rgba(108, 122, 224, 0.2);
+    }
+
+    :global(.page-btn:disabled) {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    :global(.page-info) {
+        font-size: 13px;
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
 
     @media (max-width: 720px) {

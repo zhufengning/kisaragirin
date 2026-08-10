@@ -43,7 +43,7 @@ yarn web:build && yarn start
 | `/` | 群列表 |
 | `/group/{id}` | 群消息 CRUD 浏览：分页表格、按发送者/内容搜索、单条/批量删除、详情弹窗、手动 compact、按日期范围导入历史消息 |
 | `/group/{id}/preview` | Prompt 预览 |
-| `/group/{id}/harness` | 会话日志查看 |
+| `/group/{id}/harness` | 会话日志查看：新在前排序、前端分页、角色筛选、错误/中止高亮、条目 JSON 原文切换 |
 | `/images` | 图片管理 |
 | `/memories` | mem0 记忆管理 |
 
