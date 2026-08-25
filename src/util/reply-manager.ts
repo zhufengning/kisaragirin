@@ -7,6 +7,7 @@ import type {DescQueue} from './desc-queue';
 import type {StoredMessage, StoredSegment} from '~/message-format';
 import type {AppConfig} from '~/config';
 import {ReplyAgent} from './reply-agent';
+import type {ReplyMessageItem} from './reply-tool';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
@@ -323,7 +324,7 @@ export class GroupReplyManager {
         }
 
         const firstTurn = await agent.generateFirstTurn(task);
-        if (firstTurn.failed || !firstTurn.text) {
+        if (firstTurn.failed || firstTurn.text.length === 0) {
             if (firstTurn.processedUpToId) {
                 this.logger.info(
                     `[ReplyManager] [${this.groupId}] first turn failed, advancing lastTriggerId ` +
@@ -352,55 +353,66 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        const firstTurnSendResult = await this.sendTurn(task, {
-            text: firstTurn.text,
+        const firstTurnSendResults = await this.sendTurn(task, {
+            messages: firstTurn.text,
             isFirstTurn: true,
             isDeepResearchFinal: false,
             botCard
         });
 
-        if (firstTurnSendResult.rowId !== null) {
-            this.lastTriggerId = firstTurnSendResult.rowId;
+        const firstTurnLast = firstTurnSendResults[firstTurnSendResults.length - 1];
+        if (typeof firstTurnLast?.rowId === 'number') {
+            this.lastTriggerId = firstTurnLast.rowId;
         }
 
         if (!firstTurn.requiresDeepResearch) {
             return;
         }
 
-        const topic = firstTurn.deepResearchTopic || firstTurn.text;
+        const topic = firstTurn.deepResearchTopic || firstTurn.text.map(m => m.text).join('');
         const finalTurn = await agent.generateFinalTurn(task, topic, this.lastTriggerId);
-        const finalTurnSendResult = await this.sendTurn(task, {
-            text: finalTurn.text,
+        const finalTurnSendResults = await this.sendTurn(task, {
+            messages: finalTurn.text,
             isFirstTurn: false,
             isDeepResearchFinal: true,
-            firstTurnMessageId: firstTurnSendResult.messageId,
-            firstTurnReplyText: firstTurn.text,
-            firstTurnReplyTime: firstTurnSendResult.time,
+            firstTurnMessageId: firstTurnLast?.messageId,
+            firstTurnReplyMessages: firstTurn.text,
+            firstTurnReplyTime: firstTurnLast?.time,
             botCard
         });
-        if (finalTurnSendResult.rowId !== null) {
-            this.lastTriggerId = finalTurnSendResult.rowId;
+        const finalTurnLast = finalTurnSendResults[finalTurnSendResults.length - 1];
+        if (typeof finalTurnLast?.rowId === 'number') {
+            this.lastTriggerId = finalTurnLast.rowId;
         }
+    }
+
+    private async resolveRefMessageId (dbId: number): Promise<number | undefined> {
+        const rows = await this.db
+            .select({messageId: schema.messages.messageId})
+            .from(schema.messages)
+            .where(eq(schema.messages.id, dbId))
+            .limit(1);
+        return rows[0]?.messageId ?? undefined;
     }
 
     private async sendTurn (
         task: ReplyTask,
         options: {
-            text: string;
+            messages: ReplyMessageItem[];
             isFirstTurn: boolean;
             isDeepResearchFinal: boolean;
             firstTurnMessageId?: number;
-            firstTurnReplyText?: string;
+            firstTurnReplyMessages?: ReplyMessageItem[];
             firstTurnReplyTime?: number;
             botCard: string | null;
         }
-    ): Promise<{rowId: number | null; messageId?: number; time?: number}> {
+    ): Promise<Array<{rowId: number | null; messageId?: number; time?: number}>> {
         const {
-            text,
+            messages,
             isFirstTurn,
             isDeepResearchFinal,
             firstTurnMessageId,
-            firstTurnReplyText,
+            firstTurnReplyMessages,
             firstTurnReplyTime,
             botCard
         } = options;
@@ -408,78 +420,107 @@ export class GroupReplyManager {
         this.logger.info(
             `[ReplyManager] [${this.groupId}] sending reply ` +
             `${isDeepResearchFinal ? '(deep research final)' : '(first turn)'}: ` +
-            `${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
+            `${messages.length} message(s)`);
 
-        const segments: Message[] = [];
-        if (isFirstTurn && task.type === 'at') {
-            segments.push({type: 'reply', data: {id: task.triggerMessageId}});
-        } else if (!isFirstTurn && firstTurnMessageId) {
-            segments.push({type: 'reply', data: {id: firstTurnMessageId}});
-        }
-        segments.push({type: 'text', data: {text}});
+        const results: Array<{rowId: number | null; messageId?: number; time?: number}> = [];
 
-        const sendResult = await this.bot.sendGroupMsg(this.groupId, segments);
+        for (let i = 0; i < messages.length; i++) {
+            const item = messages[i];
 
-        const now = Math.floor(Date.now() / 1000);
+            // Determine reply reference
+            let refOnebotId: number | undefined;
+            let refDbSegment: StoredSegment | undefined;
 
-        const dbSegments: StoredSegment[] = [{type: 'text', text}];
-        if (isFirstTurn && task.type === 'at') {
-            dbSegments.unshift({
-                type: 'reply',
-                id: task.triggerMessageId,
-                message: task.triggerMessage
-            });
-        } else if (!isFirstTurn && firstTurnMessageId && firstTurnReplyText && typeof firstTurnReplyTime === 'number') {
-            dbSegments.unshift({
-                type: 'reply',
-                id: firstTurnMessageId,
-                message: {
-                    time: firstTurnReplyTime,
-                    messageId: firstTurnMessageId,
-                    senderId: this.botSelfId,
-                    senderName: this.botName,
-                    senderCard: botCard ?? undefined,
-                    isBot: true,
-                    isAtBot: false,
-                    segments: [{type: 'text', text: firstTurnReplyText}]
+            if (typeof item.ref === 'number') {
+                refOnebotId = await this.resolveRefMessageId(item.ref);
+                if (refOnebotId) {
+                    refDbSegment = {type: 'reply', id: item.ref};
                 }
-            });
+            } else if (i === 0) {
+                if (isFirstTurn && task.type === 'at') {
+                    refOnebotId = task.triggerMessageId;
+                    refDbSegment = {type: 'reply', id: task.triggerMessageId, message: task.triggerMessage};
+                } else if (!isFirstTurn && firstTurnMessageId &&
+                    firstTurnReplyMessages && typeof firstTurnReplyTime === 'number') {
+                    refOnebotId = firstTurnMessageId;
+                    refDbSegment = {
+                        type: 'reply',
+                        id: firstTurnMessageId,
+                        message: {
+                            time: firstTurnReplyTime,
+                            messageId: firstTurnMessageId,
+                            senderId: this.botSelfId,
+                            senderName: this.botName,
+                            senderCard: botCard ?? undefined,
+                            isBot: true,
+                            isAtBot: false,
+                            segments: [{type: 'text', text: firstTurnReplyMessages.map(m => m.text).join('')}]
+                        }
+                    };
+                }
+            }
+
+            // Build segments for this item
+            const onebotSegments: Message[] = [];
+            const dbSegments: StoredSegment[] = [];
+
+            if (refOnebotId) {
+                onebotSegments.push({type: 'reply', data: {id: refOnebotId}});
+            }
+            onebotSegments.push({type: 'text', data: {text: item.text}});
+
+            if (refDbSegment) {
+                dbSegments.push(refDbSegment);
+            }
+            dbSegments.push({type: 'text', text: item.text});
+
+            // Send this item as a separate message
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] sending item ${i + 1}/${messages.length}: ` +
+                `${item.text.slice(0, 80)}${item.text.length > 80 ? '...' : ''}` +
+                `${refOnebotId ? ` (ref=${item.ref})` : ''}`);
+
+            const sendResult = await this.bot.sendGroupMsg(this.groupId, onebotSegments);
+            const now = Math.floor(Date.now() / 1000);
+
+            const insertRows = await this.db.insert(schema.messages).values({
+                messageId: sendResult.message_id,
+                groupId: this.groupId,
+                userId: this.botSelfId,
+                time: now,
+                senderName: this.botName,
+                senderCard: botCard,
+                isBot: true,
+                isAtBot: false,
+                segments: dbSegments as StoredSegment[],
+                rawMessage: item.text
+            })
+                .returning({id: schema.messages.id});
+
+            if (!insertRows[0]) {
+                results.push({rowId: null});
+                continue;
+            }
+
+            const rowId = insertRows[0].id;
+            this.onBotMessage(rowId);
+
+            const botStoredMessage: StoredMessage = {
+                id: rowId,
+                time: now,
+                messageId: sendResult.message_id,
+                senderId: this.botSelfId,
+                senderName: this.botName,
+                senderCard: botCard ?? undefined,
+                isBot: true,
+                isAtBot: false,
+                segments: dbSegments
+            };
+            await this.agent.appendBotMessage(botStoredMessage);
+
+            results.push({rowId, messageId: sendResult.message_id, time: now});
         }
 
-        const insertRows = await this.db.insert(schema.messages).values({
-            messageId: sendResult.message_id,
-            groupId: this.groupId,
-            userId: this.botSelfId,
-            time: now,
-            senderName: this.botName,
-            senderCard: botCard,
-            isBot: true,
-            isAtBot: false,
-            segments: dbSegments as StoredSegment[],
-            rawMessage: text
-        })
-            .returning({id: schema.messages.id});
-
-        if (!insertRows[0]) {
-            return {rowId: null};
-        }
-
-        const rowId = insertRows[0].id;
-        this.onBotMessage(rowId);
-
-        const botStoredMessage: StoredMessage = {
-            id: rowId,
-            time: now,
-            messageId: sendResult.message_id,
-            senderId: this.botSelfId,
-            senderName: this.botName,
-            senderCard: botCard ?? undefined,
-            isBot: true,
-            isAtBot: false,
-            segments: dbSegments
-        };
-        await this.agent.appendBotMessage(botStoredMessage);
-
-        return {rowId, messageId: sendResult.message_id, time: now};
+        return results;
     }
 }

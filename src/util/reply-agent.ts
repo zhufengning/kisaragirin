@@ -14,7 +14,7 @@ import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {getOrCreateGroupSession} from './harness-factory';
 import {resolveModelEntry} from './models-factory';
-import {createReplyTool, type ReplyToolParams} from './reply-tool';
+import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createMem0Tools} from './mem0-tool';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
@@ -96,12 +96,12 @@ function stringifyMessageContent (content: Context['messages'][number]['content'
 }
 
 export interface ReplyTurn {
-    text: string;
+    text: ReplyMessageItem[];
     isDeepResearchFinal?: boolean;
 }
 
 export interface FirstTurnResult {
-    text: string;
+    text: ReplyMessageItem[];
     requiresDeepResearch: boolean;
     deepResearchTopic?: string;
     failed?: boolean;
@@ -424,7 +424,7 @@ export class ReplyAgent {
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
 
         if (userTexts.length === 0) {
-            return {text: '', requiresDeepResearch: false, failed: true};
+            return {text: [], requiresDeepResearch: false, failed: true};
         }
 
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
@@ -462,19 +462,19 @@ export class ReplyAgent {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] first turn failed ` +
                 `(stopReason=${assistant?.stopReason ?? 'undefined'})`);
-            return {text: '', requiresDeepResearch: false, failed: true, processedUpToId};
+            return {text: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
         this.dumpOutput(this.debugPrefix, assistant);
 
         const params = this.getReplyToolParams();
-        if (!params || !params.reply.trim()) {
+        if (!params || params.messages.length === 0 || !params.messages.some(m => m.text.trim())) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
-            return {text: '', requiresDeepResearch: false, failed: true, processedUpToId};
+            return {text: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
         return {
-            text: params.reply,
+            text: params.messages,
             requiresDeepResearch: params.requires_deep_research,
             deepResearchTopic: params.deep_research_topic,
             failed: false
@@ -513,24 +513,24 @@ export class ReplyAgent {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
                 `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
-            return {text: '深度研究失败', isDeepResearchFinal: true};
+            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true};
         }
 
         this.dumpOutput(this.debugPrefix, finalAssistant);
 
         const finalParams = this.getReplyToolParams();
-        if (!finalParams || !finalParams.reply.trim()) {
+        if (!finalParams || finalParams.messages.length === 0 || !finalParams.messages.some(m => m.text.trim())) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
-            return {text: '深度研究失败', isDeepResearchFinal: true};
+            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true};
         }
 
-        return {text: finalParams.reply, isDeepResearchFinal: true};
+        return {text: finalParams.messages, isDeepResearchFinal: true};
     }
 
     async generateReply (task: ReplyTask): Promise<GenerateReplyResult> {
         const first = await this.generateFirstTurn(task);
-        if (first.failed || !first.text) {
-            return {turns: first.failed ? [{text: this.taskType === 'at' ? '@响应失败' : ''}] : [], failed: true};
+        if (first.failed || first.text.length === 0) {
+            return {turns: first.failed ? [{text: this.taskType === 'at' ? [{text: '@响应失败'}] : []}] : [], failed: true};
         }
 
         const turns: ReplyTurn[] = [{text: first.text}];
@@ -538,10 +538,11 @@ export class ReplyAgent {
             return {turns};
         }
 
-        const topic = first.deepResearchTopic || first.text;
+        const topic = first.deepResearchTopic || first.text.map(m => m.text).join('');
         const finalTurn = await this.generateFinalTurn(task, topic, task.lastTriggerId ?? 0);
         turns.push(finalTurn);
-        return {turns, failed: finalTurn.text === '深度研究失败' || finalTurn.text === ''};
+        const finalFailed = finalTurn.text.length === 0 || finalTurn.text.every(m => !m.text.trim());
+        return {turns, failed: finalFailed || finalTurn.text.some(m => m.text === '深度研究失败')};
     }
 
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
@@ -565,7 +566,7 @@ export class ReplyAgent {
             if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
                 return assistant;
             }
-            if (this.getReplyToolParams()?.reply.trim()) {
+            if (this.getReplyToolParams()?.messages.some(m => m.text.trim())) {
                 return assistant;
             }
         }
@@ -575,7 +576,7 @@ export class ReplyAgent {
 
     private fallbackResult (): GenerateReplyResult {
         if (this.taskType === 'at') {
-            return {turns: [{text: '@响应失败'}], failed: true};
+            return {turns: [{text: [{text: '@响应失败'}]}], failed: true};
         }
         return {turns: [], failed: true};
     }

@@ -264,7 +264,8 @@ function renderReply (seg: StoredReplySegment, ctx: RenderContext): string {
             inForward: ctx.inForward,
             descCache: ctx.descCache
         });
-        return `\n${indentStr(ctx.indent + 1)}[ref ${sender}]: ${body}\n`;
+        const refId = typeof refMsg.id === 'number' ? `(#${refMsg.id})` : '';
+        return `\n${indentStr(ctx.indent + 1)}${refId}[ref ${sender}]: ${body}\n`;
     }
     return `[ref ${sender}]`;
 }
@@ -307,11 +308,12 @@ export async function singleMessageToString (
     }
 
     const atMark = msg.isAtBot ? '(有人@我)' : '';
+    const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
     const sender = formatSender(msg);
     const body = renderBody(msg.segments, {indent: 0, replyDepth: 0, inForward: false, descCache});
-    if (!body) return `${atMark}[${sender}]:`;
-    if (body.startsWith('\n')) return `${atMark}[${sender}]:${body}`;
-    return `${atMark}[${sender}]: ${body}`;
+    if (!body) return `${atMark}${idTag}[${sender}]:`;
+    if (body.startsWith('\n')) return `${atMark}${idTag}[${sender}]:${body}`;
+    return `${atMark}${idTag}[${sender}]: ${body}`;
 }
 
 /** 消息数组 toString（异步，单次渲染内部缓存描述） */
@@ -356,17 +358,20 @@ export async function messagesToString (
         const sender = formatSender(msg);
         const body = renderBody(msg.segments, {indent: 0, replyDepth: 0, inForward: false, descCache});
 
-        // 特殊消息类型直接渲染内容，不显示发送者
+        // 特殊消息类型直接渲染内容，不显示发送者和消息ID
         const isSpecial = msg.segments.length === 1 &&
             (msg.segments[0].type === 'compact' || msg.segments[0].type === 'system');
         if (isSpecial) {
             parts.push(body);
         } else if (!body) {
-            parts.push(`${atMark}[${sender}]:`);
+            const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
+            parts.push(`${atMark}${idTag}[${sender}]:`);
         } else if (body.startsWith('\n')) {
-            parts.push(`${atMark}[${sender}]:${body}`);
+            const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
+            parts.push(`${atMark}${idTag}[${sender}]:${body}`);
         } else {
-            parts.push(`${atMark}[${sender}]: ${body}`);
+            const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
+            parts.push(`${atMark}${idTag}[${sender}]: ${body}`);
         }
         parts.push('');
         parts.push('---');

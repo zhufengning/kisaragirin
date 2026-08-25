@@ -9,7 +9,7 @@
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
 - 两轮回复（支持深度研究agent）
-- AgentHarness tool loop（`reply` 工具结束对话，`search_memory` / `add_memory` 可在 loop 中多次调用）
+- AgentHarness tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` / `add_memory` 可在 loop 中多次调用）
 - 手动 Compact（通过 harness.compact 触发会话压缩）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
@@ -124,7 +124,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 mem0 取符合度最高的 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
-- **回复工具** (`reply`) 设置 `terminate: true`，被调用后 Agent loop 立即退出
+- **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
