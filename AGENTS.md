@@ -30,7 +30,7 @@ yarn
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
 - 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
 - 完成修改后，bot部分的修改运行以下yarn任务：type:check, lint，webui部分非修改运行web:check, web:lint。所有warning、hint视同error处理。
-- pi ai和pi agent的文档和源码保存在~/repos/pi
+- pi ai和pi agent的文档和源码保存在~/repos/their/pi
 - 其余库可通过context7查询文档
 - 对于任何库，先阅读相关文档，再写代码
 - 优先阅读文档，无法找到答案的，再阅读源代码
