@@ -64,6 +64,7 @@ src/
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
     graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 AgentTool 供 reply-agent 调用
     graphiti-client.ts  -- Graphiti Node.js 客户端（通过 stdio JSON-RPC 与 Python 服务通信）
+    graphiti-episode.ts -- Graphiti episode 创建辅助（群消息 / bot 回复 / 深度研究结果共用）
     mem0-tool.ts        -- [已弃用] mem0 记忆工具
   prompts.ts            -- `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可被 `input.prompts` 覆盖）
   web/
@@ -108,12 +109,12 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### Prompt 构建封装
 
-- `ReplyAgent.generateReply(task)` 触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息，通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`
+- `ReplyAgent.generateReply(task)` 触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
 - 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例被 `reply-agent.ts` / `reply-tool.ts` / `desc-queue.ts` 共用
-- `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为最后一条 bot 回复的数据库 id；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
+- `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
 - webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact
@@ -123,7 +124,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 - **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `AgentHarness` 类
 - `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
-- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（记忆由消息接收时自动创建，agent 不主动添加）
+- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 自动创建：群消息接收时、bot 回复发送后、深度研究结果产生时）
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出
@@ -162,7 +163,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
-- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆由消息接收时自动创建
+- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（群消息接收时、bot 回复发送后、深度研究结果产生时）
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
 
@@ -197,6 +198,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
 - `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `AgentTool`
 - `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）
+- `src/util/graphiti-episode.ts` — Graphiti episode 创建辅助（`addMessageEpisode`，群消息 / bot 回复 / 深度研究结果共用）
 - `src/util/mem0-tool.ts` — [已弃用] mem0 记忆工具
 - `src/prompts.ts` — `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可通过 `input.prompts` 覆盖）
 - `src/web/server.ts` — Web 面板 Node adapter

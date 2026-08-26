@@ -11,8 +11,8 @@
 - 支持深度研究两轮回复
 - 手动 Compact
 - 新群 session 默认不自动导入历史消息，可在 Web 面板按日期范围手动导入（忽略压缩消息）
-- 回复前自动检索 mem0 相关记忆注入上下文
-- Web 面板：群消息浏览、Prompt 预览、图片管理、mem0 记忆管理、手动 compact、历史消息导入
+- 回复前自动检索 Graphiti 相关记忆注入上下文
+- Web 面板：群消息浏览、Prompt 预览、图片管理、Graphiti 记忆管理、手动 compact、历史消息导入
 - 日志写入文件
 
 ## 启动
@@ -31,8 +31,8 @@ yarn web:build && yarn start
 - 支持按群配置定时任务触发
 - 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
 - 新群的会话（harness session）创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
-- 启用 mem0 时，可在回复中搜索或添加记忆
-- 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息提取关键词检索 mem0，将相关记忆注入上下文
+- 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（群消息接收时、bot 回复发送后、深度研究结果产生时）
+- 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息提取关键词检索 Graphiti，将相关记忆注入上下文
 
 ## Web 面板
 
@@ -45,7 +45,7 @@ yarn web:build && yarn start
 | `/group/{id}/preview` | Prompt 预览 |
 | `/group/{id}/harness` | 会话日志查看：新在前排序、前端分页、角色筛选、错误/中止高亮、条目 JSON 原文切换 |
 | `/images` | 图片管理 |
-| `/memories` | mem0 记忆管理 |
+| `/memories` | Graphiti 记忆管理 |
 
 ## 定时任务配置
 
@@ -100,6 +100,6 @@ input: {
 ## 技术栈
 
 - **Bot**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
-- **LLM**: `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai` + mem0ai
+- **LLM**: `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai` + Graphiti
 - **Scheduling**: Croner
 - **Web UI**: Astro 6.4 SSR (Node middleware)
