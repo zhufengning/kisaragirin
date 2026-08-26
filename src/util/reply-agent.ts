@@ -3,7 +3,7 @@ import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
 import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
 import type {AppConfig} from '~/config';
-import {eq, asc, and, gt, gte, lte, ne, desc} from 'drizzle-orm';
+import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
 import {messagesToString, type StoredMessage} from '~/message-format';
@@ -15,6 +15,7 @@ import {getOrCreateGroupSession} from './harness-factory';
 import {resolveModelEntry} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
+import {addMessageEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
@@ -98,6 +99,8 @@ function stringifyMessageContent (content: Context['messages'][number]['content'
 export interface ReplyTurn {
     text: ReplyMessageItem[];
     isDeepResearchFinal?: boolean;
+    /** 本轮实际读入 prompt 的最大数据库消息 id，用于推进 lastTriggerId */
+    processedUpToId?: number;
 }
 
 export interface FirstTurnResult {
@@ -303,6 +306,13 @@ export class ReplyAgent {
     }
 
     private async fetchMessagesSince (lastTriggerId: number): Promise<StoredMessage[]> {
+        // bot 普通聊天消息已通过 appendBotMessage 注入 harness，这里排除以避免重复；
+        // system / compact 等特殊消息仍保留。这样 lastTriggerId 只需推进到实际读入
+        // prompt 的消息 id，回复执行期间到达的新消息不会被 bot 自己的回复行跳过。
+        const notBotChat = or(
+            eq(schema.messages.isBot, false),
+            ne(schema.messages.specialType, 'normal')
+        );
         const rows = await this.db
             .select()
             .from(schema.messages)
@@ -310,9 +320,13 @@ export class ReplyAgent {
                 lastTriggerId > 0 ?
                     and(
                         eq(schema.messages.groupId, this.groupId),
-                        gt(schema.messages.id, lastTriggerId)
+                        gt(schema.messages.id, lastTriggerId),
+                        notBotChat
                     ) :
-                    eq(schema.messages.groupId, this.groupId)
+                    and(
+                        eq(schema.messages.groupId, this.groupId),
+                        notBotChat
+                    )
             )
             .orderBy(asc(schema.messages.id));
 
@@ -518,7 +532,8 @@ export class ReplyAgent {
             text: params.messages,
             requiresDeepResearch: params.requires_deep_research,
             deepResearchTopic: params.deep_research_topic,
-            failed: false
+            failed: false,
+            processedUpToId
         };
     }
 
@@ -532,6 +547,7 @@ export class ReplyAgent {
 
         const latestMessages = await this.fetchMessagesSince(lastTriggerId);
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
+        const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
 
         for (const text of userTexts) {
             await this.harness.appendMessage({
@@ -554,7 +570,7 @@ export class ReplyAgent {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
                 `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
-            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true};
+            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true, processedUpToId};
         }
 
         this.dumpOutput(this.debugPrefix, finalAssistant);
@@ -562,10 +578,10 @@ export class ReplyAgent {
         const finalParams = this.getReplyToolParams();
         if (!finalParams || finalParams.messages.length === 0 || !finalParams.messages.some(m => m.text.trim())) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
-            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true};
+            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true, processedUpToId};
         }
 
-        return {text: finalParams.messages, isDeepResearchFinal: true};
+        return {text: finalParams.messages, isDeepResearchFinal: true, processedUpToId};
     }
 
     async generateReply (task: ReplyTask): Promise<GenerateReplyResult> {
@@ -644,6 +660,22 @@ export class ReplyAgent {
                 this.logger.info(
                     `[ReplyAgent] [${this.groupId}] deep research result message inserted, id=${resultId}, ` +
                     `topic=${researchTopic.slice(0, 50)}${researchTopic.length > 50 ? '...' : ''}`);
+
+                // 深度研究结果也写入 Graphiti 记忆
+                if (this.graphiti) {
+                    const resultStored: StoredMessage = {
+                        id: resultId,
+                        time: resultTime,
+                        messageId: 0,
+                        senderId: 0,
+                        senderName: '系统',
+                        isBot: true,
+                        isAtBot: false,
+                        segments: [{type: 'system', text: resultText}]
+                    };
+                    addMessageEpisode(this.graphiti, this.groupId, resultStored,
+                        sha => this.descQueue.resolve(sha));
+                }
             } else {
                 this.logger.error(`[ReplyAgent] [${this.groupId}] deep research returned empty result`);
                 researchError = '深度研究未能获取结果';
