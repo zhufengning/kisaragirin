@@ -2,7 +2,7 @@ import {createBot} from '@lib';
 import {config, models} from '@/config';
 import {applyPromptsOverrides} from './prompts';
 import {registerCustomProviders} from './util/models-factory';
-import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, formatSender, messagesToString, type StoredSegment} from './message-format';
+import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';
 import {createDb, schema, runMigrations} from './db';
 import {createWebPanel} from './web/server';
 import {DescQueue} from './util/desc-queue';
@@ -11,6 +11,7 @@ import {ScheduledTaskManager} from './util/scheduled-tasks';
 import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
 import {GraphitiClient} from './util/graphiti-client';
+import {addMessageEpisode} from './util/graphiti-episode';
 import {join} from 'node:path';
 
 configureLogger(config.log.level, config.log.file);
@@ -141,18 +142,7 @@ bot.on('message.group', async e => {
 
     // 异步创建 Graphiti 记忆（不阻塞后续流程）
     if (graphiti) {
-        const groupName = `group-${e.group_id}`;
-        const sender = formatSender(stored);
-        const content = await messagesToString([stored], sha => queue.resolve(sha));
-        const timestamp = new Date(stored.time * 1000).toISOString();
-        graphiti.addEpisode(groupName, {
-            name: `group_chat_msg_${stored.messageId}`,
-            content: JSON.stringify({sender, content, timestamp, msg_id: stored.messageId}),
-            source_description: `群聊 ${e.group_id}`,
-            reference_time: timestamp
-        }).catch(err => {
-            logger.error(`[Graphiti] [${e.group_id}] failed to add episode:`, err);
-        });
+        addMessageEpisode(graphiti, e.group_id, stored, sha => queue.resolve(sha));
     }
 
     if (e.raw_message === 'Ciallo ～(∠・ω< )⌒★!') {
