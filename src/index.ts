@@ -1,10 +1,8 @@
-import './util/disable-mem0-telemetry';
-
 import {createBot} from '@lib';
 import {config, models} from '@/config';
 import {applyPromptsOverrides} from './prompts';
 import {registerCustomProviders} from './util/models-factory';
-import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, type StoredSegment} from './message-format';
+import {groupMessageEventToStoredMessage, collectImageSha256FromSegment, formatSender, messagesToString, type StoredSegment} from './message-format';
 import {createDb, schema, runMigrations} from './db';
 import {createWebPanel} from './web/server';
 import {DescQueue} from './util/desc-queue';
@@ -12,7 +10,8 @@ import {GroupReplyManager} from './util/reply-manager';
 import {ScheduledTaskManager} from './util/scheduled-tasks';
 import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
-import {Memory} from 'mem0ai/oss';
+import {GraphitiClient} from './util/graphiti-client';
+import {join} from 'node:path';
 
 configureLogger(config.log.level, config.log.file);
 applyPromptsOverrides(config.input.prompts);
@@ -32,11 +31,24 @@ globalThis.__queue__ = queue;
 globalThis.__config__ = config;
 globalThis.__models__ = models;
 
-let memory: Memory | undefined;
-if (config.ai.mem0) {
-    memory = new Memory(config.ai.mem0);
-    globalThis.__memory__ = memory;
-    logger.info('[Mem0] Memory instance created');
+let graphiti: GraphitiClient | undefined;
+if (config.ai.graphiti) {
+    const graphitiConfig = config.ai.graphiti;
+    const serverPath = join(process.cwd(), 'graphiti', 'server.py');
+    graphiti = new GraphitiClient({
+        serverPath,
+        uvPath: graphitiConfig.uv_path ?? 'uv'
+    });
+    await graphiti.initialize({
+        neo4j_uri: graphitiConfig.neo4j_uri,
+        neo4j_user: graphitiConfig.neo4j_user,
+        neo4j_password: graphitiConfig.neo4j_password,
+        llm: graphitiConfig.llm,
+        embedder: graphitiConfig.embedder,
+        reranker: graphitiConfig.reranker
+    });
+    globalThis.__graphiti__ = graphiti;
+    logger.info('[Graphiti] client initialized');
 }
 
 const panel = createWebPanel(db, config.web, queue);
@@ -127,6 +139,22 @@ bot.on('message.group', async e => {
 
     logger.info(`[Bot] [${e.group_id}] msg ${stored.messageId} from ${stored.senderId} atBot=${stored.isAtBot}`);
 
+    // 异步创建 Graphiti 记忆（不阻塞后续流程）
+    if (graphiti) {
+        const groupName = `group-${e.group_id}`;
+        const sender = formatSender(stored);
+        const content = await messagesToString([stored], sha => queue.resolve(sha));
+        const timestamp = new Date(stored.time * 1000).toISOString();
+        graphiti.addEpisode(groupName, {
+            name: `group_chat_msg_${stored.messageId}`,
+            content: JSON.stringify({sender, content, timestamp, msg_id: stored.messageId}),
+            source_description: `群聊 ${e.group_id}`,
+            reference_time: timestamp
+        }).catch(err => {
+            logger.error(`[Graphiti] [${e.group_id}] failed to add episode:`, err);
+        });
+    }
+
     if (e.raw_message === 'Ciallo ～(∠・ω< )⌒★!') {
         await e.reply('Ciallo ～(∠・ω< )⌒★!');
     }
@@ -181,6 +209,15 @@ async function shutdown (signal: string) {
         logger.info('[Shutdown] all sessions closed');
     } catch (err) {
         logger.error('[Shutdown] failed to close sessions:', err);
+    }
+
+    try {
+        if (graphiti) {
+            await graphiti.shutdown();
+            logger.info('[Shutdown] Graphiti client shut down');
+        }
+    } catch (err) {
+        logger.error('[Shutdown] failed to shut down Graphiti:', err);
     }
 
     logger.info('[Shutdown] graceful shutdown complete');

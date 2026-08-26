@@ -9,7 +9,7 @@
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
 - 两轮回复（支持深度研究agent）
-- AgentHarness tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` / `add_memory` 可在 loop 中多次调用）
+- AgentHarness tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` 可在 loop 中多次调用）
 - 手动 Compact（通过 harness.compact 触发会话压缩）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
@@ -62,7 +62,9 @@ src/
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列）
     reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
-    mem0-tool.ts        -- mem0 记忆工具（search_memory / add_memory），注册为 AgentTool 供 reply-agent 调用
+    graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 AgentTool 供 reply-agent 调用
+    graphiti-client.ts  -- Graphiti Node.js 客户端（通过 stdio JSON-RPC 与 Python 服务通信）
+    mem0-tool.ts        -- [已弃用] mem0 记忆工具
   prompts.ts            -- `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可被 `input.prompts` 覆盖）
   web/
     server.ts           -- Node.js HTTP server，加载 Astro handler
@@ -81,10 +83,10 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
-      memories.astro         -- mem0 记忆管理（增删改查 + 语义搜索）
+      memories.astro         -- Graphiti 记忆管理（浏览 + 语义搜索 + 删除）
       api/
         images/...           -- 图片文件服务 + 描述管理 API
-        memories/...         -- mem0 REST API 封装
+        memories/...         -- Graphiti REST API 封装（search / get_edges / delete_edge）
         messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
         compact.ts           -- 手动触发群消息 compact API
@@ -121,9 +123,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 - **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `AgentHarness` 类
 - `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
-- **mem0 工具** (`mem0-tool.ts`) 注册为 `AgentTool`，包含 `search_memory` 和 `add_memory`
+- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（记忆由消息接收时自动创建，agent 不主动添加）
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
-- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 mem0 取符合度最高的 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
+- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
@@ -160,7 +162,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
-- `ai.mem0`：可选 mem0 OSS 配置，启用后 `search_memory` / `add_memory` 工具会加入 harness
+- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆由消息接收时自动创建
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
 
@@ -187,13 +189,15 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
 - `src/util/reply-manager.ts` — 群回复触发管理与队列
-- `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 mem0 记忆工具多轮调用）
+- `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
 - `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
 - `src/util/models-factory.ts` — 模型注册、bot Models 单例与 assignment 解析
 - `src/util/credential-store.ts` — pi-ai 凭据内存存储与初始化
 - `src/util/reply-tool.ts` — 回复工具（`reply`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
-- `src/util/mem0-tool.ts` — mem0 记忆工具（`search_memory` / `add_memory`），注册为 `AgentTool`
+- `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `AgentTool`
+- `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）
+- `src/util/mem0-tool.ts` — [已弃用] mem0 记忆工具
 - `src/prompts.ts` — `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可通过 `input.prompts` 覆盖）
 - `src/web/server.ts` — Web 面板 Node adapter
 - `lib/types/messages.ts` — OneBot 消息段类型

@@ -1,7 +1,6 @@
 import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
-import {Memory, type MemoryConfig} from 'mem0ai/oss';
 import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
 import type {AppConfig} from '~/config';
 import {eq, asc, and, gt, gte, lte, ne, desc} from 'drizzle-orm';
@@ -15,7 +14,8 @@ import {Logger} from '@lib/util/logger';
 import {getOrCreateGroupSession} from './harness-factory';
 import {resolveModelEntry} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
-import {createMem0Tools} from './mem0-tool';
+import {createGraphitiTools} from './graphiti-tool';
+import {GraphitiClient} from './graphiti-client';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
     return JSON.stringify(toolSchema, null, 2);
@@ -128,7 +128,7 @@ export class ReplyAgent {
     private debugPrefix?: string;
     private lastReplyToolParams: ReplyToolParams | null = null;
     private toolCallRoundCount = 0;
-    private memory: Memory | null = null;
+    private graphiti: GraphitiClient | null = null;
 
     private constructor (options: {
         db: Db;
@@ -139,7 +139,7 @@ export class ReplyAgent {
         session: Session<JsonlSessionMetadata>;
         harness: AgentHarness;
         systemPromptText: string;
-        memory: Memory | null;
+        graphiti: GraphitiClient | null;
     }) {
         this.db = options.db;
         this.descQueue = options.descQueue;
@@ -149,7 +149,7 @@ export class ReplyAgent {
         this.session = options.session;
         this.harness = options.harness;
         this.systemPromptText = options.systemPromptText;
-        this.memory = options.memory;
+        this.graphiti = options.graphiti;
         this.logger = new Logger();
     }
 
@@ -159,9 +159,9 @@ export class ReplyAgent {
         descQueue: DescQueue;
         config: AppConfig;
         models: Models;
-        memory?: MemoryConfig | null;
+        graphiti?: GraphitiClient | null;
     }): Promise<ReplyAgent> {
-        const {groupId, db, descQueue, config, models, memory} = options;
+        const {groupId, db, descQueue, config, models, graphiti} = options;
 
         const logger = new Logger();
         const {session, isNew} = await getOrCreateGroupSession(groupId, config, db);
@@ -177,8 +177,8 @@ export class ReplyAgent {
             }
         });
 
-        const mem0Tools: AgentTool[] = memory ? createMem0Tools(memory, config.log.level, groupId) : [];
-        const tools: AgentTool[] = [replyTool, ...mem0Tools];
+        const graphitiTools: AgentTool[] = graphiti ? createGraphitiTools(graphiti, config.log.level, groupId) : [];
+        const tools: AgentTool[] = [replyTool, ...graphitiTools];
 
         const systemPrompt = () => buildSystemPrompt({
             botName: config.input.bot_name || '机器人',
@@ -198,7 +198,7 @@ export class ReplyAgent {
             thinkingLevel: 'high'
         });
 
-        const memoryInstance = memory ? new Memory(memory) : null;
+        const graphitiInstance = graphiti ?? null;
 
         const agent = new ReplyAgent({
             db,
@@ -209,7 +209,7 @@ export class ReplyAgent {
             session,
             harness,
             systemPromptText: systemPrompt(),
-            memory: memoryInstance
+            graphiti: graphitiInstance
         });
 
         agentRef.current = agent;
@@ -374,36 +374,36 @@ export class ReplyAgent {
     }
 
     private async searchMemories (keywords: string[]): Promise<string[]> {
-        if (!this.memory || keywords.length === 0) return [];
+        if (!this.graphiti || keywords.length === 0) return [];
 
-        const userId = `group-${this.groupId}`;
-        const allResults: Array<{memory: string; score: number}> = [];
+        const groupName = `group-${this.groupId}`;
+        const allResults: Array<{fact: string; valid_at: string | null}> = [];
 
         for (const keyword of keywords) {
             try {
-                const results = await this.memory.search(keyword, {topK: 5, filters: {user_id: userId}});
-                for (const r of results.results) {
-                    allResults.push({memory: r.memory, score: r.score ?? 0});
+                const results = await this.graphiti.search(keyword, groupName, 5);
+                for (const e of results.results) {
+                    allResults.push({fact: e.fact, valid_at: e.valid_at});
                 }
             } catch (err) {
                 this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for "${keyword}":`, err);
             }
         }
 
-        const uniqueMemories = new Map<string, number>();
+        const uniqueMemories = new Map<string, string | null>();
         for (const r of allResults) {
-            const existing = uniqueMemories.get(r.memory);
-            if (!existing || r.score > existing) {
-                uniqueMemories.set(r.memory, r.score);
+            if (!uniqueMemories.has(r.fact)) {
+                uniqueMemories.set(r.fact, r.valid_at);
             }
         }
 
-        const sorted = Array.from(uniqueMemories.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
+        const sorted = Array.from(uniqueMemories.entries()).slice(0, 5);
 
         this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
-        return sorted.map(([memory, score]) => `- ${memory} (相关度: ${(score * 100).toFixed(1)}%)`);
+        return sorted.map(([fact, validAt]) => {
+            const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
+            return `- ${fact}${timeInfo}`;
+        });
     }
 
     private getReplyToolParams (): ReplyToolParams | null {

@@ -1,5 +1,4 @@
 import type {Model, Api} from '@earendil-works/pi-ai';
-import type {MemoryConfig} from 'mem0ai/oss';
 import type {Prompts} from './prompts';
 
 export interface OneBotConfig {
@@ -51,6 +50,33 @@ export interface ModelEntry {
     apiKey: string;
 }
 
+export interface GraphitiConfig {
+    /** uv 可执行文件路径，默认 uv */
+    uv_path?: string;
+    neo4j_uri?: string;
+    neo4j_user?: string;
+    neo4j_password?: string;
+    llm: {
+        api_key: string;
+        model: string;
+        small_model?: string;
+        base_url?: string;
+        temperature?: number;
+        max_tokens?: number;
+    };
+    embedder: {
+        api_key: string;
+        model: string;
+        dimension?: number;
+        base_url?: string;
+    };
+    reranker?: {
+        api_key: string;
+        model: string;
+        base_url?: string;
+    };
+}
+
 export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
@@ -61,7 +87,7 @@ export interface AiConfig {
         /** 记忆关键词生成模型 */
         memory_keyword?: string;
     };
-    mem0?: MemoryConfig;
+    graphiti?: GraphitiConfig;
 }
 
 export interface AppConfig {

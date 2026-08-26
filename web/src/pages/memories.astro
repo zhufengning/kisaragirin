@@ -1,39 +1,41 @@
 ---
 import Layout from '@layouts/Layout.astro';
 import { config } from '@/config';
-import type { MemoryItem, SearchResult, GetAllMemoryOptions } from 'mem0ai/oss';
 
-// mem0 OSS 返回的数据可能包含额外字段
-interface WebMemoryItem extends MemoryItem {
-    text?: string;
-    user_id?: string;
-    categories?: string[];
-}
-
-interface WebSearchResult extends SearchResult {
-    count?: number;
+interface GraphitiEdge {
+    uuid: string | null;
+    name: string;
+    fact: string;
+    source_node_uuid: string | null;
+    target_node_uuid: string | null;
+    group_id: string;
+    created_at: string | null;
+    valid_at: string | null;
+    invalid_at: string | null;
+    expired_at: string | null;
+    attributes: Record<string, unknown>;
 }
 
 const PAGE_SIZE = 20;
 const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
 const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
-const defaultUserId = allGroups[0] || '';
+const defaultGroupId = allGroups[0] || '';
 
 // 支持 POST 搜索，避免 URL 过长导致浏览器崩溃
 let searchQuery = '';
-let userId = Astro.url.searchParams.get('user_id')?.trim() || defaultUserId;
+let groupId = Astro.url.searchParams.get('group_id')?.trim() || defaultGroupId;
 
 if (Astro.request.method === 'POST') {
     try {
         const formData = await Astro.request.formData();
         searchQuery = (formData.get('search')?.toString() || '').trim();
-        const formUserId = formData.get('user_id')?.toString() || '';
-        if (formUserId) userId = formUserId;
+        const formGroupId = formData.get('group_id')?.toString() || '';
+        if (formGroupId) groupId = formGroupId;
     } catch {
         // formData 解析失败时保持默认值
     }
 
-    // POST-Redirect-GET：搜索提交后重定向到 GET URL，避免刷新/删除后 reload 时浏览器提示重新发送数据
+    // POST-Redirect-GET
     const redirectUrl = new URL(Astro.url);
     redirectUrl.searchParams.delete('page');
     if (searchQuery) {
@@ -41,35 +43,34 @@ if (Astro.request.method === 'POST') {
     } else {
         redirectUrl.searchParams.delete('search');
     }
-    redirectUrl.searchParams.set('user_id', userId);
+    redirectUrl.searchParams.set('group_id', groupId);
     return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
 } else {
     searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
 }
 
-let memories: WebMemoryItem[] = [];
+let edges: GraphitiEdge[] = [];
 let totalCount = 0;
 let totalPages = 1;
 let error = '';
 
 try {
-    const memory = globalThis.__memory__;
-    if (!memory) {
-        error = 'Memory not initialized';
+    const graphiti = globalThis.__graphiti__;
+    if (!graphiti || !graphiti.isReady) {
+        error = 'Graphiti not initialized';
     } else if (searchQuery) {
-        const result = await memory.search(searchQuery, { topK: PAGE_SIZE, filters: { user_id: userId } }) as WebSearchResult;
-        memories = (result.results || []) as WebMemoryItem[];
-        totalCount = memories.length;
+        const result = await graphiti.search(searchQuery, groupId, PAGE_SIZE);
+        edges = result.results;
+        totalCount = result.count;
     } else {
-        const result = await memory.getAll(
-            { page: currentPage, pageSize: PAGE_SIZE, filters: { user_id: userId } } as GetAllMemoryOptions,
-        ) as WebSearchResult;
-        memories = (result.results || []) as WebMemoryItem[];
-        totalCount = result.count || 0;
+        const offset = (currentPage - 1) * PAGE_SIZE;
+        const result = await graphiti.getEdges(groupId, PAGE_SIZE, offset);
+        edges = result.edges;
+        totalCount = result.total;
         totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
     }
 } catch (e: unknown) {
-    console.error('[Mem0 Page] Error:', e);
+    console.error('[Graphiti Page] Error:', e);
     error = e instanceof Error ? e.message : String(e);
 }
 
@@ -77,6 +78,15 @@ function pageUrl(page: number) {
     const url = new URL(Astro.url);
     url.searchParams.set('page', String(page));
     return url.pathname + url.search;
+}
+
+function formatDate(iso: string | null): string {
+    if (!iso) return '';
+    try {
+        return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    } catch {
+        return iso;
+    }
 }
 
 ---
@@ -97,9 +107,9 @@ function pageUrl(page: number) {
             placeholder="语义搜索记忆..."
             class="search-input"
         />
-        <select name="user_id" class="search-input user-input">
+        <select name="group_id" class="search-input user-input">
             {allGroups.map(g => (
-                <option value={g} selected={g === userId}>{g}</option>
+                <option value={g} selected={g === groupId}>{g}</option>
             ))}
         </select>
         <button type="submit" class="btn">🔍 搜索</button>
@@ -108,51 +118,29 @@ function pageUrl(page: number) {
         )}
     </form>
 
-    <!-- 添加记忆表单 -->
-    <div class="add-section">
-        <button class="btn btn-secondary btn-sm" id="toggle-add-form">
-            ➕ 添加记忆
-        </button>
-        <form id="add-form" class="hidden add-form">
-            <textarea name="text" placeholder="记忆内容..." required class="input-textarea"></textarea>
-            <select name="user_id" class="input-text">
-                <option value="">选择用户</option>
-                {allGroups.map(g => (
-                    <option value={g}>{g}</option>
-                ))}
-            </select>
-            <input type="text" name="metadata" placeholder='元数据 JSON (可选，如 {"key":"value"})' class="input-text" />
-            <div class="form-actions">
-                <button type="submit" class="btn">保存</button>
-                <button type="button" class="btn btn-secondary" id="cancel-add-form">取消</button>
-            </div>
-        </form>
-    </div>
-
     <!-- 记忆列表 -->
     <div class="memory-list">
-        {memories.length === 0 && !error && (
+        {edges.length === 0 && !error && (
             <p class="empty">{searchQuery ? '没有找到匹配的记忆' : '暂无记忆'}</p>
         )}
         
-        {memories.map(m => (
-            <div class="memory-card" data-id={m.id}>
+        {edges.map(e => (
+            <div class="memory-card" data-uuid={e.uuid}>
                 <div class="memory-header">
-                    <span class="memory-id">{m.id}</span>
-                    <span class="memory-user">{m.user_id && `用户: ${m.user_id}`}</span>
-                    <span class="memory-score">{m.score && `相关度: ${(m.score * 100).toFixed(1)}%`}</span>
+                    <span class="memory-id">{e.uuid?.slice(0, 8) ?? '—'}</span>
+                    <span class="memory-name">{e.name}</span>
+                    <span class="memory-time">
+                        {e.valid_at && `生效: ${formatDate(e.valid_at)}`}
+                        {e.invalid_at && ` · 失效: ${formatDate(e.invalid_at)}`}
+                    </span>
                 </div>
-                <div class="memory-content">{m.memory || m.text || '（无内容）'}</div>
-                {m.categories && m.categories.length > 0 && (
-                    <div class="memory-categories">
-                        {m.categories.map((c: string) => (
-                            <span class="category-tag">{c}</span>
-                        ))}
-                    </div>
-                )}
+                <div class="memory-content">{e.fact}</div>
+                <div class="memory-meta">
+                    {e.created_at && <span>创建: {formatDate(e.created_at)}</span>}
+                    {e.group_id && <span>组: {e.group_id}</span>}
+                </div>
                 <div class="memory-actions">
-                    <button class="btn btn-sm btn-secondary" data-action="edit" data-id={m.id} data-text={m.memory || m.text || ''}>编辑</button>
-                    <button class="btn btn-sm btn-danger" data-action="delete" data-id={m.id}>删除</button>
+                    <button class="btn btn-sm btn-danger" data-action="delete" data-uuid={e.uuid}>删除</button>
                 </div>
             </div>
         ))}
@@ -180,111 +168,26 @@ function pageUrl(page: number) {
             </a>
         </nav>
     )}
-
-    <!-- 编辑弹窗 -->
-    <div id="edit-modal" class="modal hidden">
-        <div class="modal-content">
-            <h3>编辑记忆</h3>
-            <input type="hidden" id="edit-id" />
-            <textarea id="edit-text" class="input-textarea"></textarea>
-            <div class="form-actions">
-                <button class="btn" id="save-edit">保存</button>
-                <button class="btn btn-secondary" id="close-edit">取消</button>
-            </div>
-        </div>
-    </div>
 </Layout>
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // 添加记忆表单
-        document.getElementById('toggle-add-form')?.addEventListener('click', () => {
-            document.getElementById('add-form')?.classList.toggle('hidden');
-        });
-        document.getElementById('cancel-add-form')?.addEventListener('click', () => {
-            document.getElementById('add-form')?.classList.add('hidden');
-        });
-        document.getElementById('add-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const form = e.target as HTMLFormElement;
-            const text = (form.querySelector('[name="text"]') as HTMLTextAreaElement)?.value.trim();
-            const userId = (form.querySelector('[name="user_id"]') as HTMLSelectElement)?.value.trim();
-            const metadataStr = (form.querySelector('[name="metadata"]') as HTMLInputElement)?.value.trim();
-            
-            if (!text) return alert('请输入记忆内容');
-            
-            const messages = [{ role: 'user', content: text }];
-            const body: Record<string, unknown> = { messages };
-            if (userId) body.user_id = userId;
-            if (metadataStr) {
-                try { body.metadata = JSON.parse(metadataStr); } catch {
-                    return alert('元数据必须是有效的 JSON');
-                }
-            }
-            
-            try {
-                const res = await fetch('/api/memories', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                    credentials: 'same-origin',
-                });
-                if (!res.ok) throw new Error(await res.text());
-                alert('记忆添加成功！');
-                location.reload();
-            } catch (err) {
-                alert('添加失败: ' + (err as Error).message);
-            }
-        });
-        
         // 记忆列表事件委托
         document.querySelector('.memory-list')?.addEventListener('click', (e) => {
             const btn = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null;
             if (!btn) return;
             const action = btn.dataset.action;
-            if (action === 'edit') {
-                const id = btn.dataset.id || '';
-                const text = btn.dataset.text || '';
-                const editIdEl = document.getElementById('edit-id') as HTMLInputElement;
-                const editTextEl = document.getElementById('edit-text') as HTMLTextAreaElement;
-                if (editIdEl) editIdEl.value = id;
-                if (editTextEl) editTextEl.value = text;
-                document.getElementById('edit-modal')?.classList.remove('hidden');
-            } else if (action === 'delete') {
-                const id = btn.dataset.id || '';
+            if (action === 'delete') {
+                const uuid = btn.dataset.uuid || '';
+                if (!uuid) return;
                 if (!confirm('确定删除这条记忆？')) return;
-                fetch(`/api/memories/${id}`, { method: 'DELETE', credentials: 'same-origin' })
+                fetch(`/api/memories/${uuid}`, { method: 'DELETE', credentials: 'same-origin' })
                     .then(res => {
                         if (!res.ok) throw new Error();
                         alert('删除成功！');
                         location.reload();
                     })
                     .catch(() => alert('删除失败'));
-            }
-        });
-        
-        // 编辑弹窗
-        document.getElementById('close-edit')?.addEventListener('click', () => {
-            document.getElementById('edit-modal')?.classList.add('hidden');
-        });
-        document.getElementById('save-edit')?.addEventListener('click', async () => {
-            const id = (document.getElementById('edit-id') as HTMLInputElement)?.value;
-            const text = (document.getElementById('edit-text') as HTMLTextAreaElement)?.value.trim();
-            
-            if (!text) return alert('记忆内容不能为空');
-            
-            try {
-                const res = await fetch(`/api/memories/${id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text }),
-                    credentials: 'same-origin',
-                });
-                if (!res.ok) throw new Error(await res.text());
-                alert('更新成功！');
-                location.reload();
-            } catch (err) {
-                alert('更新失败: ' + (err as Error).message);
             }
         });
     });
@@ -327,53 +230,6 @@ function pageUrl(page: number) {
         color: var(--danger);
         margin-bottom: 16px;
     }
-    .add-section {
-        margin-bottom: 20px;
-    }
-    .add-form {
-        margin-top: 12px;
-        padding: 16px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-    }
-    .add-form.hidden { display: none; }
-    .input-textarea {
-        width: 100%;
-        min-height: 80px;
-        padding: 10px 14px;
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: var(--bg);
-        color: var(--text);
-        font-size: 14px;
-        font-family: inherit;
-        resize: vertical;
-    }
-    .input-textarea:focus {
-        outline: none;
-        border-color: var(--accent);
-    }
-    .input-text {
-        padding: 8px 14px;
-        border-radius: var(--radius-sm);
-        border: 1px solid var(--border);
-        background: var(--bg);
-        color: var(--text);
-        font-size: 14px;
-        font-family: inherit;
-    }
-    .input-text:focus {
-        outline: none;
-        border-color: var(--accent);
-    }
-    .form-actions {
-        display: flex;
-        gap: 10px;
-    }
     .memory-list {
         display: flex;
         flex-direction: column;
@@ -404,11 +260,12 @@ function pageUrl(page: number) {
         padding: 2px 8px;
         border-radius: 4px;
     }
-    .memory-user {
-        font-size: 12px;
+    .memory-name {
+        font-size: 13px;
         color: var(--accent);
+        font-weight: 500;
     }
-    .memory-score {
+    .memory-time {
         font-size: 12px;
         color: var(--text-secondary);
         margin-left: auto;
@@ -419,17 +276,11 @@ function pageUrl(page: number) {
         color: var(--text);
         word-break: break-word;
     }
-    .memory-categories {
+    .memory-meta {
         display: flex;
-        gap: 6px;
-        margin-top: 10px;
-        flex-wrap: wrap;
-    }
-    .category-tag {
+        gap: 12px;
+        margin-top: 8px;
         font-size: 12px;
-        padding: 2px 8px;
-        background: var(--bg);
-        border-radius: 4px;
         color: var(--text-secondary);
     }
     .memory-actions {
@@ -472,29 +323,5 @@ function pageUrl(page: number) {
     .page-info {
         font-size: 14px;
         color: var(--text-secondary);
-    }
-    .modal {
-        position: fixed;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0, 0, 0, 0.7);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 100;
-    }
-    .modal.hidden { display: none; }
-    .modal-content {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 24px;
-        width: 90%;
-        max-width: 500px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-    }
-    .modal-content h3 {
-        margin-bottom: 8px;
     }
 </style>

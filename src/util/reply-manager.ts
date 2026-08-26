@@ -86,7 +86,7 @@ export class GroupReplyManager {
             descQueue,
             config,
             models,
-            memory: config.ai.mem0 ?? null
+            graphiti: config.ai.graphiti ? globalThis.__graphiti__ ?? undefined : undefined
         });
 
         let lastTriggerId = 0;

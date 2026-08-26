@@ -1,29 +1,26 @@
 import type { APIRoute } from 'astro';
-import { Memory } from 'mem0ai/oss';
-import type { GetAllMemoryOptions } from 'mem0ai/oss';
 
-function getMemory(): Memory {
-    const m = globalThis.__memory__;
-    if (!m) throw new Error('Memory not initialized');
-    return m;
+function getGraphiti() {
+    const g = globalThis.__graphiti__;
+    if (!g || !g.isReady) throw new Error('Graphiti not initialized');
+    return g;
 }
 
 export const GET: APIRoute = async ({ url }) => {
     try {
-        const memory = getMemory();
+        const graphiti = getGraphiti();
         const page = parseInt(url.searchParams.get('page') || '1', 10);
         const pageSize = parseInt(url.searchParams.get('page_size') || '50', 10);
-        const userId = url.searchParams.get('user_id') || 'default';
+        const groupId = url.searchParams.get('group_id') || 'default';
+        const offset = (page - 1) * pageSize;
 
-        const options: GetAllMemoryOptions & { page?: number; pageSize?: number } = { page, pageSize, filters: { user_id: userId } };
-
-        const result = await memory.getAll(options);
+        const result = await graphiti.getEdges(groupId, pageSize, offset);
         return new Response(JSON.stringify(result), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
     } catch (err: unknown) {
-        console.error('[Mem0 API] GET /api/memories error:', err);
+        console.error('[Graphiti API] GET /api/memories error:', err);
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
@@ -33,21 +30,26 @@ export const GET: APIRoute = async ({ url }) => {
 
 export const POST: APIRoute = async ({ request }) => {
     try {
-        const memory = getMemory();
+        const graphiti = getGraphiti();
         const body = await request.json();
 
-        const { messages, user_id, metadata } = body;
+        const { content, group_id } = body;
 
-        if (!messages || !Array.isArray(messages) || messages.length === 0) {
-            return new Response(JSON.stringify({ error: 'messages array is required' }), {
+        if (!content || typeof content !== 'string') {
+            return new Response(JSON.stringify({ error: 'content is required' }), {
                 status: 400,
                 headers: { 'Content-Type': 'application/json' },
             });
         }
 
-        const result = await memory.add(messages, {
-            userId: user_id || 'default',
-            metadata,
+        const groupId = group_id || 'default';
+        const now = new Date().toISOString();
+
+        const result = await graphiti.addEpisode(groupId, {
+            name: `memory_${Date.now()}`,
+            content: JSON.stringify({sender: 'manual', content, timestamp: now}),
+            source_description: '手动添加的记忆',
+            reference_time: now
         });
 
         return new Response(JSON.stringify(result), {
@@ -55,7 +57,7 @@ export const POST: APIRoute = async ({ request }) => {
             headers: { 'Content-Type': 'application/json' },
         });
     } catch (err: unknown) {
-        console.error('[Mem0 API] POST /api/memories error:', err);
+        console.error('[Graphiti API] POST /api/memories error:', err);
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },

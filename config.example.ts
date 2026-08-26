@@ -95,34 +95,26 @@ export const config: AppConfig = {
             deep_research: 'hermes',
             memory_keyword: 'minimax-m3'
         },
-        mem0: {
-            embedder: {
-                provider: 'openai',
-                config: {
-                    apiKey: '',
-                    model: 'Qwen/Qwen3-Embedding-8B',
-                    baseURL: 'https://api.siliconflow.cn/v1',
-                    embeddingDims: 2560
-                }
-            },
-            vectorStore: {
-                provider: 'qdrant',
-                config: {
-                    collectionName: 'memories',
-                    dimension: 2560,
-                    host: '127.0.0.1',
-                    port: 6333
-                }
-            },
+        graphiti: {
+            neo4j_uri: 'bolt://127.0.0.1:7687',
+            neo4j_user: 'neo4j',
+            neo4j_password: 'password',
             llm: {
-                provider: 'anthropic',
-                config: {
-                    apiKey: MINIMAX_KEY,
-                    model: 'MiniMax-M3',
-                    baseURL: 'https://api.minimaxi.com/anthropic'
-                }
+                api_key: MINIMAX_KEY,
+                model: 'MiniMax-M3',
+                base_url: 'https://api.minimaxi.com/anthropic/v1'
             },
-            historyDbPath: 'data/mem0-history.db'
+            embedder: {
+                api_key: '',
+                model: 'Qwen/Qwen3-Embedding-8B',
+                dimension: 2560,
+                base_url: 'https://api.siliconflow.cn/v1'
+            },
+            reranker: {
+                api_key: '',
+                model: 'Qwen/Qwen3-Reranker-8B',
+                base_url: 'https://api.siliconflow.cn/v1'
+            }
         }
     }
 };

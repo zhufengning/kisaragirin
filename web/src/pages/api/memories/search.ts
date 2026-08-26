@@ -1,19 +1,17 @@
 import type { APIRoute } from 'astro';
-import { Memory } from 'mem0ai/oss';
-import type { SearchMemoryOptions } from 'mem0ai/oss';
 
-function getMemory(): Memory {
-    const m = globalThis.__memory__;
-    if (!m) throw new Error('Memory not initialized');
-    return m;
+function getGraphiti() {
+    const g = globalThis.__graphiti__;
+    if (!g || !g.isReady) throw new Error('Graphiti not initialized');
+    return g;
 }
 
 export const GET: APIRoute = async ({ url }) => {
     try {
-        const memory = getMemory();
+        const graphiti = getGraphiti();
         const query = url.searchParams.get('q') || '';
-        const userId = url.searchParams.get('user_id') || undefined;
-        const topK = parseInt(url.searchParams.get('top_k') || '10', 10);
+        const groupId = url.searchParams.get('group_id') || 'default';
+        const numResults = parseInt(url.searchParams.get('top_k') || '10', 10);
 
         if (!query) {
             return new Response(JSON.stringify({ error: 'Query parameter "q" is required' }), {
@@ -22,18 +20,13 @@ export const GET: APIRoute = async ({ url }) => {
             });
         }
 
-        const options: SearchMemoryOptions = { topK };
-        if (userId) {
-            options.filters = { user_id: userId };
-        }
-
-        const result = await memory.search(query, options);
+        const result = await graphiti.search(query, groupId, numResults);
         return new Response(JSON.stringify(result), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
         });
     } catch (err: unknown) {
-        console.error('[Mem0 API] GET /api/memories/search error:', err);
+        console.error('[Graphiti API] GET /api/memories/search error:', err);
         return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
