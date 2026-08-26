@@ -4,7 +4,7 @@ import type {GraphitiClient} from './graphiti-client';
 import {Logger} from '@lib/util/logger';
 
 const searchMemorySchema = Type.Object({
-    query: Type.String({description: '搜索记忆的关键词或问题'})
+    query: Type.String({description: '用自然语言描述你想搜索的记忆，例如"小明之前说过喜欢什么运动？"或"与Deepseek相关的技术讨论"'})
 });
 
 export function createGraphitiTools (client: GraphitiClient, _logLevel: string, groupId: number): AgentTool[] {

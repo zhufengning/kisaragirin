@@ -329,15 +329,22 @@ export class ReplyAgent {
         }));
     }
 
-    private async generateMemoryKeywords (messagesText: string): Promise<string[]> {
-        if (!this.config.ai.assignments.memory_keyword) return [];
+    private async generateMemoryQuery (messagesText: string, existingMemories: string[]): Promise<string | null> {
+        if (!this.config.ai.assignments.memory_keyword) return null;
 
         try {
             const modelEntry = resolveModelEntry(this.config, this.config.ai.assignments.memory_keyword);
+            const existingBlock = existingMemories.length > 0 ?
+                existingMemories.join('\n') :
+                '（无）';
+            const prompt = prompts.memoryQueryPrompt
+                .replace('{existing_memories}', existingBlock)
+                .replace('{messages}', messagesText);
+
             const context: Context = {
                 messages: [{
                     role: 'user',
-                    content: `${prompts.memoryKeywordPrompt}\n\n${messagesText}`,
+                    content: prompt,
                     timestamp: Date.now()
                 }]
             };
@@ -349,9 +356,9 @@ export class ReplyAgent {
 
             if (response.stopReason === 'error' || response.stopReason === 'aborted') {
                 this.logger.warn(
-                    `[ReplyAgent] [${this.groupId}] memory keyword generation failed: ` +
+                    `[ReplyAgent] [${this.groupId}] memory query generation failed: ` +
                     `stopReason=${response.stopReason} error=${response.errorMessage ?? 'none'}`);
-                return [];
+                return null;
             }
 
             const text = response.content
@@ -360,50 +367,80 @@ export class ReplyAgent {
                 .join('')
                 .trim();
 
-            const keywords = text.split('\n')
-                .map(k => k.trim())
-                .filter(k => k.length > 0);
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory keywords: ${keywords.join(', ')}`);
-            return keywords;
+            if (!text || text.toUpperCase() === 'NONE') {
+                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: NONE (no search needed)`);
+                return null;
+            }
+
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${text}`);
+            return text;
         } catch (err) {
             this.logger.error(
-                `[ReplyAgent] [${this.groupId}] memory keyword generation error: ` +
+                `[ReplyAgent] [${this.groupId}] memory query generation error: ` +
                 `${err instanceof Error ? err.message : String(err)}`);
+            return null;
+        }
+    }
+
+    private async searchMemories (query: string): Promise<string[]> {
+        if (!this.graphiti || !query) return [];
+
+        const groupName = `group-${this.groupId}`;
+
+        try {
+            const results = await this.graphiti.search(query, groupName, 10);
+            const uniqueMemories = new Map<string, string | null>();
+            for (const e of results.results) {
+                if (!uniqueMemories.has(e.fact)) {
+                    uniqueMemories.set(e.fact, e.valid_at);
+                }
+            }
+
+            const sorted = Array.from(uniqueMemories.entries()).slice(0, 5);
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
+            return sorted.map(([fact, validAt]) => {
+                const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
+                return `- ${fact}${timeInfo}`;
+            });
+        } catch (err) {
+            this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for "${query}":`, err);
             return [];
         }
     }
 
-    private async searchMemories (keywords: string[]): Promise<string[]> {
-        if (!this.graphiti || keywords.length === 0) return [];
-
-        const groupName = `group-${this.groupId}`;
-        const allResults: Array<{fact: string; valid_at: string | null}> = [];
-
-        for (const keyword of keywords) {
-            try {
-                const results = await this.graphiti.search(keyword, groupName, 5);
-                for (const e of results.results) {
-                    allResults.push({fact: e.fact, valid_at: e.valid_at});
+    /**
+     * 从当前 session 分支中提取已注入的记忆事实。
+     * 扫描所有 message entry 中 "记忆自动检索" 分割线之后的内容，
+     * 提取以 "- " 开头的记忆条目，用于去重。
+     */
+    private async extractExistingMemories (): Promise<string[]> {
+        const facts: string[] = [];
+        try {
+            const entries = await this.session.getBranch();
+            for (const entry of entries) {
+                if (entry.type !== 'message') continue;
+                const msg = entry.message;
+                if (msg.role !== 'user') continue;
+                const text = typeof msg.content === 'string' ?
+                    msg.content :
+                    msg.content
+                        .filter(c => c.type === 'text')
+                        .map(c => c.text)
+                        .join('');
+                const separatorIdx = text.indexOf('--- 记忆自动检索 ---');
+                if (separatorIdx === -1) continue;
+                const memBlock = text.slice(separatorIdx + '--- 记忆自动检索 ---'.length);
+                for (const line of memBlock.split('\n')) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('- ')) {
+                        facts.push(trimmed);
+                    }
                 }
-            } catch (err) {
-                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for "${keyword}":`, err);
             }
+        } catch {
+            // ignore
         }
-
-        const uniqueMemories = new Map<string, string | null>();
-        for (const r of allResults) {
-            if (!uniqueMemories.has(r.fact)) {
-                uniqueMemories.set(r.fact, r.valid_at);
-            }
-        }
-
-        const sorted = Array.from(uniqueMemories.entries()).slice(0, 5);
-
-        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
-        return sorted.map(([fact, validAt]) => {
-            const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
-            return `- ${fact}${timeInfo}`;
-        });
+        return facts;
     }
 
     private getReplyToolParams (): ReplyToolParams | null {
@@ -429,10 +466,14 @@ export class ReplyAgent {
 
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
 
-        const keywords = await this.generateMemoryKeywords(userTexts.join('\n'));
-        const memories = await this.searchMemories(keywords);
-        if (memories.length > 0) {
-            userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
+        // 从最近 bot 回复中提取已有的记忆（去重），避免重复搜索
+        const existingMemoryFacts = await this.extractExistingMemories();
+        const query = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
+        if (query) {
+            const memories = await this.searchMemories(query);
+            if (memories.length > 0) {
+                userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
+            }
         }
 
         this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
