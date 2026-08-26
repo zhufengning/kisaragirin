@@ -8,6 +8,8 @@ import type {StoredMessage, StoredSegment} from '~/message-format';
 import type {AppConfig} from '~/config';
 import {ReplyAgent} from './reply-agent';
 import type {ReplyMessageItem} from './reply-tool';
+import type {GraphitiClient} from './graphiti-client';
+import {addMessageEpisode} from './graphiti-episode';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
@@ -37,6 +39,7 @@ export class GroupReplyManager {
     private logger: Logger;
     private agent: ReplyAgent;
     private models: Models;
+    private graphiti: GraphitiClient | null;
 
     private _lastTriggerId: number = 0;
     private pendingAtTimeout: NodeJS.Timeout | null = null;
@@ -61,6 +64,7 @@ export class GroupReplyManager {
         groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
         config: AppConfig, botSelfId: number, botName: string,
         models: Models, agent: ReplyAgent, lastTriggerId: number = 0,
+        graphiti: GraphitiClient | null = null,
     ) {
         this.groupId = groupId;
         this.bot = bot;
@@ -71,6 +75,7 @@ export class GroupReplyManager {
         this.botName = botName;
         this.models = models;
         this.agent = agent;
+        this.graphiti = graphiti;
         this._lastTriggerId = lastTriggerId;
         this.logger = new Logger();
     }
@@ -97,7 +102,8 @@ export class GroupReplyManager {
         }
 
         return new GroupReplyManager(
-            groupId, bot, db, descQueue, config, botSelfId, botName, models, agent, lastTriggerId
+            groupId, bot, db, descQueue, config, botSelfId, botName, models, agent, lastTriggerId,
+            config.ai.graphiti ? globalThis.__graphiti__ ?? null : null
         );
     }
 
@@ -317,6 +323,9 @@ export class GroupReplyManager {
     private async executeTask (task: ReplyTask): Promise<void> {
         const agent = this.agent;
 
+        // 队列中先执行的任务可能已推进水位线，避免本任务重复注入已处理的消息
+        task.lastTriggerId = Math.max(task.lastTriggerId, this.lastTriggerId);
+
         if (task.type === 'scheduled' && task.preResearchTopic) {
             this.logger.info(
                 `[ReplyManager] [${this.groupId}] scheduled task "${task.scheduledTaskName ?? ''}" ` +
@@ -329,7 +338,7 @@ export class GroupReplyManager {
                 this.logger.info(
                     `[ReplyManager] [${this.groupId}] first turn failed, advancing lastTriggerId ` +
                     `to ${firstTurn.processedUpToId}`);
-                this.lastTriggerId = firstTurn.processedUpToId;
+                this.lastTriggerId = Math.max(this.lastTriggerId, firstTurn.processedUpToId);
             }
             if (task.type === 'at') {
                 this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, sending fallback`);
@@ -361,8 +370,10 @@ export class GroupReplyManager {
         });
 
         const firstTurnLast = firstTurnSendResults[firstTurnSendResults.length - 1];
-        if (typeof firstTurnLast?.rowId === 'number') {
-            this.lastTriggerId = firstTurnLast.rowId;
+        // 水位线只推进到本轮实际读入 prompt 的消息 id：回复执行期间到达的新消息
+        // id 小于 bot 回复行 id，若以 bot 回复行为界会永久跳过这些消息
+        if (firstTurn.processedUpToId) {
+            this.lastTriggerId = Math.max(this.lastTriggerId, firstTurn.processedUpToId);
         }
 
         if (!firstTurn.requiresDeepResearch) {
@@ -371,7 +382,7 @@ export class GroupReplyManager {
 
         const topic = firstTurn.deepResearchTopic || firstTurn.text.map(m => m.text).join('');
         const finalTurn = await agent.generateFinalTurn(task, topic, this.lastTriggerId);
-        const finalTurnSendResults = await this.sendTurn(task, {
+        await this.sendTurn(task, {
             messages: finalTurn.text,
             isFirstTurn: false,
             isDeepResearchFinal: true,
@@ -380,9 +391,8 @@ export class GroupReplyManager {
             firstTurnReplyTime: firstTurnLast?.time,
             botCard
         });
-        const finalTurnLast = finalTurnSendResults[finalTurnSendResults.length - 1];
-        if (typeof finalTurnLast?.rowId === 'number') {
-            this.lastTriggerId = finalTurnLast.rowId;
+        if (finalTurn.processedUpToId) {
+            this.lastTriggerId = Math.max(this.lastTriggerId, finalTurn.processedUpToId);
         }
     }
 
@@ -517,6 +527,12 @@ export class GroupReplyManager {
                 segments: dbSegments
             };
             await this.agent.appendBotMessage(botStoredMessage);
+
+            // bot 自己的回复也写入 Graphiti 记忆
+            if (this.graphiti) {
+                addMessageEpisode(this.graphiti, this.groupId, botStoredMessage,
+                    sha => this.descQueue.resolve(sha));
+            }
 
             results.push({rowId, messageId: sendResult.message_id, time: now});
         }
