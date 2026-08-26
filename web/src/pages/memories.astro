@@ -17,66 +17,91 @@ interface GraphitiEdge {
 }
 
 const PAGE_SIZE = 20;
-const currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
 const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
 const defaultGroupId = allGroups[0] || '';
 
-// 支持 POST 搜索，避免 URL 过长导致浏览器崩溃
+// 默认不查询数据库，只在搜索或手动列出时才查询
 let searchQuery = '';
-let groupId = Astro.url.searchParams.get('group_id')?.trim() || defaultGroupId;
-
-if (Astro.request.method === 'POST') {
-    try {
-        const formData = await Astro.request.formData();
-        searchQuery = (formData.get('search')?.toString() || '').trim();
-        const formGroupId = formData.get('group_id')?.toString() || '';
-        if (formGroupId) groupId = formGroupId;
-    } catch {
-        // formData 解析失败时保持默认值
-    }
-
-    // POST-Redirect-GET
-    const redirectUrl = new URL(Astro.url);
-    redirectUrl.searchParams.delete('page');
-    if (searchQuery) {
-        redirectUrl.searchParams.set('search', searchQuery);
-    } else {
-        redirectUrl.searchParams.delete('search');
-    }
-    redirectUrl.searchParams.set('group_id', groupId);
-    return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
-} else {
-    searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
-}
-
+let groupId = defaultGroupId;
+let mode: 'idle' | 'search' | 'list' = 'idle';
 let edges: GraphitiEdge[] = [];
 let totalCount = 0;
+let currentPage = 1;
 let totalPages = 1;
 let error = '';
 
-try {
-    const graphiti = globalThis.__graphiti__;
-    if (!graphiti || !graphiti.isReady) {
-        error = 'Graphiti not initialized';
-    } else if (searchQuery) {
-        const result = await graphiti.search(searchQuery, groupId, PAGE_SIZE);
-        edges = result.results;
-        totalCount = result.count;
-    } else {
-        const offset = (currentPage - 1) * PAGE_SIZE;
-        const result = await graphiti.getEdges(groupId, PAGE_SIZE, offset);
-        edges = result.edges;
-        totalCount = result.total;
-        totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+// 解析 URL 参数
+searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
+groupId = Astro.url.searchParams.get('group_id')?.trim() || defaultGroupId;
+const listParam = Astro.url.searchParams.get('list');
+currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
+
+if (searchQuery) {
+    mode = 'search';
+} else if (listParam === '1') {
+    mode = 'list';
+}
+
+// POST 处理（搜索或列出）
+if (Astro.request.method === 'POST') {
+    try {
+        const formData = await Astro.request.formData();
+        const formAction = formData.get('action')?.toString() || 'search';
+        searchQuery = (formData.get('search')?.toString() || '').trim();
+        const formGroupId = formData.get('group_id')?.toString() || '';
+        if (formGroupId) groupId = formGroupId;
+
+        // POST-Redirect-GET
+        const redirectUrl = new URL(Astro.url);
+        redirectUrl.searchParams.delete('page');
+        redirectUrl.searchParams.delete('list');
+        redirectUrl.searchParams.set('group_id', groupId);
+
+        if (formAction === 'list') {
+            // 手动列出
+            redirectUrl.searchParams.delete('search');
+            redirectUrl.searchParams.set('list', '1');
+            return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
+        } else if (searchQuery) {
+            redirectUrl.searchParams.set('search', searchQuery);
+            return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
+        } else {
+            // 清除搜索，回到空状态
+            redirectUrl.searchParams.delete('search');
+            return Astro.redirect(redirectUrl.pathname + redirectUrl.search);
+        }
+    } catch {
+        // formData 解析失败时保持默认值
     }
-} catch (e: unknown) {
-    console.error('[Graphiti Page] Error:', e);
-    error = e instanceof Error ? e.message : String(e);
+}
+
+// 只在有明确操作时查询数据库
+if (mode !== 'idle') {
+    try {
+        const graphiti = globalThis.__graphiti__;
+        if (!graphiti || !graphiti.isReady) {
+            error = 'Graphiti not initialized';
+        } else if (mode === 'search') {
+            const result = await graphiti.search(searchQuery, groupId, PAGE_SIZE);
+            edges = result.results;
+            totalCount = result.count;
+        } else if (mode === 'list') {
+            const offset = (currentPage - 1) * PAGE_SIZE;
+            const result = await graphiti.getEdges(groupId, PAGE_SIZE, offset);
+            edges = result.edges;
+            totalCount = result.total;
+            totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+        }
+    } catch (e: unknown) {
+        console.error('[Graphiti Page] Error:', e);
+        error = e instanceof Error ? e.message : String(e);
+    }
 }
 
 function pageUrl(page: number) {
     const url = new URL(Astro.url);
     url.searchParams.set('page', String(page));
+    url.searchParams.set('list', '1');
     return url.pathname + url.search;
 }
 
@@ -92,13 +117,13 @@ function formatDate(iso: string | null): string {
 ---
 
 <Layout title="记忆管理">
-    <h1>记忆管理 <span class="meta">({searchQuery ? `搜索: "${searchQuery}"` : `${totalCount} 条`})</span></h1>
+    <h1>记忆管理</h1>
 
     {error && (
         <div class="error-banner">⚠️ {error}</div>
     )}
 
-    <!-- 搜索栏 (POST 避免 URL 过长) -->
+    <!-- 搜索/列出栏 -->
     <form class="search-bar" method="POST" action="/memories">
         <input
             type="text"
@@ -112,16 +137,27 @@ function formatDate(iso: string | null): string {
                 <option value={g} selected={g === groupId}>{g}</option>
             ))}
         </select>
-        <button type="submit" class="btn">🔍 搜索</button>
-        {searchQuery && (
-            <button type="submit" name="search" value="" class="btn btn-secondary">清除</button>
+        <button type="submit" name="action" value="search" class="btn">🔍 搜索</button>
+        <button type="submit" name="action" value="list" class="btn btn-secondary">📋 列出</button>
+        {mode !== 'idle' && (
+            <button type="submit" name="action" value="clear" class="btn btn-secondary">清除</button>
         )}
     </form>
 
+    <!-- 提示信息 -->
+    {mode === 'idle' && !error && (
+        <div class="hint">选择群组后，输入关键词搜索或点击「列出」浏览记忆</div>
+    )}
+
+    <!-- 搜索结果提示 -->
+    {mode === 'search' && (
+        <div class="result-info">搜索 "{searchQuery}" 共找到 {totalCount} 条记忆</div>
+    )}
+
     <!-- 记忆列表 -->
     <div class="memory-list">
-        {edges.length === 0 && !error && (
-            <p class="empty">{searchQuery ? '没有找到匹配的记忆' : '暂无记忆'}</p>
+        {mode !== 'idle' && edges.length === 0 && !error && (
+            <p class="empty">{mode === 'search' ? '没有找到匹配的记忆' : '暂无记忆'}</p>
         )}
         
         {edges.map(e => (
@@ -146,8 +182,8 @@ function formatDate(iso: string | null): string {
         ))}
     </div>
 
-    <!-- 分页导航 -->
-    {!searchQuery && totalPages > 1 && (
+    <!-- 分页导航（仅列出模式） -->
+    {mode === 'list' && totalPages > 1 && (
         <nav class="pagination">
             <a
                 href={pageUrl(currentPage - 1)}
@@ -229,6 +265,18 @@ function formatDate(iso: string | null): string {
         border-radius: var(--radius-sm);
         color: var(--danger);
         margin-bottom: 16px;
+    }
+    .hint {
+        color: var(--text-secondary);
+        text-align: center;
+        padding: 60px 20px;
+        font-size: 15px;
+    }
+    .result-info {
+        color: var(--text-secondary);
+        font-size: 13px;
+        margin-bottom: 16px;
+        padding: 0 4px;
     }
     .memory-list {
         display: flex;
