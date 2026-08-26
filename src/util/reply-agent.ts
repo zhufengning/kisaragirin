@@ -363,10 +363,32 @@ export class ReplyAgent {
                 }]
             };
 
+            // Debug dump memory query prompt
+            if (this.config.input.debug_dump_prompt && this.debugPrefix) {
+                const dir = join('data', 'debug');
+                mkdirSync(dir, {recursive: true});
+                writeFileSync(join(dir, `${this.debugPrefix}-memory-query-prompt.txt`), prompt, 'utf-8');
+                writeFileSync(
+                    join(dir, `${this.debugPrefix}-memory-query-context.json`),
+                    JSON.stringify(context, null, 2), 'utf-8');
+                this.logger.debug(
+                    `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
+                    `${this.debugPrefix}-memory-query-*`);
+            }
+
             const response = await this.models.completeSimple(modelEntry.model, context, {
                 apiKey: modelEntry.apiKey,
                 timeoutMs: 30000
             });
+
+            // Debug dump memory query response
+            if (this.config.input.debug_dump_prompt && this.debugPrefix) {
+                const dir = join('data', 'debug');
+                mkdirSync(dir, {recursive: true});
+                writeFileSync(
+                    join(dir, `${this.debugPrefix}-memory-query-response.json`),
+                    JSON.stringify(response, null, 2), 'utf-8');
+            }
 
             if (response.stopReason === 'error' || response.stopReason === 'aborted') {
                 this.logger.warn(
