@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 import sys
 import traceback
 from dataclasses import dataclass, field
@@ -247,10 +248,13 @@ async def handle_get_edges(params: dict[str, Any]) -> Any:
     edges = []
     for record in records:
         r = record["r"]
+        fact = r.get("fact")
+        if not fact:
+            continue
         edges.append({
             "uuid": r.get("uuid"),
             "name": r.get("name"),
-            "fact": r.get("fact"),
+            "fact": fact,
             "group_id": r.get("group_id"),
             "created_at": r.get("created_at"),
             "valid_at": r.get("valid_at"),
@@ -260,10 +264,10 @@ async def handle_get_edges(params: dict[str, Any]) -> Any:
             "target_node_uuid": record["target_uuid"],
         })
 
-    # Get total count
+    # Get total count (only edges with fact content)
     count_query = """
         MATCH (n)-[r]->(m)
-        WHERE r.group_id = $group_id
+        WHERE r.group_id = $group_id AND r.fact IS NOT NULL AND r.fact <> ''
         RETURN count(r) AS total
     """
     count_records, _, _ = await driver.execute_query(count_query, group_id=group_id)
@@ -392,8 +396,31 @@ async def main() -> None:
     """Main loop: read JSON-RPC requests from stdin, write responses to stdout."""
     loop = asyncio.get_event_loop()
 
+    # 优雅退出：收到 SIGINT/SIGTERM 时正常关闭
+    async def graceful_shutdown() -> None:
+        if state.graphiti is not None:
+            try:
+                await state.graphiti.close()
+            except Exception:
+                pass
+            state.graphiti = None
+        state.initialized = False
+
+    def handle_signal() -> None:
+        asyncio.ensure_future(graceful_shutdown())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, handle_signal)
+        except NotImplementedError:
+            # Windows 不支持 add_signal_handler
+            pass
+
     while True:
-        line = await loop.run_in_executor(None, _read_line)
+        try:
+            line = await loop.run_in_executor(None, _read_line)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            break
         if line is None:
             break
 
@@ -411,6 +438,12 @@ async def main() -> None:
         except (json.JSONDecodeError, AttributeError):
             pass
 
+    # 循环结束后确保关闭连接
+    await graceful_shutdown()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
