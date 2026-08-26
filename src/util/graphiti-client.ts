@@ -236,10 +236,18 @@ export class GraphitiClient {
         if (!this.process) return;
         try {
             await this._call('shutdown', {});
+            // 等待子进程自然退出
+            await new Promise<void>(resolve => {
+                this.process?.on('exit', () => resolve());
+                // 超时 2 秒后强制退出
+                setTimeout(() => resolve(), 2000);
+            });
         } catch {
             // ignore errors during shutdown
         }
-        this.process?.kill();
+        if (this.process) {
+            this.process.kill();
+        }
         this.process = null;
         this.ready = false;
     }
