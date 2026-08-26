@@ -17,6 +17,7 @@ interface GraphitiEdge {
 }
 
 const PAGE_SIZE = 20;
+const GRAPH_EDGE_LIMIT_DEFAULT = 200;
 const allGroups = config.input.group_whitelist.map(id => `group-${id}`);
 const defaultGroupId = allGroups[0] || '';
 
@@ -34,6 +35,8 @@ let error = '';
 searchQuery = Astro.url.searchParams.get('search')?.trim() || '';
 groupId = Astro.url.searchParams.get('group_id')?.trim() || defaultGroupId;
 const listParam = Astro.url.searchParams.get('list');
+const view = Astro.url.searchParams.get('view') === 'graph' ? 'graph' : 'list';
+const graphEdgeLimit = parseInt(Astro.url.searchParams.get('limit') || String(GRAPH_EDGE_LIMIT_DEFAULT), 10);
 currentPage = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10));
 
 if (searchQuery) {
@@ -75,8 +78,8 @@ if (Astro.request.method === 'POST') {
     }
 }
 
-// 只在有明确操作时查询数据库
-if (mode !== 'idle') {
+// 只在有明确操作时查询数据库（图谱视图通过客户端脚本按需拉取）
+if (mode !== 'idle' && view !== 'graph') {
     try {
         const graphiti = globalThis.__graphiti__;
         if (!graphiti || !graphiti.isReady) {
@@ -105,6 +108,20 @@ function pageUrl(page: number) {
     return url.pathname + url.search;
 }
 
+function viewSwitchUrl(targetView: 'list' | 'graph') {
+    const url = new URL(Astro.url);
+    if (targetView === 'graph') {
+        url.searchParams.set('view', 'graph');
+        url.searchParams.delete('page');
+        url.searchParams.delete('list');
+        url.searchParams.delete('search');
+    } else {
+        url.searchParams.delete('view');
+        url.searchParams.delete('limit');
+    }
+    return url.pathname + url.search;
+}
+
 function formatDate(iso: string | null): string {
     if (!iso) return '';
     try {
@@ -117,98 +134,143 @@ function formatDate(iso: string | null): string {
 ---
 
 <Layout title="记忆管理">
-    <h1>记忆管理</h1>
+    <h1>
+        记忆管理
+        <span class="view-switch">
+            <a href={viewSwitchUrl('list')} class={`btn btn-sm ${view === 'list' ? '' : 'btn-secondary'}`} aria-current={view === 'list' ? 'page' : undefined}>📋 列表</a>
+            <a href={viewSwitchUrl('graph')} class={`btn btn-sm ${view === 'graph' ? '' : 'btn-secondary'}`} aria-current={view === 'graph' ? 'page' : undefined}>🕸 图谱</a>
+        </span>
+    </h1>
 
     {error && (
         <div class="error-banner">⚠️ {error}</div>
     )}
 
-    <!-- 搜索/列出栏 -->
-    <form class="search-bar" method="POST" action="/memories">
-        <input
-            type="text"
-            name="search"
-            value={searchQuery}
-            placeholder="语义搜索记忆..."
-            class="search-input"
-        />
-        <select name="group_id" class="search-input user-input">
-            {allGroups.map(g => (
-                <option value={g} selected={g === groupId}>{g}</option>
-            ))}
-        </select>
-        <button type="submit" name="action" value="search" class="btn">🔍 搜索</button>
-        <button type="submit" name="action" value="list" class="btn btn-secondary">📋 列出</button>
-        {mode !== 'idle' && (
-            <button type="submit" name="action" value="clear" class="btn btn-secondary">清除</button>
-        )}
-    </form>
+    {view !== 'graph' && (
+        <>
+            <!-- 搜索/列出栏 -->
+            <form class="search-bar" method="POST" action="/memories">
+                <input
+                    type="text"
+                    name="search"
+                    value={searchQuery}
+                    placeholder="语义搜索记忆..."
+                    class="search-input"
+                />
+                <select name="group_id" class="search-input user-input">
+                    {allGroups.map(g => (
+                        <option value={g} selected={g === groupId}>{g}</option>
+                    ))}
+                </select>
+                <button type="submit" name="action" value="search" class="btn">🔍 搜索</button>
+                <button type="submit" name="action" value="list" class="btn btn-secondary">📋 列出</button>
+                {mode !== 'idle' && (
+                    <button type="submit" name="action" value="clear" class="btn btn-secondary">清除</button>
+                )}
+            </form>
 
-    <!-- 提示信息 -->
-    {mode === 'idle' && !error && (
-        <div class="hint">选择群组后，输入关键词搜索或点击「列出」浏览记忆</div>
-    )}
+            <!-- 提示信息 -->
+            {mode === 'idle' && !error && (
+                <div class="hint">选择群组后，输入关键词搜索或点击「列出」浏览记忆</div>
+            )}
 
-    <!-- 搜索结果提示 -->
-    {mode === 'search' && (
-        <div class="result-info">搜索 "{searchQuery}" 共找到 {totalCount} 条记忆</div>
-    )}
+            <!-- 搜索结果提示 -->
+            {mode === 'search' && (
+                <div class="result-info">搜索 "{searchQuery}" 共找到 {totalCount} 条记忆</div>
+            )}
 
-    <!-- 记忆列表 -->
-    <div class="memory-list">
-        {mode !== 'idle' && edges.length === 0 && !error && (
-            <p class="empty">{mode === 'search' ? '没有找到匹配的记忆' : '暂无记忆'}</p>
-        )}
-        
-        {edges.map(e => (
-            <div class="memory-card" data-uuid={e.uuid}>
-                <div class="memory-header">
-                    <span class="memory-id">{e.uuid?.slice(0, 8) ?? '—'}</span>
-                    <span class="memory-name">{e.name}</span>
-                    <span class="memory-time">
-                        {e.valid_at && `生效: ${formatDate(e.valid_at)}`}
-                        {e.invalid_at && ` · 失效: ${formatDate(e.invalid_at)}`}
-                    </span>
-                </div>
-                <div class="memory-content">{e.fact}</div>
-                <div class="memory-meta">
-                    {e.created_at && <span>创建: {formatDate(e.created_at)}</span>}
-                    {e.group_id && <span>组: {e.group_id}</span>}
-                </div>
-                <div class="memory-actions">
-                    <button class="btn btn-sm btn-danger" data-action="delete" data-uuid={e.uuid}>删除</button>
-                </div>
+            <!-- 记忆列表 -->
+            <div class="memory-list">
+                {mode !== 'idle' && edges.length === 0 && !error && (
+                    <p class="empty">{mode === 'search' ? '没有找到匹配的记忆' : '暂无记忆'}</p>
+                )}
+
+                {edges.map(e => (
+                    <div class="memory-card" data-uuid={e.uuid}>
+                        <div class="memory-header">
+                            <span class="memory-id">{e.uuid?.slice(0, 8) ?? '—'}</span>
+                            <span class="memory-name">{e.name}</span>
+                            <span class="memory-time">
+                                {e.valid_at && `生效: ${formatDate(e.valid_at)}`}
+                                {e.invalid_at && ` · 失效: ${formatDate(e.invalid_at)}`}
+                            </span>
+                        </div>
+                        <div class="memory-content">{e.fact}</div>
+                        <div class="memory-meta">
+                            {e.created_at && <span>创建: {formatDate(e.created_at)}</span>}
+                            {e.group_id && <span>组: {e.group_id}</span>}
+                        </div>
+                        <div class="memory-actions">
+                            <button class="btn btn-sm btn-danger" data-action="delete" data-uuid={e.uuid}>删除</button>
+                        </div>
+                    </div>
+                ))}
             </div>
-        ))}
-    </div>
 
-    <!-- 分页导航（仅列出模式） -->
-    {mode === 'list' && totalPages > 1 && (
-        <nav class="pagination">
-            <a
-                href={pageUrl(currentPage - 1)}
-                class={`page-btn ${currentPage <= 1 ? 'disabled' : ''}`}
-                aria-disabled={currentPage <= 1}
-            >
-                ← 上一页
-            </a>
-            <span class="page-info">
-                第 {currentPage} / {totalPages} 页
-            </span>
-            <a
-                href={pageUrl(currentPage + 1)}
-                class={`page-btn ${currentPage >= totalPages ? 'disabled' : ''}`}
-                aria-disabled={currentPage >= totalPages}
-            >
-                下一页 →
-            </a>
-        </nav>
+            <!-- 分页（仅列出模式） -->
+            {mode === 'list' && (
+                <nav class="pagination">
+                    <a
+                        href={pageUrl(currentPage - 1)}
+                        class={`page-btn ${currentPage <= 1 ? 'disabled' : ''}`}
+                        aria-disabled={currentPage <= 1}
+                    >
+                        ← 上一页
+                    </a>
+                    <span class="page-info">
+                        第 {currentPage} / {totalPages} 页
+                    </span>
+                    <a
+                        href={pageUrl(currentPage + 1)}
+                        class={`page-btn ${currentPage >= totalPages ? 'disabled' : ''}`}
+                        aria-disabled={currentPage >= totalPages}
+                    >
+                        下一页 →
+                    </a>
+                </nav>
+            )}
+        </>
+    )}
+
+    {view === 'graph' && (
+        <>
+            <div class="graph-toolbar">
+                <select id="graph-group" class="search-input user-input">
+                    {allGroups.map(g => (
+                        <option value={g} selected={g === groupId}>{g}</option>
+                    ))}
+                </select>
+                <select id="graph-limit" class="search-input graph-limit-select">
+                    {[100, 200, 500].map(n => (
+                        <option value={n} selected={n === graphEdgeLimit}>最近 {n} 条事实</option>
+                    ))}
+                </select>
+                <span id="graph-status" class="graph-status">加载中...</span>
+            </div>
+            <div class="graph-layout">
+                <div id="graph-canvas" data-group-id={groupId} data-edge-limit={graphEdgeLimit}></div>
+                <aside id="graph-panel" class="graph-panel">
+                    <p class="hint">点击节点或边查看详情</p>
+                </aside>
+            </div>
+        </>
     )}
 </Layout>
 
 <script>
+    import cytoscape from 'cytoscape';
+
+    function formatDateClient(iso: string | null | undefined): string {
+        if (!iso) return '';
+        try {
+            return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        } catch {
+            return iso ?? '';
+        }
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
-        // 记忆列表事件委托
+        // ---------- 列表视图：删除记忆 ----------
         document.querySelector('.memory-list')?.addEventListener('click', (e) => {
             const btn = (e.target as HTMLElement).closest('[data-action]') as HTMLElement | null;
             if (!btn) return;
@@ -226,10 +288,639 @@ function formatDate(iso: string | null): string {
                     .catch(() => alert('删除失败'));
             }
         });
+
+        // ---------- 图谱视图 ----------
+        const canvas = document.getElementById('graph-canvas');
+        if (!canvas) return;
+
+        const groupId = canvas.dataset.groupId || '';
+        const edgeLimit = parseInt(canvas.dataset.edgeLimit || '200', 10);
+        const statusEl = document.getElementById('graph-status') as HTMLElement;
+        const panelEl = document.getElementById('graph-panel') as HTMLElement;
+        const groupSelect = document.getElementById('graph-group') as HTMLSelectElement | null;
+        const limitSelect = document.getElementById('graph-limit') as HTMLSelectElement | null;
+
+        let cy: cytoscape.Core | null = null;
+        let loadingNeighbors = false;
+
+        // 布局参数：按度数差异化，枢纽节点撑得更开，叶子保持紧凑
+        const IDEAL_EDGE_LENGTH = 100;
+        const DEGREE_SUM_CAP = 60;
+        function nodeDegree(node: cytoscape.NodeSingular): number {
+            return node.connectedEdges().length;
+        }
+        function coseLayout(): cytoscape.LayoutOptions {
+            return {
+                name: 'cose',
+                animate: false,
+                padding: 30,
+                // 枢纽间的边目标更长：两端度数之和越高，边越长（最高 3 倍）
+                idealEdgeLength: (edge: cytoscape.EdgeSingular) => {
+                    const sum = Math.min(nodeDegree(edge.source()) + nodeDegree(edge.target()), DEGREE_SUM_CAP);
+                    return IDEAL_EDGE_LENGTH * (1 + sum / DEGREE_SUM_CAP * 2);
+                },
+                // 斥力随度数增长：枢纽点互推更强，避免重叠成团
+                nodeRepulsion: (node: cytoscape.NodeSingular) => 180_000 * Math.sqrt(1 + nodeDegree(node)),
+                // 允许围绕初始位置迭代更多轮，让强斥力充分收敛
+                numIter: 1200,
+                gravity: 0.8
+            };
+        }
+
+        // 群组 / 边数上限切换 → 整页跳转
+        groupSelect?.addEventListener('change', () => {
+            window.location.href = `/memories?view=graph&group_id=${encodeURIComponent(groupSelect.value)}&limit=${edgeLimit}`;
+        });
+        limitSelect?.addEventListener('change', () => {
+            window.location.href = `/memories?view=graph&group_id=${encodeURIComponent(groupId)}&limit=${encodeURIComponent(limitSelect.value)}`;
+        });
+
+        function setStatus(text: string, isError = false): void {
+            statusEl.textContent = text;
+            statusEl.classList.toggle('graph-status-error', isError);
+        }
+
+        function updateStatusCounts(): void {
+            if (!cy) return;
+            const nodes = cy.nodes().length;
+            const edgesCount = cy.edges().length;
+            setStatus(`节点 ${nodes} · 显示事实边 ${edgesCount}`);
+        }
+
+        function setPanel(content: Node[]): void {
+            panelEl.replaceChildren(...content);
+        }
+
+        function panelHint(text: string): void {
+            const p = document.createElement('p');
+            p.className = 'hint';
+            p.textContent = text;
+            setPanel([p]);
+        }
+
+        function makeRow(label: string, value: string): HTMLElement {
+            const div = document.createElement('div');
+            div.className = 'panel-row';
+            const key = document.createElement('span');
+            key.className = 'panel-key';
+            key.textContent = label;
+            const val = document.createElement('span');
+            val.className = 'panel-val';
+            val.textContent = value;
+            div.append(key, val);
+            return div;
+        }
+
+        // ---------- 悬浮提示卡片（运行时创建，样式经 :global 生效） ----------
+        const tooltip = document.createElement('div');
+
+        function moveTip(x: number, y: number): void {
+            tooltip.style.left = `${x}px`;
+            tooltip.style.top = `${y}px`;
+            tooltip.style.display = 'block';
+        }
+
+        function hideTip(): void {
+            tooltip.style.display = 'none';
+        }
+
+        function clearSelection(): void {
+            if (!cy) return;
+            cy.elements().removeClass(['selected', 'dimmed', 'preview', 'focus']);
+            cy.nodes().removeClass('neighbor-highlight');
+        }
+
+        function highlightNeighborhood(node: cytoscape.CollectionReturnValue): void {
+            if (!cy) return;
+            // 邻接边只加 focus（提亮不显标签），标签留给单独选中的边
+            cy.elements().addClass('dimmed');
+            node.removeClass('dimmed').addClass('selected neighbor-highlight');
+            node.connectedEdges().removeClass('dimmed').addClass('focus');
+            node.neighborhood().removeClass('dimmed').addClass('neighbor-highlight');
+        }
+
+        // ---------- 选区状态：记住当前选中元素，供预览结束 / 删除后恢复 ----------
+        type GraphSelection = { kind: 'node' | 'edge'; id: string };
+        let current: GraphSelection | null = null;
+
+        function isSelectedEdge(edgeId: string): boolean {
+            return current !== null && current.kind === 'edge' && current.id === edgeId;
+        }
+
+        function selectNode(node: cytoscape.CollectionReturnValue): void {
+            if (!cy) return;
+            current = { kind: 'node', id: node.id() };
+            clearSelection();
+            highlightNeighborhood(node);
+            showNodePanel(node.id());
+        }
+
+        function selectEdge(edge: cytoscape.CollectionReturnValue): void {
+            if (!cy) return;
+            current = { kind: 'edge', id: edge.id() };
+            clearSelection();
+            cy.elements().addClass('dimmed');
+            edge.removeClass('dimmed').addClass('selected');
+            edge.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+            showEdgePanel(edge.id());
+        }
+
+        // 面板行悬停：临时只突出这一条边（含标签），移开后恢复当前选区
+        function previewEdge(edge: cytoscape.CollectionReturnValue): void {
+            if (!cy || isSelectedEdge(edge.id())) return;
+            clearSelection();
+            cy.elements().addClass('dimmed');
+            edge.removeClass('dimmed').addClass('preview');
+            edge.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+        }
+
+        function restoreHighlight(): void {
+            if (!cy) return;
+            clearSelection();
+            if (!current) return;
+            const el = cy.getElementById(current.id);
+            if (el.empty()) {
+                current = null;
+                return;
+            }
+            if (current.kind === 'node') {
+                highlightNeighborhood(el);
+            } else {
+                el.addClass('selected');
+                el.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+            }
+        }
+
+        // 面板事件里拿到的是 EdgeSingular，统一走 id 中转避免类型分歧
+        function selectEdgeById(edgeId: string): void {
+            if (!cy) return;
+            selectEdge(cy.getElementById(edgeId));
+        }
+
+        function previewEdgeById(edgeId: string): void {
+            if (!cy) return;
+            previewEdge(cy.getElementById(edgeId));
+        }
+
+        function refreshDegrees(): void {
+            if (!cy) return;
+            const graph = cy;
+            graph.batch(() => {
+                graph.nodes().forEach(node => {
+                    const deg = node.connectedEdges().length;
+                    const size = Math.min(18 + deg * 2, 46);
+                    node.style({ width: size, height: size });
+                });
+            });
+        }
+
+        function subgraphElements(nodes: GraphApiNode[], apiEdges: GraphApiEdge[]): cytoscape.ElementDefinition[] {
+            const elements: cytoscape.ElementDefinition[] = [];
+            for (const n of nodes) {
+                if (!n.uuid) continue;
+                elements.push({
+                    group: 'nodes',
+                    data: {
+                        id: n.uuid,
+                        kind: 'entity',
+                        label: n.name || n.uuid.slice(0, 8),
+                        summary: n.summary ?? null
+                    },
+                });
+            }
+            for (const r of apiEdges) {
+                if (!r.uuid || !r.source_node_uuid || !r.target_node_uuid) continue;
+                const stale = Boolean(r.invalid_at || r.expired_at);
+                elements.push({
+                    group: 'edges',
+                    data: {
+                        id: r.uuid,
+                        source: r.source_node_uuid,
+                        target: r.target_node_uuid,
+                        fact: r.fact,
+                        validAt: r.valid_at,
+                        invalidAt: r.invalid_at,
+                        expiredAt: r.expired_at,
+                        createdAt: r.created_at,
+                    },
+                    classes: stale ? 'stale' : ''
+                });
+            }
+            return elements;
+        }
+
+        function mergeSubgraph(apiNodes: GraphApiNode[], apiEdges: GraphApiEdge[]): number {
+            if (!cy) return 0;
+            const graph = cy;
+            let added = 0;
+            graph.batch(() => {
+                for (const el of subgraphElements(apiNodes, apiEdges)) {
+                    const id = String(el.data.id);
+                    if (graph.getElementById(id).nonempty()) continue;
+                    // 容忍悬空引用：端点尚未加入的边直接跳过
+                    if (el.group === 'edges'
+                        && (!graph.getElementById(String(el.data.source)).nonempty()
+                            || !graph.getElementById(String(el.data.target)).nonempty())) {
+                        continue;
+                    }
+                    graph.add(el);
+                    added++;
+                }
+            });
+            refreshDegrees();
+            return added;
+        }
+
+        function showNodePanel(nodeId: string): void {
+            if (!cy) return;
+            const graph = cy;
+            const node = graph.getElementById(nodeId);
+            const entityName = nodeId.slice(0, 8);
+            const degree = node.connectedEdges().length;
+            const content: Node[] = [];
+
+            const title = document.createElement('h3');
+            title.textContent = node.data('label') || entityName;
+            content.push(title);
+
+            const summaryVal = node.data('summary') ? String(node.data('summary')) : '(无摘要)';
+            content.push(makeRow('实体', entityName));
+            content.push(makeRow('度数', String(degree)));
+
+            const summaryHead = document.createElement('h4');
+            summaryHead.textContent = '摘要';
+            content.push(summaryHead);
+            const summaryP = document.createElement('p');
+            summaryP.textContent = summaryVal;
+            content.push(summaryP);
+
+            const relHead = document.createElement('h4');
+            relHead.textContent = `关联事实 (${degree})`;
+            content.push(relHead);
+
+            const list = document.createElement('ul');
+            list.className = 'panel-facts';
+            node.connectedEdges().forEach(edge => {
+                const li = document.createElement('li');
+                li.textContent = String(edge.data('fact'));
+                // 悬停：画布上单独预览这条边；点击：切换选中并显示详情
+                li.addEventListener('click', () => selectEdgeById(edge.id()));
+                li.addEventListener('mouseenter', () => previewEdgeById(edge.id()));
+                li.addEventListener('mouseleave', () => restoreHighlight());
+                list.appendChild(li);
+            });
+            content.push(list);
+
+            const actions = document.createElement('div');
+            actions.className = 'panel-actions';
+            const expandBtn = document.createElement('button');
+            expandBtn.className = 'btn btn-sm';
+            expandBtn.textContent = loadingNeighbors ? '展开中...' : '展开邻居节点';
+            expandBtn.disabled = loadingNeighbors;
+            expandBtn.addEventListener('click', () => expandNeighbors(nodeId));
+            content.push(actions);
+            actions.appendChild(expandBtn);
+
+            setPanel(content);
+        }
+
+        function showEdgePanel(edgeId: string): void {
+            if (!cy) return;
+            const edge = cy.getElementById(edgeId);
+            const uuid = String(edge.data('id'));
+            const fact = String(edge.data('fact'));
+            const content: Node[] = [];
+
+            const title = document.createElement('h3');
+            title.textContent = '事实关系';
+            content.push(title);
+
+            content.push(makeRow('ID', uuid.slice(0, 8)));
+            content.push(makeRow('生效', formatDateClient(edge.data('validAt')) || '—'));
+            content.push(makeRow('失效', formatDateClient(edge.data('invalidAt')) || '—'));
+            content.push(makeRow('过期', formatDateClient(edge.data('expiredAt')) || '—'));
+
+            const factHead = document.createElement('h4');
+            factHead.textContent = '内容';
+            content.push(factHead);
+            const factP = document.createElement('p');
+            factP.className = 'panel-fact-text';
+            factP.textContent = fact;
+            content.push(factP);
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn btn-sm btn-danger';
+            delBtn.textContent = '删除该事实';
+            delBtn.addEventListener('click', () => {
+                if (!confirm('确定删除这条事实？相关节点和其余事实不受影响。')) return;
+                fetch(`/api/memories/${encodeURIComponent(uuid)}`, { method: 'DELETE', credentials: 'same-origin' })
+                    .then(res => {
+                        if (!res.ok) throw new Error();
+                        cy?.remove(edge);
+                        current = null;
+                        clearSelection();
+                        updateStatusCounts();
+                        panelHint('已删除，点击其他元素继续查看');
+                    })
+                    .catch(() => alert('删除失败'));
+            });
+            content.push(delBtn);
+
+            setPanel(content);
+        }
+
+        async function expandNeighbors(nodeId: string): Promise<void> {
+            if (!cy || loadingNeighbors) return;
+            loadingNeighbors = true;
+            try {
+                setStatus('展开邻接中...');
+                const res = await fetch(`/api/memories/graph/neighbors?uuid=${encodeURIComponent(nodeId)}&limit=${Math.min(edgeLimit, 100)}`, {
+                    credentials: 'same-origin'
+                });
+                const payload = (await res.json()) as GraphNeighborsResponse & { error?: string };
+                if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+                const added = mergeSubgraph(payload.nodes, payload.edges);
+                rerunLayout();
+                if (added > 0) {
+                    if (cy) selectNode(cy.getElementById(nodeId));
+                } else {
+                    panelHint('没有更多可展开的邻居了');
+                }
+                updateStatusCounts();
+            } catch (err: unknown) {
+                setStatus(err instanceof Error ? err.message : String(err), true);
+            } finally {
+                loadingNeighbors = false;
+            }
+        }
+
+        function rerunLayout(): void {
+            layoutElements();
+        }
+
+        // 参与力学布局的元素：平行边去重 + 排除自环。
+        // 若不处理，同一对节点间的多条边会让 cose 出现退化位移（距离 0 时方向无定义），
+        // 表现为只有彼此相连的 A/B 两点在初始布局后仍然重叠。
+        function layoutElements(): void {
+            if (!cy) return;
+            const seenPairs = new Set<string>();
+            const uniqueEdges: cytoscape.EdgeSingular[] = [];
+            cy.edges().forEach(e => {
+                if (e.isLoop()) return;
+                const key = [e.source().id(), e.target().id()].sort().join('~');
+                if (seenPairs.has(key)) return;
+                seenPairs.add(key);
+                uniqueEdges.push(e);
+            });
+            const layoutEls = uniqueEdges.reduce<cytoscape.CollectionReturnValue>(
+                (col, e) => col.union(e),
+                cy.nodes() as cytoscape.CollectionReturnValue
+            );
+            layoutEls.layout(coseLayout()).run();
+            setTimeout(() => cy?.fit(undefined, 40), 50);
+        }
+
+        interface GraphApiNode {
+            uuid: string | null;
+            name?: string;
+            summary?: string | null;
+        }
+
+        interface GraphApiEdge {
+            uuid: string | null;
+            fact: string;
+            source_node_uuid: string | null;
+            target_node_uuid: string | null;
+            created_at: string | null;
+            valid_at: string | null;
+            invalid_at: string | null;
+            expired_at: string | null;
+        }
+
+        interface GraphSubgraphResponse {
+            nodes: GraphApiNode[];
+            edges: GraphApiEdge[];
+            total_edges?: number;
+        }
+
+        interface GraphNeighborsResponse {
+            node: GraphApiNode | null;
+            nodes: GraphApiNode[];
+            edges: GraphApiEdge[];
+        }
+
+        async function loadGraph(): Promise<void> {
+            if (!canvas) return;
+            try {
+                setStatus('加载图谱...');
+                const res = await fetch(`/api/memories/graph?group_id=${encodeURIComponent(groupId)}&limit=${edgeLimit}`, {
+                    credentials: 'same-origin'
+                });
+                const payload = (await res.json()) as GraphSubgraphResponse & { error?: string };
+                if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+                if (payload.nodes.length === 0) {
+                    canvas.classList.add('graph-empty');
+                    canvas.textContent = '该群组暂无可视化的实体事实网络（还没有产生任何记忆）';
+                    setStatus('暂无数据');
+                    return;
+                }
+
+                cy = cytoscape({
+                    container: canvas,
+                    elements: subgraphElements(payload.nodes, payload.edges),
+                    wheelSensitivity: 0.45,
+                    minZoom: 0.25,
+                    // 真正的布局由 layoutElements() 去重后执行，这里先随机铺开
+                    layout: { name: 'grid', padding: 30 },
+                    style: [
+                        {
+                            selector: 'node',
+                            style: {
+                                'background-color': '#6c7ae0',
+                                label: 'data(label)',
+                                color: '#e8e8ef',
+                                'font-size': 11,
+                                'text-wrap': 'ellipsis',
+                                'text-max-width': '80',
+                                'text-valign': 'bottom',
+                                'text-margin-y': 4,
+                                width: 20,
+                                height: 20,
+                                'border-width': 1,
+                                'border-color': '#2a2a32'
+                            }
+                        },
+                        {
+                            selector: 'node.neighbor-highlight',
+                            style: {
+                                'border-color': '#f0f0f5',
+                                'border-width': 2
+                            }
+                        },
+                        {
+                            selector: 'edge',
+                            style: {
+                                width: 1.5,
+                                'line-color': '#3d3d4d',
+                                'target-arrow-color': '#3d3d4d',
+                                'target-arrow-shape': 'triangle',
+                                'arrow-scale': 0.6,
+                                'curve-style': 'bezier',
+                                color: '#9090a0',
+                                'font-size': 8,
+                                'text-wrap': 'wrap',
+                                'text-max-width': '120',
+                                'z-index': 1
+                            }
+                        },
+                        {
+                            selector: 'edge.stale',
+                            style: {
+                                'line-style': 'dashed',
+                                opacity: 0.45
+                            }
+                        },
+                        {
+                            selector: 'node.selected',
+                            style: {
+                                'border-color': '#f5f5ff',
+                                'border-width': 3,
+                                'background-color': '#8a96ec'
+                            }
+                        },
+                        {
+                            // 节点选中时的邻接边：仅提亮加粗，不显示 fact 标签
+                            selector: 'edge.focus',
+                            style: {
+                                'line-color': '#8a96ec',
+                                'target-arrow-color': '#8a96ec',
+                                width: 2
+                            }
+                        },
+                        {
+                            // fact 标签只在「单条边被选中 / 悬停预览」时显示，避免多标签堆叠
+                            selector: 'edge.selected, edge.preview',
+                            style: {
+                                'line-color': '#b3bdf0',
+                                'target-arrow-color': '#b3bdf0',
+                                width: 2.5,
+                                label: 'data(fact)',
+                                color: '#cdd3f2',
+                                'text-wrap': 'wrap',
+                                'text-max-width': '200',
+                                'z-index': 5
+                            }
+                        },
+                        {
+                            selector: '.dimmed',
+                            style: { opacity: 0.15 }
+                        }
+                    ]
+                });
+
+                // cy 是 let 变量，回调里使用需先取局部常量以获得类型收窄
+                const graph = cy;
+
+                refreshDegrees();
+                layoutElements();
+                canvas.appendChild(tooltip);
+
+                // ---------- 悬停即时提示（DOM 卡片，替代常驻画布标签） ----------
+                // ---------- 标签缩放补偿：字号随 zoom 反向放大，屏幕上保持恒定可读 ----------
+                const LABEL_BASE_NODE_FS = 11;
+                const LABEL_BASE_EDGE_FS = 10;
+                let zoomRaf = 0;
+
+                function compensateLabels(): void {
+                    const z = Math.max(graph.zoom(), 0.01);
+                    const nodeFs = Math.min(LABEL_BASE_NODE_FS / z, 28);
+                    const edgeFs = Math.min(LABEL_BASE_EDGE_FS / z, 24);
+                    const scaleN = nodeFs / LABEL_BASE_NODE_FS;
+                    const scaleE = edgeFs / LABEL_BASE_EDGE_FS;
+                    graph.batch(() => {
+                        graph.nodes().style({
+                            'font-size': String(nodeFs),
+                            'text-max-width': String(Math.min(80 * scaleN, 300))
+                        });
+                        graph.edges().style({
+                            'font-size': String(edgeFs),
+                            'text-max-width': String(Math.min(200 * scaleE, 380))
+                        });
+                    });
+                }
+
+                graph.on('zoom', () => {
+                    if (zoomRaf) return;
+                    zoomRaf = requestAnimationFrame(() => {
+                        zoomRaf = 0;
+                        compensateLabels();
+                    });
+                });
+                compensateLabels();
+
+                graph.on('mouseover', 'edge', evt => {
+                    const edge = evt.target;
+                    const p = edge.renderedMidpoint();
+                    tooltip.textContent = String(edge.data('fact'));
+                    moveTip(p.x, p.y);
+                    if (!isSelectedEdge(edge.id())) edge.addClass('preview');
+                });
+
+                graph.on('mouseout', 'edge', evt => {
+                    hideTip();
+                    evt.target.removeClass('preview');
+                });
+
+                graph.on('mouseover', 'node', evt => {
+                    const n = evt.target;
+                    const name = String(n.data('label') || n.id().slice(0, 8));
+                    const summary = n.data('summary') ? String(n.data('summary')) : '';
+                    tooltip.textContent = summary
+                        ? `${name}\n${summary.slice(0, 140)}${summary.length > 140 ? '…' : ''}`
+                        : name;
+                    const p = n.renderedPosition();
+                    moveTip(p.x, p.y);
+                });
+
+                graph.on('mouseout', 'node', () => hideTip());
+
+                // 平移 / 缩放后旧坐标失效，直接隐藏提示
+                graph.on('viewport', () => hideTip());
+
+                graph.on('tap', 'node', evt => selectNode(evt.target));
+
+                graph.on('tap', 'edge', evt => selectEdge(evt.target));
+
+                graph.on('tap', (evt) => {
+                    if (evt.target === graph) {
+                        current = null;
+                        clearSelection();
+                        panelHint('点击节点或边查看详情，悬停可快速预览内容');
+                    }
+                });
+
+                const totalInfo = payload.total_edges && payload.total_edges > payload.edges.length
+                    ? ` · 事实共 ${payload.total_edges} 条（仅展示最近 ${payload.edges.length} 条）`
+                    : '';
+                setStatus(`节点 ${graph.nodes().length} · 显示事实边 ${graph.edges().length}${totalInfo}`);
+                setTimeout(() => graph.fit(undefined, 40), 50);
+            } catch (err: unknown) {
+                setStatus(err instanceof Error ? err.message : String(err), true);
+            }
+        }
+
+        loadGraph();
     });
 </script>
 
 <style>
+    .view-switch {
+        display: inline-flex;
+        gap: 8px;
+        margin-left: auto;
+    }
     .search-bar {
         display: flex;
         gap: 10px;
@@ -369,7 +1060,162 @@ function formatDate(iso: string | null): string {
         pointer-events: none;
     }
     .page-info {
-        font-size: 14px;
         color: var(--text-secondary);
+        font-size: 14px;
+    }
+
+    /* ---------- 图谱视图 ---------- */
+    .graph-toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+    }
+    .graph-toolbar select {
+        flex: 0 0 auto;
+        min-width: 150px;
+        padding: 6px 10px;
+    }
+    .graph-limit-select {
+        max-width: 180px;
+    }
+    .graph-status {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-left: auto;
+    }
+    .graph-status-error {
+        color: var(--danger);
+    }
+    .graph-layout {
+        display: flex;
+        gap: 12px;
+        align-items: stretch;
+    }
+    #graph-canvas {
+        position: relative;
+        flex: 1;
+        height: calc(100vh - 220px);
+        min-height: 420px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    #graph-canvas.graph-empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-secondary);
+        font-size: 14px;
+        padding: 24px;
+    }
+    /* 悬停提示卡片：内容由脚本动态创建，故用 :global */
+    #graph-canvas :global(.graph-tooltip) {
+        position: absolute;
+        transform: translate(-50%, calc(-100% - 12px));
+        max-width: 300px;
+        background: var(--surface-hover);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 12px;
+        line-height: 1.55;
+        color: var(--text);
+        white-space: pre-line;
+        word-break: break-word;
+        pointer-events: none;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+        z-index: 30;
+    }
+    .graph-panel {
+        flex: 0 0 320px;
+        max-width: 320px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 16px;
+        overflow-y: auto;
+        max-height: calc(100vh - 220px);
+    }
+    /* 面板内部元素由脚本运行时创建，须用 :global 才能命中 */
+    .graph-panel :global(h3) {
+        font-size: 15px;
+        color: var(--accent);
+        margin-bottom: 10px;
+        word-break: break-all;
+    }
+    .graph-panel :global(h4) {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-secondary);
+        margin: 14px 0 6px;
+    }
+    .graph-panel :global(p) {
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+    }
+    .graph-panel :global(p.hint) {
+        padding: 30px 10px;
+    }
+    .graph-panel :global(.panel-row) {
+        display: flex;
+        gap: 8px;
+        font-size: 12.5px;
+        margin-bottom: 6px;
+    }
+    .graph-panel :global(.panel-key) {
+        flex: 0 0 44px;
+        color: var(--text-secondary);
+    }
+    .graph-panel :global(.panel-val) {
+        word-break: break-all;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    .graph-panel :global(.panel-facts) {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .graph-panel :global(.panel-facts li) {
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        cursor: pointer;
+        word-break: break-word;
+    }
+    .graph-panel :global(.panel-facts li:hover) {
+        border-color: var(--accent);
+    }
+    .graph-panel :global(.panel-fact-text) {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 10px;
+    }
+    .graph-panel :global(.panel-actions) {
+        margin-top: 14px;
+        display: flex;
+        gap: 8px;
+    }
+    @media (max-width: 900px) {
+        .graph-layout {
+            flex-direction: column;
+        }
+        #graph-canvas {
+            height: 60vh;
+        }
+        .graph-panel {
+            flex: 1;
+            max-width: none;
+        }
     }
 </style>

@@ -4,14 +4,17 @@ Communicates with the Node.js bot over stdin/stdout using JSON-RPC 2.0.
 Each request is a single JSON line on stdin; each response is a single JSON line on stdout.
 
 Methods:
-    initialize   — connect to Neo4j, build indices
-    add_episodes — batch-add chat messages as episodes
-    search       — semantic search for memories
-    get_edges    — list edges for a group (with pagination)
-    get_edge     — get a single edge by uuid
-    delete_edge  — delete a single edge by uuid
-    delete_group — delete all data for a group
-    shutdown     — graceful shutdown
+    initialize      — connect to Neo4j, build indices
+    add_episodes    — batch-add chat messages as episodes
+    search          — semantic search for memories
+    get_edges       — list edges for a group (with pagination)
+    get_edge        — get a single edge by uuid
+    delete_edge     — delete a single edge by uuid
+    delete_group    — delete all data for a group
+    get_nodes       — list nodes of a given label for a group (with pagination)
+    get_subgraph    — entity fact subgraph for a group (nodes + RELATES_TO edges)
+    get_neighbors   — 1-hop fact subgraph around a single entity node
+    shutdown        — graceful shutdown
 """
 
 from __future__ import annotations
@@ -28,10 +31,39 @@ from neo4j.time import DateTime as Neo4jDateTime
 
 from graphiti_core import Graphiti
 from graphiti_core.nodes import EpisodeType
+from graphiti_core.llm_client import client as llm_client
+import graphiti_core.llm_client.openai_generic_client as _ogc
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+
+
+# ---------------------------------------------------------------------------
+# Extraction language override
+# ---------------------------------------------------------------------------
+# graphiti-core 默认在每次 LLM 调用的 system message 末尾追加
+# get_extraction_language_instruction() 的返回值，默认文案以 "Otherwise, output English."
+# 结尾，导致纯中文群聊被抽成「英文骨架 + 中文引语」的记忆。
+# 该函数的 docstring 明确声明 "Override this function to customize language extraction"，
+# 这里按官方扩展点覆写为简体中文指令；generate_response 是所有生成型调用（抽取/摘要/去重）
+# 的唯一出口，覆写一处即全覆盖。注意 openai_generic_client 以 from-import 按名绑定，
+# 需一并替换。库升级若改动该函数名/调用点，覆写会静默失效，initialize 日志可确认生效。
+CHINESE_LANGUAGE_INSTRUCTION = (
+    '\n\n输入的对话为简体中文。所有生成内容——事实（fact）、实体摘要、实体名称、属性值——必须以简体中文书写。'
+    '专有名词保持原样：用户昵称、群名称、产品/型号名称、技术术语、引用的聊天原话，一律不翻译。'
+    '日期与时间一律写成 yyyy-MM-dd HH:mm 格式。'
+)
+
+
+def _chinese_language_instruction(group_id: str | None = None) -> str:
+    return CHINESE_LANGUAGE_INSTRUCTION
+
+
+def apply_language_override() -> None:
+    """覆写 graphiti-core 的语言指令扩展点（含 openai_generic_client 的按名绑定）。"""
+    llm_client.get_extraction_language_instruction = _chinese_language_instruction
+    _ogc.get_extraction_language_instruction = _chinese_language_instruction
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +122,17 @@ def _serialize_edge(edge: Any) -> dict[str, Any]:
         "expired_at": edge.expired_at.isoformat() if edge.expired_at else None,
         "attributes": edge.attributes if edge.attributes else {},
     }
+
+
+def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Serialize a raw Cypher row into a JSON-friendly dict (Neo4j temporal types)."""
+    out: dict[str, Any] = {}
+    for key, value in row.items():
+        if hasattr(value, 'isoformat'):
+            out[key] = value.isoformat()
+        else:
+            out[key] = value
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +207,11 @@ async def handle_initialize(params: dict[str, Any]) -> Any:
     await state.graphiti.build_indices_and_constraints()
     state.initialized = True
     state.config = params
+
+    # 覆写语言指令扩展点；若库升级改名会导致覆写静默失效，这里做基本校验并提示
+    apply_language_override()
+    if getattr(_ogc, 'get_extraction_language_instruction', None) is not _chinese_language_instruction:
+        print('[Graphiti] warning: language override did not take effect', file=sys.stderr)
 
     return {"status": "ok"}
 
@@ -345,6 +393,196 @@ async def handle_delete_group(params: dict[str, Any]) -> Any:
     return {"deleted": True}
 
 
+def _serialize_node_row(row: Any) -> dict[str, Any]:
+    """Serialize a node Cypher row (uuid/name/summary/group_id/created_at)."""
+    data = _serialize_row(row)
+    return {
+        "uuid": data.get("uuid"),
+        "name": data.get("name"),
+        "summary": data.get("summary"),
+        "group_id": data.get("group_id"),
+        "created_at": data.get("created_at"),
+    }
+
+
+# 图节点标签白名单（Cypher 的 label 不能参数化，必须白名单拼接）
+NODE_LABELS = ("Entity", "Episodic", "Community")
+
+
+async def handle_get_nodes(params: dict[str, Any]) -> Any:
+    """List nodes of a given label for a group (paginated)."""
+    if not state.initialized or state.graphiti is None:
+        raise RuntimeError("Server not initialized")
+
+    group_id: str = params["group_id"]
+    label: str = params.get("label", "Entity")
+    if label not in NODE_LABELS:
+        raise ValueError(f"Invalid label: {label}. Must be one of {NODE_LABELS}")
+    limit: int = min(int(params.get("limit", 50)), 500)
+    offset: int = max(int(params.get("offset", 0)), 0)
+
+    driver = state.graphiti.driver
+
+    query = f"""
+        MATCH (n:{label})
+        WHERE n.group_id = $group_id
+        RETURN n.uuid AS uuid, n.name AS name, n.summary AS summary,
+               n.group_id AS group_id, n.created_at AS created_at
+        ORDER BY n.created_at DESC
+        SKIP $offset
+        LIMIT $limit
+    """
+    records, _, _ = await driver.execute_query(
+        query,
+        group_id=group_id,
+        offset=offset,
+        limit=limit,
+    )
+    nodes = [_serialize_node_row(record) for record in records]
+
+    count_query = f"""
+        MATCH (n:{label})
+        WHERE n.group_id = $group_id
+        RETURN count(n) AS total
+    """
+    count_records, _, _ = await driver.execute_query(count_query, group_id=group_id)
+    total = count_records[0]["total"] if count_records else 0
+
+    return {"label": label, "nodes": nodes, "total": total, "offset": offset, "limit": limit}
+
+
+async def handle_get_subgraph(params: dict[str, Any]) -> Any:
+    """Entity fact subgraph for a group: Entity nodes + fact RELATES_TO edges.
+
+    Returns the most recent `limit` edges and all Entity endpoints involved.
+    """
+    if not state.initialized or state.graphiti is None:
+        raise RuntimeError("Server not initialized")
+
+    group_id: str = params["group_id"]
+    limit: int = min(int(params.get("limit", 200)), 1000)
+
+    driver = state.graphiti.driver
+
+    edge_query = """
+        MATCH (a:Entity)-[r:RELATES_TO]->(b:Entity)
+        WHERE r.group_id = $group_id AND r.fact IS NOT NULL AND r.fact <> ''
+        RETURN a.uuid AS source_uuid, a.name AS source_name,
+               a.summary AS source_summary, a.group_id AS source_group_id,
+               b.uuid AS target_uuid, b.name AS target_name,
+               b.summary AS target_summary, b.group_id AS target_group_id,
+               r.uuid AS uuid, r.fact AS fact, r.created_at AS created_at,
+               r.valid_at AS valid_at, r.invalid_at AS invalid_at,
+               r.expired_at AS expired_at
+        ORDER BY r.created_at DESC
+        LIMIT $limit
+    """
+    records, _, _ = await driver.execute_query(edge_query, group_id=group_id, limit=limit)
+
+    nodes_by_uuid: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    for record in records:
+        row = _serialize_row(record)
+        for prefix in ("source", "target"):
+            uuid = row[f"{prefix}_uuid"]
+            if uuid and uuid not in nodes_by_uuid:
+                nodes_by_uuid[uuid] = {
+                    "uuid": uuid,
+                    "name": row[f"{prefix}_name"],
+                    "summary": row[f"{prefix}_summary"],
+                    "group_id": row[f"{prefix}_group_id"],
+                    "created_at": None,
+                }
+        edges.append({
+            "uuid": row["uuid"],
+            "fact": row["fact"],
+            "created_at": row["created_at"],
+            "valid_at": row["valid_at"],
+            "invalid_at": row["invalid_at"],
+            "expired_at": row["expired_at"],
+            "source_node_uuid": row["source_uuid"],
+            "target_node_uuid": row["target_uuid"],
+        })
+
+    count_query = """
+        MATCH ()-[r:RELATES_TO]->()
+        WHERE r.group_id = $group_id AND r.fact IS NOT NULL AND r.fact <> ''
+        RETURN count(r) AS total
+    """
+    count_records, _, _ = await driver.execute_query(count_query, group_id=group_id)
+    total_edges = count_records[0]["total"] if count_records else 0
+
+    return {
+        "nodes": list(nodes_by_uuid.values()),
+        "edges": edges,
+        "total_edges": total_edges,
+        "limit": limit,
+    }
+
+
+async def handle_get_neighbors(params: dict[str, Any]) -> Any:
+    """1-hop fact subgraph around an entity: center node + neighbor entities + fact edges."""
+    if not state.initialized or state.graphiti is None:
+        raise RuntimeError("Server not initialized")
+
+    node_uuid: str = params["uuid"]
+    limit: int = min(int(params.get("limit", 100)), 500)
+
+    driver = state.graphiti.driver
+
+    center_query = """
+        MATCH (n:Entity {uuid: $uuid})
+        RETURN n.uuid AS uuid, n.name AS name, n.summary AS summary,
+               n.group_id AS group_id, n.created_at AS created_at
+    """
+    center_records, _, _ = await driver.execute_query(center_query, uuid=node_uuid)
+    if not center_records:
+        raise ValueError(f"Node not found: {node_uuid}")
+    center = _serialize_node_row(center_records[0])
+
+    edge_query = """
+        MATCH (m:Entity)-[r:RELATES_TO]-(n:Entity {uuid: $uuid})
+        WHERE r.fact IS NOT NULL AND r.fact <> ''
+        RETURN m.uuid AS other_uuid, m.name AS other_name, m.summary AS other_summary,
+               m.group_id AS other_group_id, m.created_at AS other_created_at,
+               startNode(r).uuid AS source_uuid,
+               endNode(r).uuid AS target_uuid,
+               r.uuid AS uuid, r.fact AS fact, r.created_at AS created_at,
+               r.valid_at AS valid_at, r.invalid_at AS invalid_at,
+               r.expired_at AS expired_at
+        ORDER BY r.created_at DESC
+        LIMIT $limit
+    """
+    records, _, _ = await driver.execute_query(edge_query, uuid=node_uuid, limit=limit)
+
+    nodes: list[dict[str, Any]] = [center]
+    seen = {center["uuid"]}
+    edges: list[dict[str, Any]] = []
+    for record in records:
+        row = _serialize_row(record)
+        if row["other_uuid"] not in seen:
+            nodes.append({
+                "uuid": row["other_uuid"],
+                "name": row["other_name"],
+                "summary": row["other_summary"],
+                "group_id": row["other_group_id"],
+                "created_at": row["other_created_at"],
+            })
+            seen.add(row["other_uuid"])
+        edges.append({
+            "uuid": row["uuid"],
+            "fact": row["fact"],
+            "created_at": row["created_at"],
+            "valid_at": row["valid_at"],
+            "invalid_at": row["invalid_at"],
+            "expired_at": row["expired_at"],
+            "source_node_uuid": row["source_uuid"],
+            "target_node_uuid": row["target_uuid"],
+        })
+
+    return {"node": center, "nodes": nodes, "edges": edges, "limit": limit}
+
+
 async def handle_shutdown(_params: dict[str, Any]) -> Any:
     """Graceful shutdown."""
     if state.graphiti is not None:
@@ -366,6 +604,9 @@ METHODS: dict[str, Any] = {
     "get_edge": handle_get_edge,
     "delete_edge": handle_delete_edge,
     "delete_group": handle_delete_group,
+    "get_nodes": handle_get_nodes,
+    "get_subgraph": handle_get_subgraph,
+    "get_neighbors": handle_get_neighbors,
     "shutdown": handle_shutdown,
 }
 

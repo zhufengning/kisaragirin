@@ -2183,6 +2183,13 @@
   dependencies:
     "@types/node" "*"
 
+"@types/cytoscape@^3.31.0":
+  version "3.31.0"
+  resolved "https://registry.yarnpkg.com/@types/cytoscape/-/cytoscape-3.31.0.tgz#4cb3ec07c2f331c1ab8aff92a2e52716433dce4e"
+  integrity sha512-EXHOHxqQjGxLDEh5cP4te6J0bi7LbCzmZkzsR6f703igUac8UGMdEohMyU3GHAayCTZrLQOMnaE/lqB2Ekh8Ww==
+  dependencies:
+    cytoscape "*"
+
 "@types/debug@^4.0.0":
   version "4.1.13"
   resolved "https://registry.npmmirror.com/@types/debug/-/debug-4.1.13.tgz#22d1cc9d542d3593caea764f974306ab36286ee7"
@@ -3229,6 +3236,11 @@ csso@^5.0.5:
   integrity sha512-0LrrStPOdJj+SPCCrGhzryycLjwcgUSHBtxNA8aIDxf0GLsRh1cKYhB00Gd1lDOS4yGH69+SNn13+TWbVHETFQ==
   dependencies:
     css-tree "~2.2.0"
+
+cytoscape@*, cytoscape@^3.34.2:
+  version "3.34.2"
+  resolved "https://registry.yarnpkg.com/cytoscape/-/cytoscape-3.34.2.tgz#295edfc876b87bd971de3ac7a9d65c6be18f4ad6"
+  integrity sha512-Cm2jaj1X/PBNlzV9yH8zcfGOxO7U+CJ/+mxSBVPSchLaugdp4jtlGx5qaHtPRZ6tgiZ5P+o1XoRfJA+ba6KM3g==
 
 damerau-levenshtein@^1.0.8:
   version "1.0.8"

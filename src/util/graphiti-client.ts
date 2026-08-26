@@ -16,6 +16,31 @@ export interface GraphitiEdge {
     attributes: Record<string, unknown>;
 }
 
+export interface GraphitiNode {
+    uuid: string | null;
+    name: string;
+    summary: string | null;
+    group_id: string | null;
+    created_at: string | null;
+}
+
+/** 子图查询返回的原始边（与 RPC 返回一致，部分字段可能缺失） */
+export interface GraphitiSubgraphEdge {
+    uuid: string | null;
+    fact: string;
+    created_at: string | null;
+    valid_at: string | null;
+    invalid_at: string | null;
+    expired_at: string | null;
+    source_node_uuid: string | null;
+    target_node_uuid: string | null;
+}
+
+export interface GraphitiSubgraph {
+    nodes: GraphitiNode[];
+    edges: GraphitiSubgraphEdge[];
+}
+
 export interface GraphitiSearchResult {
     results: GraphitiEdge[];
     count: number;
@@ -230,6 +255,35 @@ export class GraphitiClient {
 
     async deleteGroup (groupId: string): Promise<void> {
         await this._call('delete_group', {group_id: groupId});
+    }
+
+    async getNodes (groupId: string, label: 'Entity' | 'Episodic' | 'Community' = 'Entity', limit = 50, offset = 0): Promise<{
+        label: string;
+        nodes: GraphitiNode[];
+        total: number;
+        offset: number;
+        limit: number;
+    }> {
+        const result = await this._call('get_nodes', {group_id: groupId, label, limit, offset});
+        return result as {
+            label: string;
+            nodes: GraphitiNode[];
+            total: number;
+            offset: number;
+            limit: number;
+        };
+    }
+
+    /** 某个群最近的实体事实子图（Entity 节点 + 带 fact 的 RELATES_TO 边） */
+    async getSubgraph (groupId: string, limit = 200): Promise<GraphitiSubgraph & {total_edges: number}> {
+        const result = await this._call('get_subgraph', {group_id: groupId, limit});
+        return result as GraphitiSubgraph & {total_edges: number};
+    }
+
+    /** 以某个实体为中心的 1-hop 事实子图（含中心节点 + 邻居 + fact 边） */
+    async getNeighbors (uuid: string, limit = 100): Promise<GraphitiSubgraph & {node: GraphitiNode | null}> {
+        const result = await this._call('get_neighbors', {uuid, limit});
+        return result as GraphitiSubgraph & {node: GraphitiNode | null};
     }
 
     async shutdown (): Promise<void> {
