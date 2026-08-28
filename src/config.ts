@@ -53,6 +53,8 @@ export interface ModelEntry {
 export interface GraphitiConfig {
     /** uv 可执行文件路径，默认 uv */
     uv_path?: string;
+    /** 是否 dump JSON-RPC 报文，默认 false */
+    debug_dump_rpc?: boolean;
     neo4j_uri?: string;
     neo4j_user?: string;
     neo4j_password?: string;

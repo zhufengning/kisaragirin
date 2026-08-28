@@ -100,10 +100,12 @@ export class GraphitiClient {
     private uvPath: string;
     private ready = false;
     private initPromise: Promise<void> | null = null;
+    private debugDumpRpc: boolean;
 
-    constructor (options: {serverPath: string; uvPath?: string}) {
+    constructor (options: {serverPath: string; uvPath?: string; debugDumpRpc?: boolean}) {
         this.serverPath = options.serverPath;
         this.uvPath = options.uvPath ?? 'uv';
+        this.debugDumpRpc = options.debugDumpRpc ?? false;
     }
 
     async initialize (config: GraphitiInitConfig): Promise<void> {
@@ -156,6 +158,11 @@ export class GraphitiClient {
 
             try {
                 const response = JSON.parse(line) as JsonRpcResponse;
+
+                if (this.debugDumpRpc) {
+                    this.logger.debug(`[Graphiti] RPC response: ${JSON.stringify(response, null, 2)}`);
+                }
+
                 const pending = this.pending.get(response.id);
                 if (pending) {
                     this.pending.delete(response.id);
@@ -184,6 +191,10 @@ export class GraphitiClient {
 
             const id = this.nextId++;
             const request: JsonRpcRequest = {jsonrpc: '2.0', id, method, params};
+
+            if (this.debugDumpRpc) {
+                this.logger.debug(`[Graphiti] RPC request: ${JSON.stringify(request, null, 2)}`);
+            }
 
             this.pending.set(id, {resolve, reject});
 

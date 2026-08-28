@@ -37,7 +37,8 @@ if (config.ai.graphiti) {
     const serverPath = join(process.cwd(), 'graphiti', 'server.py');
     graphiti = new GraphitiClient({
         serverPath,
-        uvPath: graphitiConfig.uv_path ?? 'uv'
+        uvPath: graphitiConfig.uv_path ?? 'uv',
+        debugDumpRpc: graphitiConfig.debug_dump_rpc ?? false
     });
     await graphiti.initialize({
         neo4j_uri: graphitiConfig.neo4j_uri,

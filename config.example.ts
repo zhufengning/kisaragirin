@@ -96,6 +96,7 @@ export const config: AppConfig = {
             memory_keyword: 'minimax-m3'
         },
         graphiti: {
+            debug_dump_rpc: false,
             neo4j_uri: 'bolt://127.0.0.1:7687',
             neo4j_user: 'neo4j',
             neo4j_password: 'password',
