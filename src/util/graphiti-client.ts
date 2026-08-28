@@ -155,12 +155,10 @@ export class GraphitiClient {
     private dumpRpcRequest (id: number, request: JsonRpcRequest): void {
         if (!this.debugDumpRpc || !this.debugPrefix) return;
 
-        const ts = new Date().toISOString()
-            .replace(/:/g, '-');
-        const dir = join('data', 'debug', this.debugPrefix, ts);
+        const dir = join('data', 'debug', this.debugPrefix, String(id));
         mkdirSync(dir, {recursive: true});
         writeFileSync(
-            join(dir, `rpc-request-${id}.json`),
+            join(dir, 'request.json'),
             JSON.stringify(request, null, 2),
             'utf-8'
         );
@@ -169,12 +167,10 @@ export class GraphitiClient {
     private dumpRpcResponse (id: number, response: JsonRpcResponse): void {
         if (!this.debugDumpRpc || !this.debugPrefix) return;
 
-        const ts = new Date().toISOString()
-            .replace(/:/g, '-');
-        const dir = join('data', 'debug', this.debugPrefix, ts);
+        const dir = join('data', 'debug', this.debugPrefix, String(id));
         mkdirSync(dir, {recursive: true});
         writeFileSync(
-            join(dir, `rpc-response-${id}.json`),
+            join(dir, 'response.json'),
             JSON.stringify(response, null, 2),
             'utf-8'
         );
@@ -274,6 +270,18 @@ export class GraphitiClient {
             num_results: numResults
         });
         return result as GraphitiSearchResult;
+    }
+
+    async searchNodes (query: string, groupId: string, numResults = 10): Promise<{
+        nodes: GraphitiNode[];
+        count: number;
+    }> {
+        const result = await this._call('search_nodes', {
+            query,
+            group_id: groupId,
+            num_results: numResults
+        });
+        return result as {nodes: GraphitiNode[]; count: number};
     }
 
     async getEdges (groupId: string, limit = 50, offset = 0): Promise<{

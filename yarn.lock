@@ -6187,6 +6187,11 @@ openai@^4.93.0:
     formdata-node "^4.3.2"
     node-fetch "^2.6.7"
 
+openai@^7.8.0:
+  version "7.8.0"
+  resolved "https://registry.yarnpkg.com/openai/-/openai-7.8.0.tgz#ee5be9e90702d75b3e24ec0d4ca8aaf9300eaaea"
+  integrity sha512-/2g9JzdnXNcjX1W/UlSNu+OdSFDAaAVt0n9Onom0kPenH54o59G2WrX/xjTnr26UHNSh6hxcAf58doGYRme2rw==
+
 optionator@^0.9.3:
   version "0.9.4"
   resolved "https://registry.yarnpkg.com/optionator/-/optionator-0.9.4.tgz#7ea1c1a5d91d764fb282139c88fe11e182a3a734"

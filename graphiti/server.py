@@ -451,6 +451,42 @@ async def handle_get_nodes(params: dict[str, Any]) -> Any:
     return {"label": label, "nodes": nodes, "total": total, "offset": offset, "limit": limit}
 
 
+async def handle_search_nodes(params: dict[str, Any]) -> Any:
+    """Search for entity nodes by name using Graphiti's node_fulltext_search API."""
+    if not state.initialized or state.graphiti is None:
+        raise RuntimeError("Server not initialized")
+
+    query: str = params["query"]
+    group_id: str = params["group_id"]
+    num_results: int = min(int(params.get("num_results", 10)), 50)
+
+    # 使用 Graphiti 的 node_fulltext_search API
+    from graphiti_core.search.search_utils import node_fulltext_search
+    from graphiti_core.search.search_filters import SearchFilters
+
+    search_filter = SearchFilters()
+    nodes = await node_fulltext_search(
+        driver=state.graphiti.driver,
+        query=query,
+        search_filter=search_filter,
+        group_ids=[group_id],
+        limit=num_results
+    )
+
+    # 序列化节点
+    serialized_nodes = []
+    for node in nodes:
+        serialized_nodes.append({
+            "uuid": str(node.uuid) if node.uuid else None,
+            "name": node.name,
+            "summary": node.summary,
+            "group_id": node.group_id,
+            "created_at": node.created_at.isoformat() if node.created_at else None,
+        })
+
+    return {"nodes": serialized_nodes, "count": len(serialized_nodes)}
+
+
 async def handle_get_subgraph(params: dict[str, Any]) -> Any:
     """Entity fact subgraph for a group: Entity nodes + fact RELATES_TO edges.
 
@@ -605,6 +641,7 @@ METHODS: dict[str, Any] = {
     "delete_edge": handle_delete_edge,
     "delete_group": handle_delete_group,
     "get_nodes": handle_get_nodes,
+    "search_nodes": handle_search_nodes,
     "get_subgraph": handle_get_subgraph,
     "get_neighbors": handle_get_neighbors,
     "shutdown": handle_shutdown,

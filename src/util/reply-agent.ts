@@ -17,6 +17,7 @@ import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './re
 import {createGraphitiTools} from './graphiti-tool';
 import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
+import OpenAI from 'openai';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
     return JSON.stringify(toolSchema, null, 2);
@@ -343,7 +344,10 @@ export class ReplyAgent {
         }));
     }
 
-    private async generateMemoryQuery (messagesText: string, existingMemories: string[]): Promise<string | null> {
+    private async generateMemoryQuery (
+        messagesText: string,
+        existingMemories: string[]
+    ): Promise<{queries: string[]; entities: string[]} | null> {
         if (!this.config.ai.assignments.memory_keyword) return null;
 
         try {
@@ -355,30 +359,28 @@ export class ReplyAgent {
                 .replace('{existing_memories}', existingBlock)
                 .replace('{messages}', messagesText);
 
-            const context: Context = {
-                messages: [{
-                    role: 'user',
-                    content: prompt,
-                    timestamp: Date.now()
-                }]
-            };
-
             // Debug dump memory query prompt
             if (this.config.input.debug_dump_prompt && this.debugPrefix) {
                 const dir = join('data', 'debug', this.debugPrefix);
                 mkdirSync(dir, {recursive: true});
                 writeFileSync(join(dir, 'memory-query-prompt.txt'), prompt, 'utf-8');
-                writeFileSync(
-                    join(dir, 'memory-query-context.json'),
-                    JSON.stringify(context, null, 2), 'utf-8');
                 this.logger.debug(
                     `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
                     `${this.debugPrefix}/memory-query-*`);
             }
 
-            const response = await this.models.completeSimple(modelEntry.model, context, {
+            // 使用 OpenAI SDK 调用模型
+            const client = new OpenAI({
                 apiKey: modelEntry.apiKey,
-                timeoutMs: 30000
+                baseURL: modelEntry.model.baseUrl
+            });
+
+            const response = await client.chat.completions.create({
+                model: modelEntry.model.id,
+                messages: [{role: 'user', content: prompt}],
+                response_format: {type: 'json_object'},
+                temperature: 0,
+                max_tokens: 1000
             });
 
             // Debug dump memory query response
@@ -390,26 +392,28 @@ export class ReplyAgent {
                     JSON.stringify(response, null, 2), 'utf-8');
             }
 
-            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-                this.logger.warn(
-                    `[ReplyAgent] [${this.groupId}] memory query generation failed: ` +
-                    `stopReason=${response.stopReason} error=${response.errorMessage ?? 'none'}`);
+            const text = response.choices[0]?.message?.content?.trim();
+            if (!text) {
+                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: empty response`);
                 return null;
             }
 
-            const text = response.content
-                .filter((c): c is Extract<typeof c, {type: 'text'}> => c.type === 'text')
-                .map(c => c.text)
-                .join('')
-                .trim();
+            try {
+                const parsed = JSON.parse(text);
+                const queries = Array.isArray(parsed.queries) ? parsed.queries.filter((q: unknown) => typeof q === 'string' && q.trim()) : [];
+                const entities = Array.isArray(parsed.entities) ? parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) : [];
 
-            if (!text || text.toUpperCase() === 'NONE') {
-                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: NONE (no search needed)`);
+                if (queries.length === 0 && entities.length === 0) {
+                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: no queries or entities`);
+                    return null;
+                }
+
+                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${queries.length} queries, ${entities.length} entities`);
+                return {queries, entities};
+            } catch {
+                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: invalid JSON`);
                 return null;
             }
-
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${text}`);
-            return text;
         } catch (err) {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] memory query generation error: ` +
@@ -418,30 +422,53 @@ export class ReplyAgent {
         }
     }
 
-    private async searchMemories (query: string): Promise<string[]> {
-        if (!this.graphiti || !query) return [];
+    private async searchMemories (queryParams: {queries: string[]; entities: string[]}): Promise<string[]> {
+        if (!this.graphiti) return [];
 
         const groupName = `group-${this.groupId}`;
+        const uniqueMemories = new Map<string, string | null>();
 
-        try {
-            const results = await this.graphiti.search(query, groupName, 10);
-            const uniqueMemories = new Map<string, string | null>();
-            for (const e of results.results) {
-                if (!uniqueMemories.has(e.fact)) {
-                    uniqueMemories.set(e.fact, e.valid_at);
+        // 搜索自然语言查询（事实）
+        for (const query of queryParams.queries) {
+            try {
+                const results = await this.graphiti.search(query, groupName, 5);
+                for (const e of results.results) {
+                    if (!uniqueMemories.has(e.fact)) {
+                        uniqueMemories.set(e.fact, e.valid_at);
+                    }
                 }
+            } catch (err) {
+                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for query "${query}":`, err);
             }
-
-            const sorted = Array.from(uniqueMemories.entries()).slice(0, 5);
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
-            return sorted.map(([fact, validAt]) => {
-                const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
-                return `- ${fact}${timeInfo}`;
-            });
-        } catch (err) {
-            this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for "${query}":`, err);
-            return [];
         }
+
+        // 搜索实体节点
+        for (const entity of queryParams.entities) {
+            try {
+                const nodeResults = await this.graphiti.searchNodes(entity, groupName, 3);
+                // 对于每个找到的实体，搜索相关的事实
+                for (const node of nodeResults.nodes) {
+                    if (node.uuid) {
+                        // 使用实体名称作为查询搜索相关事实
+                        const factResults = await this.graphiti.search(node.name, groupName, 3);
+                        for (const e of factResults.results) {
+                            if (!uniqueMemories.has(e.fact)) {
+                                uniqueMemories.set(e.fact, e.valid_at);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for entity "${entity}":`, err);
+            }
+        }
+
+        const sorted = Array.from(uniqueMemories.entries()).slice(0, 10);
+        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
+        return sorted.map(([fact, validAt]) => {
+            const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
+            return `- ${fact}${timeInfo}`;
+        });
     }
 
     /**
@@ -510,9 +537,9 @@ export class ReplyAgent {
 
         // 从最近 bot 回复中提取已有的记忆（去重），避免重复搜索
         const existingMemoryFacts = await this.extractExistingMemories();
-        const query = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
-        if (query) {
-            const memories = await this.searchMemories(query);
+        const queryParams = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
+        if (queryParams) {
+            const memories = await this.searchMemories(queryParams);
             if (memories.length > 0) {
                 userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
             }

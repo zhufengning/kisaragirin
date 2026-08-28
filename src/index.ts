@@ -12,10 +12,18 @@ import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
 import {GraphitiClient} from './util/graphiti-client';
 import {join} from 'node:path';
+import {rmSync, existsSync} from 'node:fs';
 
 configureLogger(config.log.level, config.log.file);
 applyPromptsOverrides(config.input.prompts);
 const logger = new Logger();
+
+// 启动时清理 debug dump 目录
+const debugDir = join(process.cwd(), 'data', 'debug');
+if (existsSync(debugDir)) {
+    rmSync(debugDir, {recursive: true, force: true});
+    logger.info('[Bot] cleaned debug dump directory');
+}
 
 registerCustomProviders(models, config);
 logger.debug('[Bot] registered providers from ai.models');
