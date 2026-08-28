@@ -80,7 +80,7 @@ export class Prompts {
     }
 
     replyIdentity (botName: string): string {
-        return `你是QQ群中的机器人，你的名字是${botName || '（暂无）'}。你使用自然、亲切的中文与群友交流。\n你遵循的规则：\n ${this.rules}\n`;
+        return `你是QQ群中的机器人，你的名字是${botName || '（暂无）'}。你使用中文与群友交流。\n你遵循的规则：\n ${this.rules}\n`;
     }
 }
 
