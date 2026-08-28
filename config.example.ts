@@ -91,7 +91,16 @@ export const config: AppConfig = {
         },
         assignments: {
             vision: 'minimax-m3',
+            // 简单字符串用法（直接指定模型）
             agent_harness: 'minimax-m3',
+            // 时段调度用法示例（按时段选择不同模型，支持跨日）
+            // agent_harness: {
+            //     slots: [
+            //         {start: '12:00', end: '14:00', model: 'minimax-m3'},
+            //         {start: '18:00', end: '09:00', model: 'minimax-m3'},  // 跨日：18:00 ~ 次日 09:00
+            //     ],
+            //     default: 'hermes'  // 其他时段
+            // },
             deep_research: 'hermes',
             memory_keyword: 'minimax-m3'
         },

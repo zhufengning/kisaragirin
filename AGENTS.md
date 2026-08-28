@@ -161,9 +161,10 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/index.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
-- `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
-- `ai.assignments.deep_research`：深度研究专用模型 assignment
-- `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
+- `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment（`string | ScheduledModelAssignment`）
+- `ai.assignments.deep_research`：深度研究专用模型 assignment（`string | ScheduledModelAssignment`）
+- `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文（`string | ScheduledModelAssignment`）
+- `ai.assignments` 所有字段均支持 `ScheduledModelAssignment` 时段调度：配置 `slots`（含 `start`/`end`/`model`，支持跨日如 `18:00→09:00`）和 `default`，运行时按当前时间匹配第一个命中的 slot 模型，未命中则用 default；也可直接用字符串指定单一模型
 - `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 

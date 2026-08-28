@@ -79,15 +79,33 @@ export interface GraphitiConfig {
     };
 }
 
+/** 单个时段模型配置 */
+export interface TimeSlot {
+    /** 起始时间 HH:mm（24h） */
+    start: string;
+    /** 结束时间 HH:mm（24h），支持跨日（如 start=18:00 end=09:00 表示 18:00 至次日 09:00） */
+    end: string;
+    /** 该时段使用的模型 assignment key（对应 ai.models 中的 key） */
+    model: string;
+}
+
+/** 时段模型调度配置 */
+export interface ScheduledModelAssignment {
+    /** 各时段模型配置，按数组顺序匹配，第一个命中的生效 */
+    slots: TimeSlot[];
+    /** 不在任何 slot 范围内时的默认模型 assignment key */
+    default: string;
+}
+
 export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
-        vision: string;
-        deep_research: string;
+        vision: string | ScheduledModelAssignment;
+        deep_research: string | ScheduledModelAssignment;
         /** Agent harness 模型 */
-        agent_harness: string;
+        agent_harness: string | ScheduledModelAssignment;
         /** 记忆关键词生成模型 */
-        memory_keyword?: string;
+        memory_keyword?: string | ScheduledModelAssignment;
     };
     graphiti?: GraphitiConfig;
 }

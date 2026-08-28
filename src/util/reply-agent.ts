@@ -12,7 +12,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {getOrCreateGroupSession} from './harness-factory';
-import {resolveModelEntry} from './models-factory';
+import {resolveAssignmentModel} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
 import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
@@ -169,7 +169,7 @@ export class ReplyAgent {
         const logger = new Logger();
         const {session, isNew} = await getOrCreateGroupSession(groupId, config, db);
 
-        const harnessEntry = resolveModelEntry(config, config.ai.assignments.agent_harness);
+        const harnessEntry = resolveAssignmentModel(config, config.ai.assignments.agent_harness);
         const env = new NodeExecutionEnv({cwd: process.cwd()});
 
         const agentRef: {current: ReplyAgent | null} = {current: null};
@@ -347,7 +347,7 @@ export class ReplyAgent {
         if (!this.config.ai.assignments.memory_keyword) return null;
 
         try {
-            const modelEntry = resolveModelEntry(this.config, this.config.ai.assignments.memory_keyword);
+            const modelEntry = resolveAssignmentModel(this.config, this.config.ai.assignments.memory_keyword);
             const existingBlock = existingMemories.length > 0 ?
                 existingMemories.join('\n') :
                 '（无）';
@@ -739,7 +739,7 @@ export class ReplyAgent {
     }
 
     private async doDeepResearch (topic: string): Promise<string> {
-        const modelEntry = resolveModelEntry(this.config, this.config.ai.assignments.deep_research);
+        const modelEntry = resolveAssignmentModel(this.config, this.config.ai.assignments.deep_research);
         this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch model=${modelEntry.model.name} topic=${topic}`);
 
         const context: Context = {

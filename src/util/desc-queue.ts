@@ -8,6 +8,7 @@ import {prompts} from '~/prompts';
 import {withRetry} from './agent-retry';
 import {preprocessImage} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
+import {resolveAssignmentModel} from './models-factory';
 
 /**
  * 单次 describe 的兜底超时（毫秒）。
@@ -53,7 +54,7 @@ export class DescQueue {
         this.db = db;
         this.logger = new Logger();
         this.concurrency = config.input.vision_concurrency;
-        const modelEntry = config.ai.models[config.ai.assignments.vision];
+        const modelEntry = resolveAssignmentModel(config, config.ai.assignments.vision);
         this.agents = Array.from({length: this.concurrency}, () => new Agent({
             initialState: {
                 systemPrompt: prompts.visionSystem,
