@@ -165,7 +165,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
 - `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
-- `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文，默认 `false`
+- `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
 

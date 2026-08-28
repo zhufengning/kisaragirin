@@ -365,15 +365,15 @@ export class ReplyAgent {
 
             // Debug dump memory query prompt
             if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-                const dir = join('data', 'debug');
+                const dir = join('data', 'debug', this.debugPrefix);
                 mkdirSync(dir, {recursive: true});
-                writeFileSync(join(dir, `${this.debugPrefix}-memory-query-prompt.txt`), prompt, 'utf-8');
+                writeFileSync(join(dir, 'memory-query-prompt.txt'), prompt, 'utf-8');
                 writeFileSync(
-                    join(dir, `${this.debugPrefix}-memory-query-context.json`),
+                    join(dir, 'memory-query-context.json'),
                     JSON.stringify(context, null, 2), 'utf-8');
                 this.logger.debug(
                     `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
-                    `${this.debugPrefix}-memory-query-*`);
+                    `${this.debugPrefix}/memory-query-*`);
             }
 
             const response = await this.models.completeSimple(modelEntry.model, context, {
@@ -383,10 +383,10 @@ export class ReplyAgent {
 
             // Debug dump memory query response
             if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-                const dir = join('data', 'debug');
+                const dir = join('data', 'debug', this.debugPrefix);
                 mkdirSync(dir, {recursive: true});
                 writeFileSync(
-                    join(dir, `${this.debugPrefix}-memory-query-response.json`),
+                    join(dir, 'memory-query-response.json'),
                     JSON.stringify(response, null, 2), 'utf-8');
             }
 
@@ -505,6 +505,9 @@ export class ReplyAgent {
         // 保存原始 userTexts（不包括记忆搜索结果），用于记忆添加
         const originalUserTexts = [...userTexts];
 
+        // 设置 debugPrefix，以便后续 dump 操作可以使用
+        this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
+
         // 从最近 bot 回复中提取已有的记忆（去重），避免重复搜索
         const existingMemoryFacts = await this.extractExistingMemories();
         const query = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
@@ -515,7 +518,6 @@ export class ReplyAgent {
             }
         }
 
-        this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
         this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
         for (let i = 0; i < userTexts.length; i++) {
             this.dumpUserMessage(this.debugPrefix, i, userTexts[i]);
@@ -823,32 +825,32 @@ export class ReplyAgent {
 
         const ts = new Date().toISOString()
             .replace(/:/g, '-');
-        return `${groupId}-${label}-${ts}`;
+        return `${groupId}/${label}/${ts}`;
     }
 
     private dumpSystemPrompt (prefix: string | undefined, systemPrompt: string): void {
         if (!prefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', prefix);
         mkdirSync(dir, {recursive: true});
-        writeFileSync(join(dir, `${prefix}-system.txt`), systemPrompt, 'utf-8');
+        writeFileSync(join(dir, 'system.txt'), systemPrompt, 'utf-8');
     }
 
     private dumpUserMessage (prefix: string | undefined, index: number, text: string): void {
         if (!prefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', prefix);
         mkdirSync(dir, {recursive: true});
-        writeFileSync(join(dir, `${prefix}-user-${index}.txt`), text, 'utf-8');
+        writeFileSync(join(dir, `user-${index}.txt`), text, 'utf-8');
     }
 
     private dumpOutput (prefix: string | undefined, assistant: AssistantMessage): void {
         if (!prefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', prefix);
         mkdirSync(dir, {recursive: true});
         writeFileSync(
-            join(dir, `${prefix}-output.json`),
+            join(dir, 'output.json'),
             JSON.stringify(assistant, null, 2),
             'utf-8'
         );
@@ -860,26 +862,26 @@ export class ReplyAgent {
         const debugPrefix = this.debugPrefix || this.createDebugPrefix(this.groupId, 'deep-research');
         if (!debugPrefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', debugPrefix);
         mkdirSync(dir, {recursive: true});
 
         if (context.systemPrompt) {
-            writeFileSync(join(dir, `${debugPrefix}-deep-research-system.txt`), context.systemPrompt, 'utf-8');
+            writeFileSync(join(dir, 'deep-research-system.txt'), context.systemPrompt, 'utf-8');
         }
         writeFileSync(
-            join(dir, `${debugPrefix}-deep-research-user.txt`),
+            join(dir, 'deep-research-user.txt'),
             context.messages.map(msg => stringifyMessageContent(msg.content)).join('\n\n'),
             'utf-8'
         );
         writeFileSync(
-            join(dir, `${debugPrefix}-deep-research-prompt.json`),
+            join(dir, 'deep-research-prompt.json'),
             JSON.stringify(context, null, 2),
             'utf-8'
         );
 
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] deep research prompt dumped to ` +
-            `${debugPrefix}-deep-research-*`);
+            `${debugPrefix}/deep-research-*`);
 
         return debugPrefix;
     }
@@ -887,15 +889,15 @@ export class ReplyAgent {
     private dumpDeepResearchPayload (prefix: string | undefined, payload: unknown): void {
         if (!this.config.input.debug_dump_prompt || !prefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', prefix);
         mkdirSync(dir, {recursive: true});
 
         const content = JSON.stringify(payload, null, 2);
-        writeFileSync(join(dir, `${prefix}-deep-research-payload.json`), content, 'utf-8');
+        writeFileSync(join(dir, 'deep-research-payload.json'), content, 'utf-8');
 
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] deep research provider payload dumped to ` +
-            `${prefix}-deep-research-payload.json (${content.length} chars)`);
+            `${prefix}/deep-research-payload.json (${content.length} chars)`);
     }
 
     private dumpDeepResearchConversation (
@@ -905,7 +907,7 @@ export class ReplyAgent {
     ): void {
         if (!this.config.input.debug_dump_prompt || !this.debugPrefix) return;
 
-        const dir = join('data', 'debug');
+        const dir = join('data', 'debug', this.debugPrefix);
         mkdirSync(dir, {recursive: true});
 
         const messages = response ? [...context.messages, response] : context.messages;
@@ -920,10 +922,10 @@ export class ReplyAgent {
             } : error
         }, null, 2);
 
-        writeFileSync(join(dir, `${this.debugPrefix}-deep-research-conversation.json`), content, 'utf-8');
+        writeFileSync(join(dir, 'deep-research-conversation.json'), content, 'utf-8');
 
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] deep research conversation dumped to ` +
-            `${this.debugPrefix}-deep-research-conversation.json (${content.length} chars)`);
+            `${this.debugPrefix}/deep-research-conversation.json (${content.length} chars)`);
     }
 }

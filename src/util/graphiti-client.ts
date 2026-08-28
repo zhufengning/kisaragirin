@@ -1,5 +1,6 @@
 import {type ChildProcess, spawn} from 'node:child_process';
-import {dirname} from 'node:path';
+import {dirname, join} from 'node:path';
+import {mkdirSync, writeFileSync} from 'node:fs';
 import {Logger} from '@lib/util/logger';
 
 export interface GraphitiEdge {
@@ -101,11 +102,13 @@ export class GraphitiClient {
     private ready = false;
     private initPromise: Promise<void> | null = null;
     private debugDumpRpc: boolean;
+    private debugPrefix?: string;
 
-    constructor (options: {serverPath: string; uvPath?: string; debugDumpRpc?: boolean}) {
+    constructor (options: {serverPath: string; uvPath?: string; debugDumpRpc?: boolean; debugPrefix?: string}) {
         this.serverPath = options.serverPath;
         this.uvPath = options.uvPath ?? 'uv';
         this.debugDumpRpc = options.debugDumpRpc ?? false;
+        this.debugPrefix = options.debugPrefix;
     }
 
     async initialize (config: GraphitiInitConfig): Promise<void> {
@@ -149,6 +152,30 @@ export class GraphitiClient {
         this.logger.info('[Graphiti] server initialized');
     }
 
+    private dumpRpcRequest (id: number, request: JsonRpcRequest): void {
+        if (!this.debugDumpRpc || !this.debugPrefix) return;
+
+        const dir = join('data', 'debug', this.debugPrefix);
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(
+            join(dir, `rpc-request-${id}.json`),
+            JSON.stringify(request, null, 2),
+            'utf-8'
+        );
+    }
+
+    private dumpRpcResponse (id: number, response: JsonRpcResponse): void {
+        if (!this.debugDumpRpc || !this.debugPrefix) return;
+
+        const dir = join('data', 'debug', this.debugPrefix);
+        mkdirSync(dir, {recursive: true});
+        writeFileSync(
+            join(dir, `rpc-response-${id}.json`),
+            JSON.stringify(response, null, 2),
+            'utf-8'
+        );
+    }
+
     private _processBuffer (): void {
         let newlineIdx: number;
         while ((newlineIdx = this.buffer.indexOf('\n')) !== -1) {
@@ -160,7 +187,7 @@ export class GraphitiClient {
                 const response = JSON.parse(line) as JsonRpcResponse;
 
                 if (this.debugDumpRpc) {
-                    this.logger.debug(`[Graphiti] RPC response: ${JSON.stringify(response, null, 2)}`);
+                    this.dumpRpcResponse(response.id, response);
                 }
 
                 const pending = this.pending.get(response.id);
@@ -193,7 +220,7 @@ export class GraphitiClient {
             const request: JsonRpcRequest = {jsonrpc: '2.0', id, method, params};
 
             if (this.debugDumpRpc) {
-                this.logger.debug(`[Graphiti] RPC request: ${JSON.stringify(request, null, 2)}`);
+                this.dumpRpcRequest(id, request);
             }
 
             this.pending.set(id, {resolve, reject});

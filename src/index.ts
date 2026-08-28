@@ -35,10 +35,15 @@ let graphiti: GraphitiClient | undefined;
 if (config.ai.graphiti) {
     const graphitiConfig = config.ai.graphiti;
     const serverPath = join(process.cwd(), 'graphiti', 'server.py');
+    const debugPrefix = graphitiConfig.debug_dump_rpc ?
+        `graphiti/${new Date().toISOString()
+            .replace(/:/g, '-')}` :
+        undefined;
     graphiti = new GraphitiClient({
         serverPath,
         uvPath: graphitiConfig.uv_path ?? 'uv',
-        debugDumpRpc: graphitiConfig.debug_dump_rpc ?? false
+        debugDumpRpc: graphitiConfig.debug_dump_rpc ?? false,
+        debugPrefix
     });
     await graphiti.initialize({
         neo4j_uri: graphitiConfig.neo4j_uri,
