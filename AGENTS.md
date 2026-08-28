@@ -124,7 +124,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 - **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `AgentHarness` 类
 - `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
-- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 自动创建：群消息接收时、bot 回复发送后、深度研究结果产生时）
+- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
@@ -164,7 +164,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment
 - `ai.assignments.deep_research`：深度研究专用模型 assignment
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文
-- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（群消息接收时、bot 回复发送后、深度研究结果产生时）
+- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
 
 - `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
 

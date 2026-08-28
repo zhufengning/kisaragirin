@@ -11,7 +11,6 @@ import {ScheduledTaskManager} from './util/scheduled-tasks';
 import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
 import {GraphitiClient} from './util/graphiti-client';
-import {addMessageEpisode} from './util/graphiti-episode';
 import {join} from 'node:path';
 
 configureLogger(config.log.level, config.log.file);
@@ -139,11 +138,6 @@ bot.on('message.group', async e => {
         .returning({id: schema.messages.id});
 
     logger.info(`[Bot] [${e.group_id}] msg ${stored.messageId} from ${stored.senderId} atBot=${stored.isAtBot}`);
-
-    // 异步创建 Graphiti 记忆（不阻塞后续流程）
-    if (graphiti) {
-        addMessageEpisode(graphiti, e.group_id, stored, sha => queue.resolve(sha));
-    }
 
     if (e.raw_message === 'Ciallo ～(∠・ω< )⌒★!') {
         await e.reply('Ciallo ～(∠・ω< )⌒★!');

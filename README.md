@@ -31,7 +31,7 @@ yarn web:build && yarn start
 - 支持按群配置定时任务触发
 - 采用两轮回复架构：第一轮即时回复，若需要则触发深度研究并给出第二轮回复
 - 新群的会话（harness session）创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
-- 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（群消息接收时、bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）
+- 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息提取关键词检索 Graphiti，将相关记忆注入上下文
 
 ## Web 面板

@@ -30,3 +30,37 @@ export function addMessageEpisode (
         logger.error(`[Graphiti] [${groupId}] failed to add episode:`, err);
     });
 }
+
+/**
+ * 将合并后的消息作为 episode 异步写入 Graphiti（fire-and-forget，内部捕获错误）。
+ * 用于触发回复时，将多条消息合并为一个 episode，内容与模型看到的 user message 一致。
+ */
+export function addMergedMessagesEpisode (
+    graphiti: GraphitiClient,
+    groupId: number,
+    mergedContent: string,
+    messageIds: number[]
+): void {
+    void (async () => {
+        const groupName = `group-${groupId}`;
+        const timestamp = new Date().toISOString();
+        // 使用第一条和最后一条消息 id 构建唯一 name
+        const firstId = messageIds[0] || 0;
+        const lastId = messageIds[messageIds.length - 1] || 0;
+        const name = `group_merged_${firstId}_${lastId}`;
+
+        await graphiti.addEpisode(groupName, {
+            name,
+            content: JSON.stringify({
+                content: mergedContent,
+                timestamp,
+                message_count: messageIds.length,
+                message_ids: messageIds
+            }),
+            source_description: `群聊 ${groupId} 合并消息`,
+            reference_time: timestamp
+        });
+    })().catch(err => {
+        logger.error(`[Graphiti] [${groupId}] failed to add merged messages episode:`, err);
+    });
+}

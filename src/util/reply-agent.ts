@@ -15,7 +15,7 @@ import {getOrCreateGroupSession} from './harness-factory';
 import {resolveModelEntry} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
-import {addMessageEpisode} from './graphiti-episode';
+import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
@@ -502,6 +502,9 @@ export class ReplyAgent {
 
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
 
+        // 保存原始 userTexts（不包括记忆搜索结果），用于记忆添加
+        const originalUserTexts = [...userTexts];
+
         // 从最近 bot 回复中提取已有的记忆（去重），避免重复搜索
         const existingMemoryFacts = await this.extractExistingMemories();
         const query = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
@@ -548,6 +551,13 @@ export class ReplyAgent {
         if (!params || params.messages.length === 0 || !params.messages.some(m => m.text.trim())) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
             return {text: [], requiresDeepResearch: false, failed: true, processedUpToId};
+        }
+
+        // 异步添加合并后的消息记忆（不阻塞回复流程）
+        if (this.graphiti) {
+            const mergedContent = originalUserTexts.join('\n');
+            const messageIds = latestMessages.map(m => m.id).filter((id): id is number => id !== undefined);
+            addMergedMessagesEpisode(this.graphiti, this.groupId, mergedContent, messageIds);
         }
 
         return {
