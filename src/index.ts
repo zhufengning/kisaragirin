@@ -36,8 +36,7 @@ if (config.ai.graphiti) {
     const graphitiConfig = config.ai.graphiti;
     const serverPath = join(process.cwd(), 'graphiti', 'server.py');
     const debugPrefix = graphitiConfig.debug_dump_rpc ?
-        `graphiti/${new Date().toISOString()
-            .replace(/:/g, '-')}` :
+        'graphiti' :
         undefined;
     graphiti = new GraphitiClient({
         serverPath,

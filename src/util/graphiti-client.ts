@@ -155,7 +155,9 @@ export class GraphitiClient {
     private dumpRpcRequest (id: number, request: JsonRpcRequest): void {
         if (!this.debugDumpRpc || !this.debugPrefix) return;
 
-        const dir = join('data', 'debug', this.debugPrefix);
+        const ts = new Date().toISOString()
+            .replace(/:/g, '-');
+        const dir = join('data', 'debug', this.debugPrefix, ts);
         mkdirSync(dir, {recursive: true});
         writeFileSync(
             join(dir, `rpc-request-${id}.json`),
@@ -167,7 +169,9 @@ export class GraphitiClient {
     private dumpRpcResponse (id: number, response: JsonRpcResponse): void {
         if (!this.debugDumpRpc || !this.debugPrefix) return;
 
-        const dir = join('data', 'debug', this.debugPrefix);
+        const ts = new Date().toISOString()
+            .replace(/:/g, '-');
+        const dir = join('data', 'debug', this.debugPrefix, ts);
         mkdirSync(dir, {recursive: true});
         writeFileSync(
             join(dir, `rpc-response-${id}.json`),
