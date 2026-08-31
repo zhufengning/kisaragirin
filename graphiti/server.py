@@ -35,6 +35,7 @@ from graphiti_core.llm_client import client as llm_client
 import graphiti_core.llm_client.openai_generic_client as _ogc
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from openai import AsyncOpenAI
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 
@@ -64,6 +65,29 @@ def apply_language_override() -> None:
     """覆写 graphiti-core 的语言指令扩展点（含 openai_generic_client 的按名绑定）。"""
     llm_client.get_extraction_language_instruction = _chinese_language_instruction
     _ogc.get_extraction_language_instruction = _chinese_language_instruction
+
+
+# ---------------------------------------------------------------------------
+# Thinking 开关
+# ---------------------------------------------------------------------------
+# 部分 OpenAI 兼容端点默认开启深度思考：思考链与回答共享 max_tokens 额度，
+# 思考过长会截断 JSON 输出（触发重试），且每轮调用延迟显著增加。
+# 这类端点通常支持通过 extra_body 传入 {"thinking": {"type": "disabled"}} 关闭。
+# graphiti-core 的 OpenAIGenericClient 不支持 extra_body，这里在 AsyncOpenAI
+# 资源实例上打补丁（chat/completions 为 cached_property，实例属性赋值生效）。
+
+
+def _wrap_disable_thinking(client: AsyncOpenAI) -> None:
+    """给 AsyncOpenAI 客户端的 chat.completions.create 注入 thinking=disabled。"""
+    original_create = client.chat.completions.create
+
+    async def create_with_thinking_disabled(*args: Any, **kwargs: Any) -> Any:
+        extra_body = dict(kwargs.get('extra_body') or {})
+        extra_body.setdefault('thinking', {'type': 'disabled'})
+        kwargs['extra_body'] = extra_body
+        return await original_create(*args, **kwargs)
+
+    client.chat.completions.create = create_with_thinking_disabled  # type: ignore[method-assign]
 
 
 # ---------------------------------------------------------------------------
@@ -161,15 +185,25 @@ async def handle_initialize(params: dict[str, Any]) -> Any:
 
     # LLM config
     llm_cfg = params.get("llm", {})
+    llm_max_tokens: int = llm_cfg.get("max_tokens", 16384)
     llm_config = LLMConfig(
         api_key=llm_cfg.get("api_key", ""),
         model=llm_cfg.get("model", "gpt-4o-mini"),
         small_model=llm_cfg.get("small_model", llm_cfg.get("model", "gpt-4o-mini")),
         base_url=llm_cfg.get("base_url"),
         temperature=llm_cfg.get("temperature", 0),
-        max_tokens=llm_cfg.get("max_tokens", 8192),
+        max_tokens=llm_max_tokens,
     )
-    llm_client = OpenAIGenericClient(config=llm_config)
+    openai_client = AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.base_url)
+    if llm_cfg.get("disable_thinking", False):
+        _wrap_disable_thinking(openai_client)
+    # 注意：OpenAIGenericClient 构造函数的 max_tokens 参数会覆盖 LLMConfig 中的
+    # 同名配置，必须显式透传，否则静默回落到库默认的 16384
+    llm_client = OpenAIGenericClient(
+        config=llm_config,
+        client=openai_client,
+        max_tokens=llm_max_tokens,
+    )
 
     # Embedder config
     emb_cfg = params.get("embedder", {})

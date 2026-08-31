@@ -112,7 +112,9 @@ export const config: AppConfig = {
             llm: {
                 api_key: MINIMAX_KEY,
                 model: 'MiniMax-M3',
-                base_url: 'https://api.minimaxi.com/anthropic/v1'
+                base_url: 'https://api.minimaxi.com/anthropic/v1',
+                // 所用模型/端点默认开启深度思考时设为 true，注入 thinking=disabled
+                disable_thinking: false
             },
             embedder: {
                 api_key: '',

@@ -65,6 +65,8 @@ export interface GraphitiConfig {
         base_url?: string;
         temperature?: number;
         max_tokens?: number;
+        /** 所用模型/端点默认开启深度思考时设为 true，注入 thinking=disabled，默认 false */
+        disable_thinking?: boolean;
     };
     embedder: {
         api_key: string;

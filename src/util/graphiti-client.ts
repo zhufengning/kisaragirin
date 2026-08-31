@@ -58,6 +58,7 @@ export interface GraphitiInitConfig {
         base_url?: string;
         temperature?: number;
         max_tokens?: number;
+        disable_thinking?: boolean;
     };
     embedder: {
         api_key: string;
