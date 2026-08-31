@@ -133,6 +133,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
 - **失败回退**：@触发第一轮失败返回 `@响应失败`，闲时触发则静默失败；深度研究第二轮失败时，引用第一轮即时回复消息并回复 `深度研究失败`（所有触发类型）
+- **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`generateFirstTurn` 返回 `noop: true`，静默跳过不发送失败回退
 - 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
 - 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息

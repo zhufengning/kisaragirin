@@ -109,6 +109,8 @@ export interface FirstTurnResult {
     requiresDeepResearch: boolean;
     deepResearchTopic?: string;
     failed?: boolean;
+    /** 无新消息可处理（已被前序任务吸收），调用方应静默跳过，不视为失败 */
+    noop?: boolean;
     /** 已写入 harness session 的最大数据库消息 id，失败时用于推进 lastTriggerId 避免重复发送 */
     processedUpToId?: number;
 }
@@ -524,7 +526,9 @@ export class ReplyAgent {
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
 
         if (userTexts.length === 0) {
-            return {text: [], requiresDeepResearch: false, failed: true};
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] no new messages to process, skipping (noop)`);
+            return {text: [], requiresDeepResearch: false, noop: true};
         }
 
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
@@ -647,6 +651,9 @@ export class ReplyAgent {
 
     async generateReply (task: ReplyTask): Promise<GenerateReplyResult> {
         const first = await this.generateFirstTurn(task);
+        if (first.noop) {
+            return {turns: []};
+        }
         if (first.failed || first.text.length === 0) {
             return {turns: first.failed ? [{text: this.taskType === 'at' ? [{text: '@响应失败'}] : []}] : [], failed: true};
         }

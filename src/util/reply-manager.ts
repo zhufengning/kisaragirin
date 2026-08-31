@@ -333,6 +333,12 @@ export class GroupReplyManager {
         }
 
         const firstTurn = await agent.generateFirstTurn(task);
+        // 无新消息：触发消息已被队列中前序任务吸收进其 prompt，静默跳过
+        if (firstTurn.noop) {
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] task msg=${task.triggerMessageId} has no new messages, skipped`);
+            return;
+        }
         if (firstTurn.failed || firstTurn.text.length === 0) {
             if (firstTurn.processedUpToId) {
                 this.logger.info(
