@@ -100,6 +100,8 @@ function stringifyMessageContent (content: Context['messages'][number]['content'
 export interface ReplyTurn {
     text: ReplyMessageItem[];
     isDeepResearchFinal?: boolean;
+    /** 本轮失败（发送的是兜底文案） */
+    failed?: boolean;
     /** 本轮实际读入 prompt 的最大数据库消息 id，用于推进 lastTriggerId */
     processedUpToId?: number;
 }
@@ -381,8 +383,7 @@ export class ReplyAgent {
                 model: modelEntry.model.id,
                 messages: [{role: 'user', content: prompt}],
                 response_format: {type: 'json_object'},
-                temperature: 0,
-                max_tokens: 1000
+                temperature: 0
             });
 
             // Debug dump memory query response
@@ -604,11 +605,16 @@ export class ReplyAgent {
 
     async generateFinalTurn (task: ReplyTask, topic: string, lastTriggerId: number): Promise<ReplyTurn> {
         const researchTopic = topic.trim() || String(task.triggerMessage);
+        let researchSuccess = false;
         try {
-            await this.doDeepResearchWithSystemMessages(researchTopic);
+            const research = await this.doDeepResearchWithSystemMessages(researchTopic);
+            researchSuccess = research.success;
         } catch (err) {
             this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
         }
+        const fallbackText = researchSuccess ?
+            prompts.deepResearchFinalFailedFallback :
+            prompts.deepResearchFailedFallback;
 
         const latestMessages = await this.fetchMessagesSince(lastTriggerId);
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
@@ -635,7 +641,7 @@ export class ReplyAgent {
             this.logger.error(
                 `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
                 `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
-            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true, processedUpToId};
+            return {text: [{text: fallbackText}], isDeepResearchFinal: true, failed: true, processedUpToId};
         }
 
         this.dumpOutput(this.debugPrefix, finalAssistant);
@@ -643,7 +649,7 @@ export class ReplyAgent {
         const finalParams = this.getReplyToolParams();
         if (!finalParams || finalParams.messages.length === 0 || !finalParams.messages.some(m => m.text.trim())) {
             this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
-            return {text: [{text: '深度研究失败'}], isDeepResearchFinal: true, processedUpToId};
+            return {text: [{text: fallbackText}], isDeepResearchFinal: true, failed: true, processedUpToId};
         }
 
         return {text: finalParams.messages, isDeepResearchFinal: true, processedUpToId};
@@ -666,13 +672,15 @@ export class ReplyAgent {
         const topic = first.deepResearchTopic || first.text.map(m => m.text).join('');
         const finalTurn = await this.generateFinalTurn(task, topic, task.lastTriggerId ?? 0);
         turns.push(finalTurn);
-        const finalFailed = finalTurn.text.length === 0 || finalTurn.text.every(m => !m.text.trim());
-        return {turns, failed: finalFailed || finalTurn.text.some(m => m.text === '深度研究失败')};
+        const finalFailed = finalTurn.failed === true || finalTurn.text.length === 0 ||
+            finalTurn.text.every(m => !m.text.trim());
+        return {turns, failed: finalFailed};
     }
 
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
         let assistant: AssistantMessage | undefined;
         const MAX_REMINDERS = 2;
+        let lastWasError = false;
 
         for (let i = 0; i <= MAX_REMINDERS; i++) {
             this.lastReplyToolParams = null;
@@ -681,7 +689,8 @@ export class ReplyAgent {
             } else {
                 this.logger.info(
                     `[ReplyAgent] [${this.groupId}] sending reminder ${i}/${MAX_REMINDERS}...`);
-                assistant = await this.harness.prompt(prompts.replyReminder());
+                assistant = await this.harness.prompt(
+                    lastWasError ? prompts.replyErrorReminder() : prompts.replyReminder());
             }
 
             if (!assistant) {
@@ -689,8 +698,14 @@ export class ReplyAgent {
             }
             this.logger.info(`[ReplyAgent] [${this.groupId}] turn usage: ${formatUsage(assistant.usage)}`);
             if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
-                return assistant;
+                // API 错误同样进入 reminder 重试（最多 MAX_REMINDERS 次）
+                this.logger.warn(
+                    `[ReplyAgent] [${this.groupId}] turn error ` +
+                    `(stopReason=${assistant.stopReason}): ${assistant.errorMessage ?? 'unknown'}`);
+                lastWasError = true;
+                continue;
             }
+            lastWasError = false;
             if (this.getReplyToolParams()?.messages.some(m => m.text.trim())) {
                 return assistant;
             }
@@ -706,7 +721,7 @@ export class ReplyAgent {
         return {turns: [], failed: true};
     }
 
-    private async doDeepResearchWithSystemMessages (topic: string): Promise<string> {
+    private async doDeepResearchWithSystemMessages (topic: string): Promise<{result: string; success: boolean}> {
         const researchTopic = topic.trim();
         const startTime = Math.floor(Date.now() / 1000);
         const startText = `开始深度研究：${researchTopic}`;
@@ -769,7 +784,7 @@ export class ReplyAgent {
                 `text=${endMsg.slice(0, 50)}${endMsg.length > 50 ? '...' : ''}`);
         }
 
-        return researchResult;
+        return {result: researchResult, success: researchError === undefined};
     }
 
     private async doDeepResearch (topic: string): Promise<string> {

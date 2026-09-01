@@ -130,9 +130,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
-- 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）
-- **API 错误处理**：当模型返回 `stopReason='error'` 时，直接按该轮失败处理，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
-- **失败回退**：@触发第一轮失败返回 `@响应失败`，闲时触发则静默失败；深度研究第二轮失败时，引用第一轮即时回复消息并回复 `深度研究失败`（所有触发类型）
+- 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
+- **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
+- **失败回退**：@触发第一轮失败返回 `@响应失败`，闲时触发则静默失败；深度研究第二轮失败时，引用第一轮即时回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但最终回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
 - **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`generateFirstTurn` 返回 `noop: true`，静默跳过不发送失败回退
 - 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考

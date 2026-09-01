@@ -75,6 +75,17 @@ export class Prompts {
         return '未检测到有效reply工具调用，回复失败。请使用 reply 工具进行回复。';
     }
 
+    /** API 错误（stopReason='error'/'aborted'）后重新引导的提示词 */
+    replyErrorReminder (): string {
+        return '刚才的回复因 API 错误失败。请重试，使用 reply 工具进行回复。';
+    }
+
+    /** 深度研究本身失败时第二轮的兜底回复 */
+    deepResearchFailedFallback = '深度研究失败';
+
+    /** 深度研究已成功、但最终回复生成失败时第二轮的兜底回复 */
+    deepResearchFinalFailedFallback = '回复生成失败';
+
     visionAnimated (totalFrames: number, extractedFrames: number): string {
         return `这是一张动图，共 ${totalFrames} 帧，以下展示其中 ${extractedFrames} 个关键帧。请描述这张动图的整体内容、动作和变化。\n请描述这张图片`;
     }
