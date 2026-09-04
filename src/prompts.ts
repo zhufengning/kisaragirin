@@ -44,6 +44,7 @@ export class Prompts {
   - "entities": 实体名称数组，用于搜索相关人物、事物（如"小明"、"Python"、"特斯拉"）
 - 两个字段都可以是空数组、单个元素或多个元素
 - 如果当前对话是闲聊、寒暄、或已有记忆已足够覆盖，不需要额外检索，则两个字段都设为空数组
+- 不要搜索在最近的10条聊天记录中理应存在的上下文
 
 已检索到的记忆（如有）：
 {existing_memories}
@@ -77,14 +78,14 @@ export class Prompts {
 
     /** API 错误（stopReason='error'/'aborted'）后重新引导的提示词 */
     replyErrorReminder (): string {
-        return '刚才的回复因 API 错误失败。请重试，使用 reply 工具进行回复。';
+        return '使用 reply 工具进行回复。';
     }
 
     /** 深度研究本身失败时第二轮的兜底回复 */
     deepResearchFailedFallback = '深度研究失败';
 
     /** 深度研究已成功、但最终回复生成失败时第二轮的兜底回复 */
-    deepResearchFinalFailedFallback = '回复生成失败';
+    deepResearchFinalFailedFallback = '深度研究后回复生成失败';
 
     visionAnimated (totalFrames: number, extractedFrames: number): string {
         return `这是一张动图，共 ${totalFrames} 帧，以下展示其中 ${extractedFrames} 个关键帧。请描述这张动图的整体内容、动作和变化。\n请描述这张图片`;

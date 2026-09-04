@@ -110,6 +110,11 @@ export interface AiConfig {
         memory_keyword?: string | ScheduledModelAssignment;
     };
     graphiti?: GraphitiConfig;
+    /** 记忆关键词生成模型的额外配置 */
+    memoryKeyword?: {
+        /** 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled，默认 false */
+        disable_thinking?: boolean;
+    };
 }
 
 export interface AppConfig {

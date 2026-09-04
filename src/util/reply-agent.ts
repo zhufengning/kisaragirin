@@ -379,12 +379,21 @@ export class ReplyAgent {
                 baseURL: modelEntry.model.baseUrl
             });
 
-            const response = await client.chat.completions.create({
+            const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
+            if (disableThinking) {
+                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: disable thinking`);
+            }
+
+            const completionBody: any = {
                 model: modelEntry.model.id,
                 messages: [{role: 'user', content: prompt}],
                 response_format: {type: 'json_object'},
                 temperature: 0
-            });
+            };
+            if (disableThinking) {
+                completionBody.thinking = {type: 'disabled'};
+            }
+            const response: any = await client.chat.completions.create(completionBody);
 
             // Debug dump memory query response
             if (this.config.input.debug_dump_prompt && this.debugPrefix) {
@@ -511,6 +520,17 @@ export class ReplyAgent {
 
     private getReplyToolParams (): ReplyToolParams | null {
         return this.lastReplyToolParams;
+    }
+
+    private async syncHarnessModel (): Promise<void> {
+        const entry = resolveAssignmentModel(this.config, this.config.ai.assignments.agent_harness);
+        const current = this.harness.getModel();
+        if (current.id !== entry.model.id) {
+            await this.harness.setModel(entry.model);
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] harness model switched ` +
+                `from ${current.id} to ${entry.model.id}`);
+        }
     }
 
     async generateFirstTurn (task: ReplyTask): Promise<FirstTurnResult> {
@@ -683,6 +703,7 @@ export class ReplyAgent {
         let lastWasError = false;
 
         for (let i = 0; i <= MAX_REMINDERS; i++) {
+            await this.syncHarnessModel();
             this.lastReplyToolParams = null;
             if (i === 0) {
                 assistant = await this.harness.prompt(lastText);

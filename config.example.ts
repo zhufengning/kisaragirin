@@ -104,6 +104,11 @@ export const config: AppConfig = {
             deep_research: 'hermes',
             memory_keyword: 'minimax-m3'
         },
+        /** 记忆关键词生成模型配置 */
+        memoryKeyword: {
+            // 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled
+            disable_thinking: false
+        },
         graphiti: {
             debug_dump_rpc: false,
             neo4j_uri: 'bolt://127.0.0.1:7687',
