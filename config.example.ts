@@ -93,13 +93,15 @@ export const config: AppConfig = {
             vision: 'minimax-m3',
             // 简单字符串用法（直接指定模型）
             agent_harness: 'minimax-m3',
+            // 元组用法：API 错误时按数组顺序回退到下一个模型
+            // agent_harness: ['minimax-m3', 'hermes'],
             // 时段调度用法示例（按时段选择不同模型，支持跨日）
             // agent_harness: {
             //     slots: [
-            //         {start: '12:00', end: '14:00', model: 'minimax-m3'},
+            //         {start: '12:00', end: '14:00', model: ['minimax-m3', 'hermes']},  // slot 也支持元组回退
             //         {start: '18:00', end: '09:00', model: 'minimax-m3'},  // 跨日：18:00 ~ 次日 09:00
             //     ],
-            //     default: 'hermes'  // 其他时段
+            //     default: ['hermes', 'minimax-m3']  // default 也支持元组回退
             // },
             deep_research: 'hermes',
             memory_keyword: 'minimax-m3'

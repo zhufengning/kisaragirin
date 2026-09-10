@@ -35,6 +35,33 @@ yarn web:build && yarn start
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息提取关键词检索 Graphiti，将相关记忆注入上下文
 - 可通过 `ai.memoryKeyword.disable_thinking` 禁用记忆关键词生成模型的深度思考
 
+## 模型 Assignment 配置
+
+`config.ts` 的 `ai.assignments` 各字段（`agent_harness` / `deep_research` / `vision` / `memory_keyword`）支持三种写法：
+
+```typescript
+assignments: {
+    // 1. 简单字符串：直接指定 ai.models 中的 key
+    agent_harness: 'minimax-m3',
+
+    // 2. 元组：API 错误时按数组顺序依次回退到下一个模型
+    agent_harness: ['minimax-m3', 'hermes'],
+
+    // 3. 时段调度：按当前时间匹配 slot（支持跨日），slot.model 和 default 也支持元组回退
+    agent_harness: {
+        slots: [
+            {start: '12:00', end: '14:00', model: ['minimax-m3', 'hermes']},
+            {start: '18:00', end: '09:00', model: 'minimax-m3'},  // 跨日：18:00 ~ 次日 09:00
+        ],
+        default: ['hermes', 'minimax-m3'],
+    },
+}
+```
+
+- 回退触发条件：API 错误（`stopReason='error'/'aborted'`、网络错误、限流等）。模型正常返回但内容不合规（未调用 reply 工具等）不触发模型回退，仍走原有 reminder 重试
+- harness 回复中模型回退不消耗 reminder 额度；回退链全部失败后才进入原有 reminder 重试（最多 2 次）
+- 每次触发回复时会重新解析 assignment（时段调度随时间生效）；回退只影响当次调用，下次触发仍从链首模型开始
+
 ## Web 面板
 
 访问 `http://<host>:<port>`（由 `config.web` 配置）：

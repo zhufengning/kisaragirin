@@ -2,7 +2,7 @@ import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@ea
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
 import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
-import type {AppConfig} from '~/config';
+import type {AppConfig, ModelEntry} from '~/config';
 import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
@@ -12,7 +12,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {getOrCreateGroupSession} from './harness-factory';
-import {resolveAssignmentModel} from './models-factory';
+import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
 import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
@@ -174,7 +174,7 @@ export class ReplyAgent {
         const logger = new Logger();
         const {session, isNew} = await getOrCreateGroupSession(groupId, config, db);
 
-        const harnessEntry = resolveAssignmentModel(config, config.ai.assignments.agent_harness);
+        const harnessEntry = resolveAssignmentModels(config, config.ai.assignments.agent_harness)[0];
         const env = new NodeExecutionEnv({cwd: process.cwd()});
 
         const agentRef: {current: ReplyAgent | null} = {current: null};
@@ -354,84 +354,94 @@ export class ReplyAgent {
     ): Promise<{queries: string[]; entities: string[]} | null> {
         if (!this.config.ai.assignments.memory_keyword) return null;
 
-        try {
-            const modelEntry = resolveAssignmentModel(this.config, this.config.ai.assignments.memory_keyword);
-            const existingBlock = existingMemories.length > 0 ?
-                existingMemories.join('\n') :
-                '（无）';
-            const prompt = prompts.memoryQueryPrompt
-                .replace('{existing_memories}', existingBlock)
-                .replace('{messages}', messagesText);
+        const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.memory_keyword);
+        const existingBlock = existingMemories.length > 0 ?
+            existingMemories.join('\n') :
+            '（无）';
+        const prompt = prompts.memoryQueryPrompt
+            .replace('{existing_memories}', existingBlock)
+            .replace('{messages}', messagesText);
 
-            // Debug dump memory query prompt
-            if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-                const dir = join('data', 'debug', this.debugPrefix);
-                mkdirSync(dir, {recursive: true});
-                writeFileSync(join(dir, 'memory-query-prompt.txt'), prompt, 'utf-8');
-                this.logger.debug(
-                    `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
-                    `${this.debugPrefix}/memory-query-*`);
-            }
+        // Debug dump memory query prompt
+        if (this.config.input.debug_dump_prompt && this.debugPrefix) {
+            const dir = join('data', 'debug', this.debugPrefix);
+            mkdirSync(dir, {recursive: true});
+            writeFileSync(join(dir, 'memory-query-prompt.txt'), prompt, 'utf-8');
+            this.logger.debug(
+                `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
+                `${this.debugPrefix}/memory-query-*`);
+        }
 
-            // 使用 OpenAI SDK 调用模型
-            const client = new OpenAI({
-                apiKey: modelEntry.apiKey,
-                baseURL: modelEntry.model.baseUrl
-            });
+        const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
+        if (disableThinking) {
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: disable thinking`);
+        }
 
-            const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
-            if (disableThinking) {
-                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: disable thinking`);
-            }
-
-            const completionBody: any = {
-                model: modelEntry.model.id,
-                messages: [{role: 'user', content: prompt}],
-                response_format: {type: 'json_object'},
-                temperature: 0
-            };
-            if (disableThinking) {
-                completionBody.thinking = {type: 'disabled'};
-            }
-            const response: any = await client.chat.completions.create(completionBody);
-
-            // Debug dump memory query response
-            if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-                const dir = join('data', 'debug', this.debugPrefix);
-                mkdirSync(dir, {recursive: true});
-                writeFileSync(
-                    join(dir, 'memory-query-response.json'),
-                    JSON.stringify(response, null, 2), 'utf-8');
-            }
-
-            const text = response.choices[0]?.message?.content?.trim();
-            if (!text) {
-                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: empty response`);
-                return null;
-            }
-
+        // 按回退链依次尝试：API 错误时切换下一个模型
+        for (const [index, modelEntry] of modelEntries.entries()) {
             try {
-                const parsed = JSON.parse(text);
-                const queries = Array.isArray(parsed.queries) ? parsed.queries.filter((q: unknown) => typeof q === 'string' && q.trim()) : [];
-                const entities = Array.isArray(parsed.entities) ? parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) : [];
+                // 使用 OpenAI SDK 调用模型
+                const client = new OpenAI({
+                    apiKey: modelEntry.apiKey,
+                    baseURL: modelEntry.model.baseUrl
+                });
 
-                if (queries.length === 0 && entities.length === 0) {
-                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: no queries or entities`);
+                const completionBody: any = {
+                    model: modelEntry.model.id,
+                    messages: [{role: 'user', content: prompt}],
+                    response_format: {type: 'json_object'},
+                    temperature: 0
+                };
+                if (disableThinking) {
+                    completionBody.thinking = {type: 'disabled'};
+                }
+                const response: any = await client.chat.completions.create(completionBody);
+
+                // Debug dump memory query response
+                if (this.config.input.debug_dump_prompt && this.debugPrefix) {
+                    const dir = join('data', 'debug', this.debugPrefix);
+                    mkdirSync(dir, {recursive: true});
+                    writeFileSync(
+                        join(dir, 'memory-query-response.json'),
+                        JSON.stringify(response, null, 2), 'utf-8');
+                }
+
+                const text = response.choices[0]?.message?.content?.trim();
+                if (!text) {
+                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: empty response`);
                     return null;
                 }
 
-                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${queries.length} queries, ${entities.length} entities`);
-                return {queries, entities};
-            } catch {
-                this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: invalid JSON`);
-                return null;
+                try {
+                    const parsed = JSON.parse(text);
+                    const queries = Array.isArray(parsed.queries) ? parsed.queries.filter((q: unknown) => typeof q === 'string' && q.trim()) : [];
+                    const entities = Array.isArray(parsed.entities) ? parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) : [];
+
+                    if (queries.length === 0 && entities.length === 0) {
+                        this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: no queries or entities`);
+                        return null;
+                    }
+
+                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${queries.length} queries, ${entities.length} entities`);
+                    return {queries, entities};
+                } catch {
+                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: invalid JSON`);
+                    return null;
+                }
+            } catch (err) {
+                this.logger.error(
+                    `[ReplyAgent] [${this.groupId}] memory query generation error ` +
+                    `(model=${modelEntry.model.id}): ` +
+                    `${err instanceof Error ? err.message : String(err)}`);
+                if (index < modelEntries.length - 1) {
+                    this.logger.warn(
+                        `[ReplyAgent] [${this.groupId}] memory query falling back to model ${
+                            modelEntries[index + 1].model.id}`);
+                }
             }
-        } catch (err) {
-            this.logger.error(
-                `[ReplyAgent] [${this.groupId}] memory query generation error: ` +
-                `${err instanceof Error ? err.message : String(err)}`);
-            return null;
         }
+
+        return null;
     }
 
     private async searchMemories (queryParams: {queries: string[]; entities: string[]}): Promise<string[]> {
@@ -522,8 +532,7 @@ export class ReplyAgent {
         return this.lastReplyToolParams;
     }
 
-    private async syncHarnessModel (): Promise<void> {
-        const entry = resolveAssignmentModel(this.config, this.config.ai.assignments.agent_harness);
+    private async syncHarnessModel (entry: ModelEntry): Promise<void> {
         const current = this.harness.getModel();
         if (current.id !== entry.model.id) {
             await this.harness.setModel(entry.model);
@@ -702,8 +711,12 @@ export class ReplyAgent {
         const MAX_REMINDERS = 2;
         let lastWasError = false;
 
+        // 回退链：API 错误时按配置顺序切换到下一个模型
+        const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.agent_harness);
+        let fallbackIndex = 0;
+
         for (let i = 0; i <= MAX_REMINDERS; i++) {
-            await this.syncHarnessModel();
+            await this.syncHarnessModel(modelEntries[fallbackIndex]);
             this.lastReplyToolParams = null;
             if (i === 0) {
                 assistant = await this.harness.prompt(lastText);
@@ -719,7 +732,17 @@ export class ReplyAgent {
             }
             this.logger.info(`[ReplyAgent] [${this.groupId}] turn usage: ${formatUsage(assistant.usage)}`);
             if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
-                // API 错误同样进入 reminder 重试（最多 MAX_REMINDERS 次）
+                // 优先按回退链切换模型重试（不消耗 reminder 额度）；链耗尽后进入 reminder 重试（最多 MAX_REMINDERS 次）
+                if (fallbackIndex < modelEntries.length - 1) {
+                    fallbackIndex++;
+                    this.logger.warn(
+                        `[ReplyAgent] [${this.groupId}] turn error ` +
+                        `(stopReason=${assistant.stopReason}): ${assistant.errorMessage ?? 'unknown'}; ` +
+                        `falling back to model ${modelEntries[fallbackIndex].model.id}`);
+                    lastWasError = true;
+                    i--;
+                    continue;
+                }
                 this.logger.warn(
                     `[ReplyAgent] [${this.groupId}] turn error ` +
                     `(stopReason=${assistant.stopReason}): ${assistant.errorMessage ?? 'unknown'}`);
@@ -809,7 +832,30 @@ export class ReplyAgent {
     }
 
     private async doDeepResearch (topic: string): Promise<string> {
-        const modelEntry = resolveAssignmentModel(this.config, this.config.ai.assignments.deep_research);
+        // 按回退链依次尝试：API 错误时切换下一个模型
+        const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.deep_research);
+
+        let lastError: unknown;
+        for (const [index, modelEntry] of modelEntries.entries()) {
+            try {
+                return await this.completeDeepResearch(modelEntry, topic);
+            } catch (err) {
+                lastError = err;
+                this.logger.error(
+                    `[ReplyAgent] [${this.groupId}] deep research failed ` +
+                    `(model=${modelEntry.model.id}):`, err);
+                if (index < modelEntries.length - 1) {
+                    this.logger.warn(
+                        `[ReplyAgent] [${this.groupId}] deep research falling back to model ${
+                            modelEntries[index + 1].model.id}`);
+                }
+            }
+        }
+
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+
+    private async completeDeepResearch (modelEntry: ModelEntry, topic: string): Promise<string> {
         this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch model=${modelEntry.model.name} topic=${topic}`);
 
         const context: Context = {

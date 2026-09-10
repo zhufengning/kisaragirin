@@ -1,6 +1,7 @@
 import {Agent} from '@earendil-works/pi-agent-core';
 import type {AssistantMessage} from '@earendil-works/pi-ai';
 import {config} from '@/config';
+import type {ModelEntry} from '~/config';
 import {eq} from 'drizzle-orm';
 import {schema, type Db} from '~/db';
 import {findImagePath} from './image-store';
@@ -8,7 +9,7 @@ import {prompts} from '~/prompts';
 import {withRetry} from './agent-retry';
 import {preprocessImage} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
-import {resolveAssignmentModel} from './models-factory';
+import {resolveAssignmentModels} from './models-factory';
 
 /**
  * 单次 describe 的兜底超时（毫秒）。
@@ -47,6 +48,8 @@ export class DescQueue {
     private db: Db;
     private running = false;
     private agents: Agent[];
+    /** 回退链：API 错误时按顺序切换到下一个模型 */
+    private modelEntries: ModelEntry[];
     private concurrency: number;
     private logger: Logger;
 
@@ -54,14 +57,19 @@ export class DescQueue {
         this.db = db;
         this.logger = new Logger();
         this.concurrency = config.input.vision_concurrency;
-        const modelEntry = resolveAssignmentModel(config, config.ai.assignments.vision);
-        this.agents = Array.from({length: this.concurrency}, () => new Agent({
+        this.modelEntries = resolveAssignmentModels(config, config.ai.assignments.vision);
+        this.agents = Array.from({length: this.concurrency}, () => this.createAgent(0));
+    }
+
+    private createAgent (modelIndex: number): Agent {
+        const modelEntry = this.modelEntries[modelIndex];
+        return new Agent({
             initialState: {
                 systemPrompt: prompts.visionSystem,
                 model: modelEntry.model
             },
             getApiKey: () => modelEntry.apiKey
-        }));
+        });
     }
 
     start () {
@@ -112,7 +120,6 @@ export class DescQueue {
     }
 
     private async loop (workerId: number) {
-        const agent = this.agents[workerId];
         while (this.running) {
             const sha256 = this.queue.shift();
             if (!sha256) {
@@ -140,7 +147,7 @@ export class DescQueue {
                     continue;
                 }
 
-                const desc = await this.describe(path, agent);
+                const desc = await this.describe(path, workerId);
                 if (desc) {
                     await this.db.insert(schema.images)
                         .values({sha256, description: desc})
@@ -164,7 +171,7 @@ export class DescQueue {
         }
     }
 
-    private async describe (path: string, agent: Agent): Promise<string | undefined> {
+    private async describe (path: string, workerId: number): Promise<string | undefined> {
         const result = await preprocessImage(path);
         this.logger.debug(
             `[DescQueue] describe start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
@@ -173,57 +180,80 @@ export class DescQueue {
             prompts.visionAnimated(result.totalFrames, result.extractedFrames) :
             prompts.visionUser;
 
-        await withRetry(
-            async () => {
-                agent.reset();
-                this.logger.debug(
-                    `[DescQueue] agent reset, prompt length=${inputText.length}, image count=${result.frames.length}`);
-                const frames = result.frames.map(f => ({type: 'image' as const, data: f.base64, mimeType: f.mimeType}));
-                await withTimeout(
-                    (async () => {
-                        await agent.prompt(inputText, frames);
-                        this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
-                        await agent.waitForIdle();
-                    })(),
-                    DESCRIBE_TIMEOUT_MS,
+        // 按回退链依次尝试：API 错误（或模型返回错误/空文本）时切换下一个模型
+        for (let modelIndex = 0; modelIndex < this.modelEntries.length; modelIndex++) {
+            const modelEntry = this.modelEntries[modelIndex];
+            this.agents[workerId] = this.createAgent(modelIndex);
+            const agent = this.agents[workerId];
+
+            try {
+                await withRetry(
                     async () => {
-                        agent.abort();
-                        await withTimeout(agent.waitForIdle(), ABORT_SETTLE_GRACE_MS, () => {});
+                        agent.reset();
+                        this.logger.debug(
+                            `[DescQueue] agent reset, prompt length=${inputText.length}, image count=${result.frames.length}`);
+                        const frames = result.frames.map(f => ({type: 'image' as const, data: f.base64, mimeType: f.mimeType}));
+                        await withTimeout(
+                            (async () => {
+                                await agent.prompt(inputText, frames);
+                                this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
+                                await agent.waitForIdle();
+                            })(),
+                            DESCRIBE_TIMEOUT_MS,
+                            async () => {
+                                agent.abort();
+                                await withTimeout(agent.waitForIdle(), ABORT_SETTLE_GRACE_MS, () => {});
+                            },
+                        );
+                        this.logger.debug(`[DescQueue] agent idle`);
+                    },
+                    {
+                        maxRetries: 2,
+                        onRetry: (attempt, maxRetries, delayMs, err) => {
+                            this.logger.warn(
+                                `[DescQueue] Retry ${attempt}/${maxRetries} after ${delayMs}ms:`,
+                                err instanceof Error ? err.message : err,
+                            );
+                        }
                     },
                 );
-                this.logger.debug(`[DescQueue] agent idle`);
-            },
-            {
-                maxRetries: 2,
-                onRetry: (attempt, maxRetries, delayMs, err) => {
+            } catch (err) {
+                this.logger.error(
+                    `[DescQueue] describe failed (model=${modelEntry.model.id}):`, err);
+                if (modelIndex < this.modelEntries.length - 1) {
                     this.logger.warn(
-                        `[DescQueue] Retry ${attempt}/${maxRetries} after ${delayMs}ms:`,
-                        err instanceof Error ? err.message : err,
-                    );
+                        `[DescQueue] falling back to model ${this.modelEntries[modelIndex + 1].model.id}`);
                 }
-            },
-        );
+                continue;
+            }
 
-        const msgs = agent.state.messages;
-        const last = msgs[msgs.length - 1];
-        const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : undefined;
-        this.logger.debug(
-            `[DescQueue] messages count=${msgs.length}, last role=${last?.role}, ` +
-            `stopReason=${lastAssistant?.stopReason}`);
-        if (lastAssistant && lastAssistant.stopReason !== 'error') {
-            const text = lastAssistant.content
-                .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-                .map(c => c.text)
-                .join('')
-                .trim();
-            this.logger.debug(`[DescQueue] assistant text length=${text.length}`);
-            if (text) return text;
-            this.logger.warn(
-                `[DescQueue] assistant text is empty, treating as failure`);
-        } else {
-            this.logger.warn(
-                `[DescQueue] invalid last message role=${last?.role} stopReason=${lastAssistant?.stopReason}${lastAssistant?.errorMessage ? ` error=${lastAssistant.errorMessage}` : ''}`);
+            const msgs = agent.state.messages;
+            const last = msgs[msgs.length - 1];
+            const lastAssistant = last?.role === 'assistant' ? (last as AssistantMessage) : undefined;
+            this.logger.debug(
+                `[DescQueue] messages count=${msgs.length}, last role=${last?.role}, ` +
+                `stopReason=${lastAssistant?.stopReason}`);
+            if (lastAssistant && lastAssistant.stopReason !== 'error') {
+                const text = lastAssistant.content
+                    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+                    .map(c => c.text)
+                    .join('')
+                    .trim();
+                this.logger.debug(`[DescQueue] assistant text length=${text.length}`);
+                if (text) return text;
+                this.logger.warn(
+                    `[DescQueue] assistant text is empty, treating as failure`);
+            } else {
+                this.logger.warn(
+                    `[DescQueue] invalid last message role=${last?.role} stopReason=${lastAssistant?.stopReason}${lastAssistant?.errorMessage ? ` error=${lastAssistant.errorMessage}` : ''}`);
+            }
+
+            if (modelIndex < this.modelEntries.length - 1) {
+                this.logger.warn(
+                    `[DescQueue] falling back to model ${this.modelEntries[modelIndex + 1].model.id}`);
+            }
         }
+
         return;
     }
 

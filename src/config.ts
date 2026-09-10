@@ -81,33 +81,40 @@ export interface GraphitiConfig {
     };
 }
 
+/**
+ * 模型 assignment key 或回退链（元组）。
+ * 配置为数组时，API 错误按数组顺序依次回退到下一个模型；
+ * 单字符串等价于长度为 1 的数组。
+ */
+export type ModelAssignmentKey = string | string[];
+
 /** 单个时段模型配置 */
 export interface TimeSlot {
     /** 起始时间 HH:mm（24h） */
     start: string;
     /** 结束时间 HH:mm（24h），支持跨日（如 start=18:00 end=09:00 表示 18:00 至次日 09:00） */
     end: string;
-    /** 该时段使用的模型 assignment key（对应 ai.models 中的 key） */
-    model: string;
+    /** 该时段使用的模型 assignment key（或回退链），对应 ai.models 中的 key */
+    model: ModelAssignmentKey;
 }
 
 /** 时段模型调度配置 */
 export interface ScheduledModelAssignment {
     /** 各时段模型配置，按数组顺序匹配，第一个命中的生效 */
     slots: TimeSlot[];
-    /** 不在任何 slot 范围内时的默认模型 assignment key */
-    default: string;
+    /** 不在任何 slot 范围内时的默认模型 assignment key（或回退链） */
+    default: ModelAssignmentKey;
 }
 
 export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
-        vision: string | ScheduledModelAssignment;
-        deep_research: string | ScheduledModelAssignment;
+        vision: ModelAssignmentKey | ScheduledModelAssignment;
+        deep_research: ModelAssignmentKey | ScheduledModelAssignment;
         /** Agent harness 模型 */
-        agent_harness: string | ScheduledModelAssignment;
+        agent_harness: ModelAssignmentKey | ScheduledModelAssignment;
         /** 记忆关键词生成模型 */
-        memory_keyword?: string | ScheduledModelAssignment;
+        memory_keyword?: ModelAssignmentKey | ScheduledModelAssignment;
     };
     graphiti?: GraphitiConfig;
     /** 记忆关键词生成模型的额外配置 */
