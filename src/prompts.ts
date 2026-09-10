@@ -78,7 +78,7 @@ export class Prompts {
 
     /** API 错误（stopReason='error'/'aborted'）后重新引导的提示词 */
     replyErrorReminder (): string {
-        return '使用 reply 工具进行回复。';
+        return '未知错误，请重新使用 reply 工具进行回复。';
     }
 
     /** 深度研究本身失败时第二轮的兜底回复 */
