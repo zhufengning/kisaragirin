@@ -137,6 +137,8 @@ export class ReplyAgent {
     private lastReplyToolParams: ReplyToolParams | null = null;
     private toolCallRoundCount = 0;
     private graphiti: GraphitiClient | null = null;
+    /** 已注入 harness 的最近一条 bot 回复的数据库 id，用于检测乱序消息（回复生成期间送达的消息 id 更小却排在回复之后） */
+    private lastBotReplyId = 0;
 
     private constructor (options: {
         db: Db;
@@ -148,6 +150,7 @@ export class ReplyAgent {
         harness: AgentHarness;
         systemPromptText: string;
         graphiti: GraphitiClient | null;
+        lastBotReplyId: number;
     }) {
         this.db = options.db;
         this.descQueue = options.descQueue;
@@ -158,6 +161,7 @@ export class ReplyAgent {
         this.harness = options.harness;
         this.systemPromptText = options.systemPromptText;
         this.graphiti = options.graphiti;
+        this.lastBotReplyId = options.lastBotReplyId;
         this.logger = new Logger();
     }
 
@@ -208,6 +212,20 @@ export class ReplyAgent {
 
         const graphitiInstance = graphiti ?? null;
 
+        // 从数据库恢复该群最近一条 bot 回复行 id：
+        // 重启后 lastBotReplyId 内存状态丢失，否则重启前「回复生成期间送达」的消息无法被乱序检测覆盖
+        const lastBotReply = await db
+            .select({id: schema.messages.id})
+            .from(schema.messages)
+            .where(and(
+                eq(schema.messages.groupId, groupId),
+                eq(schema.messages.isBot, true),
+                eq(schema.messages.specialType, 'normal')
+            ))
+            .orderBy(desc(schema.messages.id))
+            .limit(1);
+        const lastBotReplyId = lastBotReply[0]?.id ?? 0;
+
         const agent = new ReplyAgent({
             db,
             descQueue,
@@ -217,7 +235,8 @@ export class ReplyAgent {
             session,
             harness,
             systemPromptText: systemPrompt(),
-            graphiti: graphitiInstance
+            graphiti: graphitiInstance,
+            lastBotReplyId
         });
 
         agentRef.current = agent;
@@ -532,6 +551,20 @@ export class ReplyAgent {
         return this.lastReplyToolParams;
     }
 
+    /**
+     * 检测乱序消息：本轮读入的消息 id 小于等于已注入 harness 的最近 bot 回复 id，
+     * 说明它们是在上一轮回复生成期间送达的（bot 视角排在回复之后，实际发送更早）。
+     * 返回拼在 user 消息末尾的时序提示文本，无乱序时返回 null。
+     */
+    private buildOutOfOrderHint (latestMessages: StoredMessage[]): string | null {
+        if (this.lastBotReplyId <= 0) return null;
+        const lateIds = latestMessages
+            .map(m => m.id)
+            .filter((id): id is number => id !== undefined && id <= this.lastBotReplyId);
+        if (lateIds.length === 0) return null;
+        return prompts.outOfOrderHint(lateIds.map(id => `#${id}`).join('、'));
+    }
+
     private async syncHarnessModel (entry: ModelEntry): Promise<void> {
         const current = this.harness.getModel();
         if (current.id !== entry.model.id) {
@@ -577,6 +610,16 @@ export class ReplyAgent {
             if (memories.length > 0) {
                 userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
             }
+        }
+
+        // 乱序消息的时序提示拼在 user 消息最后；
+        // 在 originalUserTexts 快照之后追加，不进 graphiti 记忆
+        const outOfOrderHint = this.buildOutOfOrderHint(latestMessages);
+        if (outOfOrderHint) {
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] out-of-order messages detected, ` +
+                `lastBotReplyId=${this.lastBotReplyId}`);
+            userTexts[userTexts.length - 1] += outOfOrderHint;
         }
 
         this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
@@ -648,6 +691,17 @@ export class ReplyAgent {
         const latestMessages = await this.fetchMessagesSince(lastTriggerId);
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
+
+        // 乱序消息的时序提示拼在 user 消息最后（第二轮回复无 graphiti 合并 episode，无需额外隔离）
+        if (userTexts.length > 0) {
+            const outOfOrderHint = this.buildOutOfOrderHint(latestMessages);
+            if (outOfOrderHint) {
+                this.logger.info(
+                    `[ReplyAgent] [${this.groupId}] out-of-order messages detected in final turn, ` +
+                    `lastBotReplyId=${this.lastBotReplyId}`);
+                userTexts[userTexts.length - 1] += outOfOrderHint;
+            }
+        }
 
         for (const text of userTexts) {
             await this.harness.appendMessage({
@@ -902,6 +956,9 @@ export class ReplyAgent {
     }
 
     async appendBotMessage (storedMessage: StoredMessage): Promise<void> {
+        if (typeof storedMessage.id === 'number') {
+            this.lastBotReplyId = Math.max(this.lastBotReplyId, storedMessage.id);
+        }
         const text = await messagesToString([storedMessage], sha => this.descQueue.resolve(sha));
         if (!text.trim()) return;
         await this.harness.appendMessage({
@@ -914,6 +971,13 @@ export class ReplyAgent {
     async buildPreviewPrompt (task: ReplyTask): Promise<{ systemPrompt: string; userMessages: string[] }> {
         const latestMessages = await this.fetchMessagesSince(task.lastTriggerId ?? 0);
         const userMessages = await buildUserPromptArray(latestMessages, this.descQueue);
+        // 与实际回复逻辑保持一致：乱序时预览也带时序提示
+        if (userMessages.length > 0) {
+            const outOfOrderHint = this.buildOutOfOrderHint(latestMessages);
+            if (outOfOrderHint) {
+                userMessages[userMessages.length - 1] += outOfOrderHint;
+            }
+        }
         return {
             systemPrompt: this.systemPromptText,
             userMessages

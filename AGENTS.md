@@ -115,6 +115,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
 - 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例被 `reply-agent.ts` / `reply-tool.ts` / `desc-queue.ts` 共用
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
+- **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在 harness 中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
 - webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact

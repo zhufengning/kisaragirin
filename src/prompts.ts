@@ -54,6 +54,16 @@ export class Prompts {
 
     memorySearchSeparator = `\n--- 记忆自动检索 ---\n`;
 
+    /**
+     * 时序提示：检测到乱序消息（在上一轮回复生成期间送达、晚于 bot 回复才展示）时，
+     * 拼在 user 消息末尾，提醒按消息 id 推断真实时序。不进 graphiti 记忆
+     */
+    outOfOrderHint (ids: string): string {
+        return `\n--- 时序提示 ---\n以上消息中，id 为 ${ids} 的消息实际发送时间早于你上一条回复` +
+            `（它们在你生成回复期间送达，现在才展示给你）。请根据消息 id（#数字，越小越早）` +
+            `推断真实时序，不要按展示顺序理解。`;
+    }
+
     replyToolDescription (): string {
         return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。';
     }
