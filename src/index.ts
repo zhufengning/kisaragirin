@@ -10,6 +10,7 @@ import {GroupReplyManager} from './util/reply-manager';
 import {ScheduledTaskManager} from './util/scheduled-tasks';
 import {closeAllSessions} from './util/harness-factory';
 import {Logger, configureLogger} from '@lib/util/logger';
+import type {GroupMessageEvent} from '@lib/types';
 import {GraphitiClient} from './util/graphiti-client';
 import {join} from 'node:path';
 import {rmSync, existsSync} from 'node:fs';
@@ -119,9 +120,30 @@ async function getReplyManager (groupId: number): Promise<GroupReplyManager | un
     return replyManagers.get(groupId)!;
 }
 
-bot.on('message.group', async e => {
-    if (!config.input.group_whitelist.includes(e.group_id)) return;
+/**
+ * 群消息入库串行化队列（每群一条 promise 链）。
+ * 消息事件沿单条 WebSocket 按到达顺序同步分发，但入库前的转换包含
+ * 图片下载、引用解析、@ 昵称解析等 await，并发执行会导致后到的消息先落库
+ * （数据库自增 id 与真实时序倒置）。
+ * 串行化保证：同群消息的数据库 id 严格按到达顺序递增，
+ * 且 @ 触发时之前的消息必然已完整入库。
+ */
+const groupIngressQueues = new Map<number, Promise<void>>();
 
+function enqueueGroupMessage (e: GroupMessageEvent): void {
+    const prev = groupIngressQueues.get(e.group_id) ?? Promise.resolve();
+    // 单条消息处理失败（如图片下载失败）不阻塞后续消息
+    const next = prev.then(() => handleGroupMessage(e))
+        .catch(err => logger.error(`[Bot] [${e.group_id}] failed to handle group message:`, err));
+    groupIngressQueues.set(e.group_id, next);
+}
+
+bot.on('message.group', e => {
+    if (!config.input.group_whitelist.includes(e.group_id)) return;
+    enqueueGroupMessage(e);
+});
+
+async function handleGroupMessage (e: GroupMessageEvent): Promise<void> {
     const stored = await groupMessageEventToStoredMessage(e, bot);
 
     // 收集所有图片 sha256（包括嵌套在 reply/forward 中的），写入 images 表并插队到描述队列
@@ -162,7 +184,7 @@ bot.on('message.group', async e => {
     } else {
         logger.debug(`[Bot] [${e.group_id}] no manager, skip reply logic`);
     }
-});
+}
 
 let shuttingDown = false;
 async function shutdown (signal: string) {

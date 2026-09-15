@@ -29,7 +29,8 @@ export interface ImageStoreResult {
 }
 
 export async function downloadAndStoreImage (url: string): Promise<ImageStoreResult> {
-    const res = await fetch(url);
+    // 加超时兜底：消息入库按群串行化，单次下载挂起会阻塞该群后续消息入库
+    const res = await fetch(url, {signal: AbortSignal.timeout(30_000)});
     if (!res.ok) throw new Error(`Failed to download image: ${res.status} ${res.statusText}`);
     const buf = Buffer.from(await res.arrayBuffer());
     const sha256 = createHash('sha256').update(buf)
