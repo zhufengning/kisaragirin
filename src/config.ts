@@ -19,6 +19,8 @@ export class InputConfig {
     silence_wait_time = 30;
     reply_probability = 0.1;
     max_tool_call_rounds = 5;
+    /** 每个任务内允许的最大深度研究次数（深度研究轮可链式再次请求研究，达到上限后忽略），默认 3 */
+    max_deep_research_rounds = 3;
     vision_concurrency = 5;
     bot_name?: string;
     bot_persona?: string;

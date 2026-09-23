@@ -62,6 +62,8 @@ export const config: AppConfig = {
         },
         /** 是否将每次回复的 prompt 与模型输出保存到 data/debug/，默认 false */
         debug_dump_prompt: false
+        /** 每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究），默认 3 */
+        // max_deep_research_rounds: 3,
     },
     web: {
         host: '0.0.0.0',

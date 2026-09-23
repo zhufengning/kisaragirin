@@ -97,29 +97,23 @@ function stringifyMessageContent (content: Context['messages'][number]['content'
         .join('\n');
 }
 
-export interface ReplyTurn {
-    text: ReplyMessageItem[];
-    isDeepResearchFinal?: boolean;
-    /** 本轮失败（发送的是兜底文案） */
-    failed?: boolean;
-    /** 本轮实际读入 prompt 的最大数据库消息 id，用于推进 lastTriggerId */
-    processedUpToId?: number;
-}
-
-export interface FirstTurnResult {
-    text: ReplyMessageItem[];
+/**
+ * 一个回合（消息轮或深度研究轮）的执行结果。
+ * 任务由 reply-manager 编排为回合链：消息轮 →（可选）深度研究轮 →（可继续链式）深度研究轮 …
+ */
+export interface TurnOutcome {
+    /** reply 工具提交的消息（已过滤全空白文本）；空数组 = 模型选择不回复 */
+    messages: ReplyMessageItem[];
     requiresDeepResearch: boolean;
     deepResearchTopic?: string;
+    /** 本轮失败（API 错误或 reminder 用尽仍未调用 reply 工具），由调用方决定兜底行为 */
     failed?: boolean;
-    /** 无新消息可处理（已被前序任务吸收），调用方应静默跳过，不视为失败 */
+    /** 无新消息可处理（仅消息轮可能出现），调用方应静默跳过，不视为失败 */
     noop?: boolean;
-    /** 已写入 harness session 的最大数据库消息 id，失败时用于推进 lastTriggerId 避免重复发送 */
+    /** 仅深度研究轮：研究本身是否成功（失败时兜底文案不同）；消息轮无此字段 */
+    researchSuccess?: boolean;
+    /** 本轮实际读入 prompt 的最大数据库消息 id，用于推进 lastTriggerId */
     processedUpToId?: number;
-}
-
-export interface GenerateReplyResult {
-    turns: ReplyTurn[];
-    failed?: boolean;
 }
 
 export class ReplyAgent {
@@ -131,7 +125,6 @@ export class ReplyAgent {
     private session: Session<JsonlSessionMetadata>;
     private harness: AgentHarness;
     private logger: Logger;
-    private taskType: ReplyTask['type'] = 'silence';
     private systemPromptText: string;
     private debugPrefix?: string;
     private lastReplyToolParams: ReplyToolParams | null = null;
@@ -575,10 +568,11 @@ export class ReplyAgent {
         }
     }
 
-    async generateFirstTurn (task: ReplyTask): Promise<FirstTurnResult> {
-        this.taskType = task.type;
-        this.lastReplyToolParams = null;
-        this.toolCallRoundCount = 0;
+    /**
+     * 消息轮（每个任务的第一个回合）：读取 task.lastTriggerId 之后的新消息构建 prompt。
+     * scheduled 任务配置 preResearchTopic 时先执行预研究（结果写入系统消息，随新消息一起读入）。
+     */
+    async runMessageTurn (task: ReplyTask): Promise<TurnOutcome> {
         this.debugPrefix = undefined;
 
         if (task.preResearchTopic) {
@@ -591,12 +585,12 @@ export class ReplyAgent {
         if (userTexts.length === 0) {
             this.logger.info(
                 `[ReplyAgent] [${this.groupId}] no new messages to process, skipping (noop)`);
-            return {text: [], requiresDeepResearch: false, noop: true};
+            return {messages: [], requiresDeepResearch: false, noop: true};
         }
 
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
 
-        // 保存原始 userTexts（不包括记忆搜索结果），用于记忆添加
+        // 保存原始 userTexts（不包括记忆搜索结果与时序提示），用于 graphiti 记忆
         const originalUserTexts = [...userTexts];
 
         // 设置 debugPrefix，以便后续 dump 操作可以使用
@@ -622,88 +616,87 @@ export class ReplyAgent {
             userTexts[userTexts.length - 1] += outOfOrderHint;
         }
 
-        this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
-        for (let i = 0; i < userTexts.length; i++) {
-            this.dumpUserMessage(this.debugPrefix, i, userTexts[i]);
-        }
-
-        for (let i = 0; i < userTexts.length - 1; i++) {
-            await this.harness.appendMessage({
-                role: 'user',
-                content: [{type: 'text', text: userTexts[i]}],
-                timestamp: Date.now()
-            } as AgentMessage);
-        }
-
-        let assistant: AssistantMessage | undefined;
-        try {
-            assistant = await this.promptWithReminders(userTexts[userTexts.length - 1]);
-        } catch (err) {
-            this.logger.error(
-                `[ReplyAgent] [${this.groupId}] first turn prompt threw: ` +
-                `${err instanceof Error ? err.message : String(err)}`);
-        }
-
-        if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
-            this.logger.error(
-                `[ReplyAgent] [${this.groupId}] first turn failed ` +
-                `(stopReason=${assistant?.stopReason ?? 'undefined'})`);
-            return {text: [], requiresDeepResearch: false, failed: true, processedUpToId};
-        }
-
-        this.dumpOutput(this.debugPrefix, assistant);
-
-        const params = this.getReplyToolParams();
-        if (!params || params.messages.length === 0 || !params.messages.some(m => m.text.trim())) {
-            this.logger.warn(`[ReplyAgent] [${this.groupId}] first turn missing reply tool, fallback`);
-            return {text: [], requiresDeepResearch: false, failed: true, processedUpToId};
-        }
+        const outcome = await this.promptAndCollect({
+            appendTexts: userTexts.slice(0, -1),
+            promptText: userTexts[userTexts.length - 1],
+            processedUpToId,
+            label: 'message turn'
+        });
 
         // 异步添加合并后的消息记忆（不阻塞回复流程）
-        if (this.graphiti) {
+        if (!outcome.failed && this.graphiti) {
             const mergedContent = originalUserTexts.join('\n');
             const messageIds = latestMessages.map(m => m.id).filter((id): id is number => id !== undefined);
             addMergedMessagesEpisode(this.graphiti, this.groupId, mergedContent, messageIds);
         }
 
-        return {
-            text: params.messages,
-            requiresDeepResearch: params.requires_deep_research,
-            deepResearchTopic: params.deep_research_topic,
-            failed: false,
-            processedUpToId
-        };
+        return outcome;
     }
 
-    async generateFinalTurn (task: ReplyTask, topic: string, lastTriggerId: number): Promise<ReplyTurn> {
-        const researchTopic = topic.trim() || String(task.triggerMessage);
+    /**
+     * 深度研究轮：先执行深度研究（开始/结果/结束写入系统消息），
+     * 再读入研究期间到达的新消息，最后用引导语 prompt。
+     * 模型可在本轮 reply 中再次设置 requires_deep_research 请求链式研究，
+     * 是否继续由调用方（reply-manager）按轮数上限决定。
+     */
+    async runResearchTurn (task: ReplyTask, topic: string, boundary: number): Promise<TurnOutcome> {
         let researchSuccess = false;
         try {
-            const research = await this.doDeepResearchWithSystemMessages(researchTopic);
+            const research = await this.doDeepResearchWithSystemMessages(topic);
             researchSuccess = research.success;
         } catch (err) {
             this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
         }
-        const fallbackText = researchSuccess ?
-            prompts.deepResearchFinalFailedFallback :
-            prompts.deepResearchFailedFallback;
 
-        const latestMessages = await this.fetchMessagesSince(lastTriggerId);
+        const latestMessages = await this.fetchMessagesSince(boundary);
         const userTexts = await buildUserPromptArray(latestMessages, this.descQueue);
         const processedUpToId = latestMessages[latestMessages.length - 1]?.id;
 
-        // 乱序消息的时序提示拼在 user 消息最后（第二轮回复无 graphiti 合并 episode，无需额外隔离）
+        // 乱序消息的时序提示拼在 user 消息最后（深度研究轮无 graphiti 合并 episode，无需额外隔离）
         if (userTexts.length > 0) {
             const outOfOrderHint = this.buildOutOfOrderHint(latestMessages);
             if (outOfOrderHint) {
                 this.logger.info(
-                    `[ReplyAgent] [${this.groupId}] out-of-order messages detected in final turn, ` +
+                    `[ReplyAgent] [${this.groupId}] out-of-order messages detected in research turn, ` +
                     `lastBotReplyId=${this.lastBotReplyId}`);
                 userTexts[userTexts.length - 1] += outOfOrderHint;
             }
         }
 
-        for (const text of userTexts) {
+        const outcome = await this.promptAndCollect({
+            appendTexts: userTexts,
+            promptText: prompts.deepResearchTurnGuidance,
+            processedUpToId,
+            label: 'research turn'
+        });
+        outcome.researchSuccess = researchSuccess;
+        return outcome;
+    }
+
+    /**
+     * 回合公共逻辑：appendTexts 依次 append 到 harness，再以 promptText 发起 prompt
+     * （含 reminder 重试与模型回退链），最后解析 reply 工具结果。
+     * reply 工具被调用即视为成功——空 messages 是模型主动选择不回复，不算失败。
+     */
+    private async promptAndCollect (options: {
+        appendTexts: string[];
+        promptText: string;
+        processedUpToId?: number;
+        label: string;
+    }): Promise<TurnOutcome> {
+        const {appendTexts, promptText, processedUpToId, label} = options;
+
+        // 每个回合独立的工具调用轮数配额与 reply 结果
+        this.lastReplyToolParams = null;
+        this.toolCallRoundCount = 0;
+
+        this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
+        const allTexts = [...appendTexts, promptText];
+        for (let i = 0; i < allTexts.length; i++) {
+            this.dumpUserMessage(this.debugPrefix, i, allTexts[i]);
+        }
+
+        for (const text of appendTexts) {
             await this.harness.appendMessage({
                 role: 'user',
                 content: [{type: 'text', text}],
@@ -711,53 +704,43 @@ export class ReplyAgent {
             } as AgentMessage);
         }
 
-        let finalAssistant: AssistantMessage | undefined;
+        let assistant: AssistantMessage | undefined;
         try {
-            finalAssistant = await this.promptWithReminders('请根据深度研究结果，使用 reply 工具给出最终回复。');
+            assistant = await this.promptWithReminders(promptText);
         } catch (err) {
             this.logger.error(
-                `[ReplyAgent] [${this.groupId}] deep research final turn prompt threw: ` +
+                `[ReplyAgent] [${this.groupId}] ${label} prompt threw: ` +
                 `${err instanceof Error ? err.message : String(err)}`);
         }
 
-        if (!finalAssistant || finalAssistant.stopReason === 'error' || finalAssistant.stopReason === 'aborted') {
+        if (!assistant || assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
             this.logger.error(
-                `[ReplyAgent] [${this.groupId}] deep research final turn failed ` +
-                `(stopReason=${finalAssistant?.stopReason ?? 'undefined'})`);
-            return {text: [{text: fallbackText}], isDeepResearchFinal: true, failed: true, processedUpToId};
+                `[ReplyAgent] [${this.groupId}] ${label} failed ` +
+                `(stopReason=${assistant?.stopReason ?? 'undefined'})`);
+            return {messages: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
-        this.dumpOutput(this.debugPrefix, finalAssistant);
+        this.dumpOutput(this.debugPrefix, assistant);
 
-        const finalParams = this.getReplyToolParams();
-        if (!finalParams || finalParams.messages.length === 0 || !finalParams.messages.some(m => m.text.trim())) {
-            this.logger.warn(`[ReplyAgent] [${this.groupId}] deep research final turn missing reply tool, fallback`);
-            return {text: [{text: fallbackText}], isDeepResearchFinal: true, failed: true, processedUpToId};
+        const params = this.getReplyToolParams();
+        if (!params) {
+            this.logger.warn(`[ReplyAgent] [${this.groupId}] ${label} missing reply tool call, failed`);
+            return {messages: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
-        return {text: finalParams.messages, isDeepResearchFinal: true, processedUpToId};
-    }
-
-    async generateReply (task: ReplyTask): Promise<GenerateReplyResult> {
-        const first = await this.generateFirstTurn(task);
-        if (first.noop) {
-            return {turns: []};
-        }
-        if (first.failed || first.text.length === 0) {
-            return {turns: first.failed ? [{text: this.taskType === 'at' ? [{text: '@响应失败'}] : []}] : [], failed: true};
+        // 过滤全空白文本的消息；过滤后为空表示模型选择不回复
+        const messages = params.messages.filter(m => m.text.trim());
+        if (messages.length === 0) {
+            this.logger.info(`[ReplyAgent] [${this.groupId}] ${label} replied with empty messages (no reply)`);
         }
 
-        const turns: ReplyTurn[] = [{text: first.text}];
-        if (!first.requiresDeepResearch) {
-            return {turns};
-        }
-
-        const topic = first.deepResearchTopic || first.text.map(m => m.text).join('');
-        const finalTurn = await this.generateFinalTurn(task, topic, task.lastTriggerId ?? 0);
-        turns.push(finalTurn);
-        const finalFailed = finalTurn.failed === true || finalTurn.text.length === 0 ||
-            finalTurn.text.every(m => !m.text.trim());
-        return {turns, failed: finalFailed};
+        return {
+            messages,
+            requiresDeepResearch: params.requires_deep_research,
+            deepResearchTopic: params.deep_research_topic,
+            failed: false,
+            processedUpToId
+        };
     }
 
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
@@ -804,19 +787,13 @@ export class ReplyAgent {
                 continue;
             }
             lastWasError = false;
-            if (this.getReplyToolParams()?.messages.some(m => m.text.trim())) {
+            // reply 工具被调用即成功（空 messages 是模型主动选择不回复）；未调用才 reminder
+            if (this.getReplyToolParams()) {
                 return assistant;
             }
         }
 
         return assistant;
-    }
-
-    private fallbackResult (): GenerateReplyResult {
-        if (this.taskType === 'at') {
-            return {turns: [{text: [{text: '@响应失败'}]}], failed: true};
-        }
-        return {turns: [], failed: true};
     }
 
     private async doDeepResearchWithSystemMessages (topic: string): Promise<{result: string; success: boolean}> {

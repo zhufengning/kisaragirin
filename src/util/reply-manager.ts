@@ -6,10 +6,11 @@ import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage, StoredSegment} from '~/message-format';
 import type {AppConfig} from '~/config';
-import {ReplyAgent} from './reply-agent';
+import {ReplyAgent, type TurnOutcome} from './reply-agent';
 import type {ReplyMessageItem} from './reply-tool';
 import type {GraphitiClient} from './graphiti-client';
 import {addMessageEpisode} from './graphiti-episode';
+import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
 
 export interface ReplyTask {
@@ -332,34 +333,6 @@ export class GroupReplyManager {
                 `pre-research: ${task.preResearchTopic}`);
         }
 
-        const firstTurn = await agent.generateFirstTurn(task);
-        // 无新消息：触发消息已被队列中前序任务吸收进其 prompt，静默跳过
-        if (firstTurn.noop) {
-            this.logger.info(
-                `[ReplyManager] [${this.groupId}] task msg=${task.triggerMessageId} has no new messages, skipped`);
-            return;
-        }
-        if (firstTurn.failed || firstTurn.text.length === 0) {
-            if (firstTurn.processedUpToId) {
-                this.logger.info(
-                    `[ReplyManager] [${this.groupId}] first turn failed, advancing lastTriggerId ` +
-                    `to ${firstTurn.processedUpToId}`);
-                this.lastTriggerId = Math.max(this.lastTriggerId, firstTurn.processedUpToId);
-            }
-            if (task.type === 'at') {
-                this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, sending fallback`);
-                const segments: Message[] = [{type: 'text', data: {text: '@响应失败'}}];
-                await this.bot.sendGroupMsg(this.groupId, segments);
-            } else {
-                this.logger.info(`[ReplyManager] [${this.groupId}] first turn failed, silent fallback`);
-            }
-            return;
-        }
-
-        this.logger.info(
-            `[ReplyManager] [${this.groupId}] first turn ready, ` +
-            `requiresDeepResearch=${firstTurn.requiresDeepResearch}`);
-
         let botCard: string | null = null;
         try {
             const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
@@ -368,38 +341,102 @@ export class GroupReplyManager {
             this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
         }
 
-        const firstTurnSendResults = await this.sendTurn(task, {
-            messages: firstTurn.text,
-            isFirstTurn: true,
-            isDeepResearchFinal: false,
-            botCard
-        });
-
-        const firstTurnLast = firstTurnSendResults[firstTurnSendResults.length - 1];
-        // 水位线只推进到本轮实际读入 prompt 的消息 id：回复执行期间到达的新消息
-        // id 小于 bot 回复行 id，若以 bot 回复行为界会永久跳过这些消息
-        if (firstTurn.processedUpToId) {
-            this.lastTriggerId = Math.max(this.lastTriggerId, firstTurn.processedUpToId);
-        }
-
-        if (!firstTurn.requiresDeepResearch) {
+        // 回合链：消息轮 →（模型要求时）深度研究轮 →（可继续链式）深度研究轮 …
+        let outcome = await agent.runMessageTurn(task);
+        // 无新消息：触发消息已被队列中前序任务吸收进其 prompt，静默跳过
+        if (outcome.noop) {
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] task msg=${task.triggerMessageId} has no new messages, skipped`);
             return;
         }
 
-        const topic = firstTurn.deepResearchTopic || firstTurn.text.map(m => m.text).join('');
-        const finalTurn = await agent.generateFinalTurn(task, topic, this.lastTriggerId);
+        /** 上一轮实际发送的信息，供下一轮回复引用与兜底定位 */
+        let prevTurn: {messageId?: number; time?: number; messages: ReplyMessageItem[]} | undefined;
+        let researchRounds = 0;
+        const maxResearchRounds = this.config.input.max_deep_research_rounds;
+
+        for (;;) {
+            // 水位线只推进到本轮实际读入 prompt 的消息 id：回复执行期间到达的新消息
+            // id 小于 bot 回复行 id，若以 bot 回复行为界会永久跳过这些消息
+            if (outcome.processedUpToId) {
+                this.lastTriggerId = Math.max(this.lastTriggerId, outcome.processedUpToId);
+            }
+
+            if (outcome.failed) {
+                await this.sendFailureFallback(task, outcome, botCard, prevTurn);
+                return;
+            }
+
+            if (outcome.messages.length > 0) {
+                const sendResults = await this.sendTurn(task, {
+                    messages: outcome.messages,
+                    prevTurn,
+                    botCard
+                });
+                const last = sendResults[sendResults.length - 1];
+                prevTurn = {messageId: last?.messageId, time: last?.time, messages: outcome.messages};
+            } else {
+                // 模型以空消息数组主动选择不回复
+                this.logger.info(
+                    `[ReplyManager] [${this.groupId}] model chose not to reply (empty messages)`);
+            }
+
+            if (!outcome.requiresDeepResearch) return;
+
+            if (researchRounds >= maxResearchRounds) {
+                this.logger.warn(
+                    `[ReplyManager] [${this.groupId}] max deep research rounds ` +
+                    `(${maxResearchRounds}) reached, ignoring requires_deep_research`);
+                return;
+            }
+            researchRounds++;
+
+            const topic = outcome.deepResearchTopic || outcome.messages.map(m => m.text).join('');
+            if (!topic.trim()) {
+                this.logger.warn(
+                    `[ReplyManager] [${this.groupId}] requires_deep_research without topic ` +
+                    `and reply text, skip research`);
+                return;
+            }
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] deep research round ` +
+                `${researchRounds}/${maxResearchRounds}: ${topic}`);
+            outcome = await agent.runResearchTurn(task, topic, this.lastTriggerId);
+        }
+    }
+
+    /**
+     * 回合失败时的兜底发送。
+     * 消息轮失败：@ 触发回兜底文案，其他触发静默；
+     * 深度研究轮失败：所有触发类型都发兜底文案（按研究是否成功区分），并引用上一轮回复
+     */
+    private async sendFailureFallback (
+        task: ReplyTask,
+        outcome: TurnOutcome,
+        botCard: string | null,
+        prevTurn?: {messageId?: number; time?: number; messages: ReplyMessageItem[]}
+    ): Promise<void> {
+        if (outcome.researchSuccess === undefined) {
+            if (task.type === 'at') {
+                this.logger.info(`[ReplyManager] [${this.groupId}] message turn failed, sending fallback`);
+                const segments: Message[] = [{type: 'text', data: {text: prompts.atFailureFallback}}];
+                await this.bot.sendGroupMsg(this.groupId, segments);
+            } else {
+                this.logger.info(`[ReplyManager] [${this.groupId}] message turn failed, silent fallback`);
+            }
+            return;
+        }
+
+        const fallbackText = outcome.researchSuccess ?
+            prompts.deepResearchFinalFailedFallback :
+            prompts.deepResearchFailedFallback;
+        this.logger.info(
+            `[ReplyManager] [${this.groupId}] research turn failed, sending fallback: ${fallbackText}`);
         await this.sendTurn(task, {
-            messages: finalTurn.text,
-            isFirstTurn: false,
-            isDeepResearchFinal: true,
-            firstTurnMessageId: firstTurnLast?.messageId,
-            firstTurnReplyMessages: firstTurn.text,
-            firstTurnReplyTime: firstTurnLast?.time,
+            messages: [{text: fallbackText}],
+            prevTurn,
             botCard
         });
-        if (finalTurn.processedUpToId) {
-            this.lastTriggerId = Math.max(this.lastTriggerId, finalTurn.processedUpToId);
-        }
     }
 
     private async resolveRefMessageId (dbId: number): Promise<number | undefined> {
@@ -415,28 +452,16 @@ export class GroupReplyManager {
         task: ReplyTask,
         options: {
             messages: ReplyMessageItem[];
-            isFirstTurn: boolean;
-            isDeepResearchFinal: boolean;
-            firstTurnMessageId?: number;
-            firstTurnReplyMessages?: ReplyMessageItem[];
-            firstTurnReplyTime?: number;
+            /** 上一轮实际发送的信息；提供时本轮首条消息默认引用上一轮最后一条回复 */
+            prevTurn?: {messageId?: number; time?: number; messages: ReplyMessageItem[]};
             botCard: string | null;
         }
     ): Promise<Array<{rowId: number | null; messageId?: number; time?: number}>> {
-        const {
-            messages,
-            isFirstTurn,
-            isDeepResearchFinal,
-            firstTurnMessageId,
-            firstTurnReplyMessages,
-            firstTurnReplyTime,
-            botCard
-        } = options;
+        const {messages, prevTurn, botCard} = options;
 
         this.logger.info(
             `[ReplyManager] [${this.groupId}] sending reply ` +
-            `${isDeepResearchFinal ? '(deep research final)' : '(first turn)'}: ` +
-            `${messages.length} message(s)`);
+            `${prevTurn ? '(follow-up turn)' : '(message turn)'}: ${messages.length} message(s)`);
 
         const results: Array<{rowId: number | null; messageId?: number; time?: number}> = [];
 
@@ -453,24 +478,25 @@ export class GroupReplyManager {
                     refDbSegment = {type: 'reply', id: item.ref};
                 }
             } else if (i === 0) {
-                if (isFirstTurn && task.type === 'at') {
+                if (!prevTurn && task.type === 'at') {
+                    // 消息轮 @ 触发：默认引用触发消息
                     refOnebotId = task.triggerMessageId;
                     refDbSegment = {type: 'reply', id: task.triggerMessageId, message: task.triggerMessage};
-                } else if (!isFirstTurn && firstTurnMessageId &&
-                    firstTurnReplyMessages && typeof firstTurnReplyTime === 'number') {
-                    refOnebotId = firstTurnMessageId;
+                } else if (prevTurn?.messageId && typeof prevTurn.time === 'number') {
+                    // 后续回合：默认引用上一轮最后一条回复
+                    refOnebotId = prevTurn.messageId;
                     refDbSegment = {
                         type: 'reply',
-                        id: firstTurnMessageId,
+                        id: prevTurn.messageId,
                         message: {
-                            time: firstTurnReplyTime,
-                            messageId: firstTurnMessageId,
+                            time: prevTurn.time,
+                            messageId: prevTurn.messageId,
                             senderId: this.botSelfId,
                             senderName: this.botName,
                             senderCard: botCard ?? undefined,
                             isBot: true,
                             isAtBot: false,
-                            segments: [{type: 'text', text: firstTurnReplyMessages.map(m => m.text).join('')}]
+                            segments: [{type: 'text', text: prevTurn.messages.map(m => m.text).join('')}]
                         }
                     };
                 }
