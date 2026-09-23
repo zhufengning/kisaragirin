@@ -111,7 +111,9 @@ export const config: AppConfig = {
         /** 记忆关键词生成模型配置 */
         memoryKeyword: {
             // 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled
-            disable_thinking: false
+            disable_thinking: false,
+            // 是否启用实体搜索（search_nodes）；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
+            enable_entity_search: false
         },
         graphiti: {
             debug_dump_rpc: false,

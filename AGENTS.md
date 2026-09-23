@@ -128,7 +128,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
-- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
+- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
 - **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
@@ -170,6 +170,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文（`string | ScheduledModelAssignment`）
 - `ai.memoryKeyword`：记忆关键词生成模型的额外配置
   - `disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，调用时注入 `thinking=disabled`，默认 `false`
+  - `enable_entity_search`：是否启用实体搜索（`search_nodes`），默认 `false`；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
 - `ai.assignments` 所有字段均支持 `ScheduledModelAssignment` 时段调度：配置 `slots`（含 `start`/`end`/`model`，支持跨日如 `18:00→09:00`）和 `default`，运行时按当前时间匹配第一个命中的 slot 模型，未命中则用 default；也可直接用字符串指定单一模型
 - `ai.assignments` 所有字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。harness 回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；深度研究、记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）
 - `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）

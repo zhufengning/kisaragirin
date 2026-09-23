@@ -370,7 +370,10 @@ export class ReplyAgent {
         const existingBlock = existingMemories.length > 0 ?
             existingMemories.join('\n') :
             '（无）';
+        // 实体搜索未启用时不生成 entities 查询：prompt 中不注入 entities 字段说明，解析结果强制为空
+        const enableEntitySearch = this.config.ai.memoryKeyword?.enable_entity_search ?? false;
         const prompt = prompts.memoryQueryPrompt
+            .replace('{entities_field}', enableEntitySearch ? prompts.memoryQueryPromptEntitiesField : '')
             .replace('{existing_memories}', existingBlock)
             .replace('{messages}', messagesText);
 
@@ -427,7 +430,9 @@ export class ReplyAgent {
                 try {
                     const parsed = JSON.parse(text);
                     const queries = Array.isArray(parsed.queries) ? parsed.queries.filter((q: unknown) => typeof q === 'string' && q.trim()) : [];
-                    const entities = Array.isArray(parsed.entities) ? parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) : [];
+                    const entities = enableEntitySearch && Array.isArray(parsed.entities) ?
+                        parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) :
+                        [];
 
                     if (queries.length === 0 && entities.length === 0) {
                         this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: no queries or entities`);
@@ -456,8 +461,8 @@ export class ReplyAgent {
         return null;
     }
 
-    private async searchMemories (queryParams: {queries: string[]; entities: string[]}): Promise<string[]> {
-        if (!this.graphiti) return [];
+    private async searchMemories (queryParams: {queries: string[]; entities: string[]}): Promise<string> {
+        if (!this.graphiti) return '';
 
         const groupName = `group-${this.groupId}`;
         const uniqueMemories = new Map<string, string | null>();
@@ -476,20 +481,25 @@ export class ReplyAgent {
             }
         }
 
+        const facts = Array.from(uniqueMemories.entries()).slice(0, 10);
+        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${facts.length} relevant memories`);
+
+        // 实体搜索关闭时，「--- 记忆自动检索 ---」不分节，仅注入事实列表
+        if (!(this.config.ai.memoryKeyword?.enable_entity_search ?? false)) {
+            return facts.map(([fact, validAt]) => {
+                const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
+                return `- ${fact}${timeInfo}`;
+            }).join('\n');
+        }
+
         // 搜索实体节点
+        const uniqueEntities = new Map<string, string | null>();
         for (const entity of queryParams.entities) {
             try {
                 const nodeResults = await this.graphiti.searchNodes(entity, groupName, 3);
-                // 对于每个找到的实体，搜索相关的事实
                 for (const node of nodeResults.nodes) {
-                    if (node.uuid) {
-                        // 使用实体名称作为查询搜索相关事实
-                        const factResults = await this.graphiti.search(node.name, groupName, 3);
-                        for (const e of factResults.results) {
-                            if (!uniqueMemories.has(e.fact)) {
-                                uniqueMemories.set(e.fact, e.valid_at);
-                            }
-                        }
+                    if (!uniqueEntities.has(node.name)) {
+                        uniqueEntities.set(node.name, node.summary);
                     }
                 }
             } catch (err) {
@@ -497,12 +507,31 @@ export class ReplyAgent {
             }
         }
 
-        const sorted = Array.from(uniqueMemories.entries()).slice(0, 10);
-        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${sorted.length} relevant memories`);
-        return sorted.map(([fact, validAt]) => {
-            const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
-            return `- ${fact}${timeInfo}`;
-        });
+        const sections: string[] = [];
+        if (facts.length > 0) {
+            sections.push(
+                `${prompts.memorySearchFactsHeader}\n${
+                    facts.map(([fact, validAt]) => {
+                        const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
+                        return `- ${fact}${timeInfo}`;
+                    }).join('\n')}`
+            );
+        }
+
+        const entities = Array.from(uniqueEntities.entries()).slice(0, 10);
+        if (entities.length > 0) {
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${entities.length} relevant entities`);
+            sections.push(
+                `${prompts.memorySearchEntitiesHeader}\n${
+                    entities.map(([name, summary]) => {
+                        if (!summary) return `- ${name}`;
+                        const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
+                        return `- ${name}：${trimmed}`;
+                    }).join('\n')}`
+            );
+        }
+
+        return sections.join('\n\n');
     }
 
     /**
@@ -601,8 +630,8 @@ export class ReplyAgent {
         const queryParams = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
         if (queryParams) {
             const memories = await this.searchMemories(queryParams);
-            if (memories.length > 0) {
-                userTexts[userTexts.length - 1] += prompts.memorySearchSeparator + memories.join('\n');
+            if (memories) {
+                userTexts[userTexts.length - 1] += `${prompts.memorySearchSeparator}\n${memories}`;
             }
         }
 
