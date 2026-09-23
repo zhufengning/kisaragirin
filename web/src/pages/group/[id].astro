@@ -64,7 +64,55 @@ const messages = rows.map(r => ({
     specialType: r.specialType,
 }));
 
+// 收集本页消息中所有图片 sha256（含 reply/forward 嵌套），批量查询图片描述
+function collectSha256(segments: StoredSegment[], shaSet: Set<string>): void {
+    for (const seg of segments) {
+        if (seg.type === 'image') {
+            shaSet.add(seg.sha256);
+        } else if (seg.type === 'reply' && seg.message) {
+            collectSha256(seg.message.segments, shaSet);
+        } else if (seg.type === 'forward' && seg.messages) {
+            for (const m of seg.messages) collectSha256(m.segments, shaSet);
+        }
+    }
+}
+
+const pageShaSet = new Set<string>();
+for (const msg of messages) collectSha256(msg.segments, pageShaSet);
+const pageShaList = Array.from(pageShaSet);
+const imageDescRows = pageShaList.length > 0
+    ? await db.select().from(schema.images).where(sql`${schema.images.sha256} IN ${pageShaList}`)
+    : [];
+const imageDescMap = new Map(imageDescRows.map(r => [r.sha256, r.description]));
+
 type MessageItem = typeof messages[number];
+
+interface MessageImageInfo {
+    sha256: string;
+    description: string | null;
+}
+
+/** 提取消息中的图片列表（含 reply/forward 嵌套），按出现顺序去重 */
+function collectImages(segments: StoredSegment[], images: MessageImageInfo[], seen: Set<string>): void {
+    for (const seg of segments) {
+        if (seg.type === 'image') {
+            if (!seen.has(seg.sha256)) {
+                seen.add(seg.sha256);
+                images.push({ sha256: seg.sha256, description: imageDescMap.get(seg.sha256) ?? null });
+            }
+        } else if (seg.type === 'reply' && seg.message) {
+            collectImages(seg.message.segments, images, seen);
+        } else if (seg.type === 'forward' && seg.messages) {
+            for (const m of seg.messages) collectImages(m.segments, images, seen);
+        }
+    }
+}
+
+function messageImages(msg: MessageItem): MessageImageInfo[] {
+    const images: MessageImageInfo[] = [];
+    collectImages(msg.segments, images, new Set());
+    return images;
+}
 
 function formatSender(msg: StoredMessage): string {
     const id = msg.senderId;
@@ -238,7 +286,7 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
                 {messages.map(msg => {
                     const sender = formatSenderCell(msg);
                     return (
-                        <tr class="message-row" data-id={msg.id} data-time={formatTime(msg.time)} data-sender={formatSender(msg)} data-type={msg.specialType} data-preview={formatPreview(msg)} data-segments={JSON.stringify(msg.segments)}>
+                        <tr class="message-row" data-id={msg.id} data-time={formatTime(msg.time)} data-sender={formatSender(msg)} data-type={msg.specialType} data-preview={formatPreview(msg)} data-segments={JSON.stringify(msg.segments)} data-images={JSON.stringify(messageImages(msg))}>
                             <td class="col-check">
                                 <input type="checkbox" class="row-checkbox" value={msg.id} />
                             </td>
@@ -316,6 +364,10 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
                 <div class="detail-field detail-stack">
                     <span class="detail-label">完整内容</span>
                     <pre id="modal-preview" class="detail-preview"></pre>
+                </div>
+                <div class="detail-field detail-stack" id="modal-images-field" style="display: none;">
+                    <span class="detail-label">图片描述</span>
+                    <pre id="modal-images" class="detail-preview"></pre>
                 </div>
                 <div class="detail-field detail-stack">
                     <span class="detail-label">原始 Segments (JSON)</span>
@@ -520,6 +572,21 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
             // 保持原样
         }
         document.getElementById('modal-segments').textContent = segmentsText;
+
+        const imagesField = document.getElementById('modal-images-field');
+        const imagesContainer = document.getElementById('modal-images');
+        if (imagesField && imagesContainer) {
+            let images = [];
+            try {
+                images = JSON.parse(row.dataset.images || '[]');
+            } catch {
+                images = [];
+            }
+            imagesField.style.display = images.length > 0 ? '' : 'none';
+            imagesContainer.textContent = images
+                .map(img => `${img.sha256}\n${img.description || '（无描述）'}`)
+                .join('\n\n');
+        }
 
         detailModal.classList.remove('hidden');
     }

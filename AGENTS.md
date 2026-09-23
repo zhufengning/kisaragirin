@@ -8,7 +8,7 @@
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
-- 两轮回复（支持深度研究agent）
+- 多轮回复（回合链：消息轮 + 可链式的深度研究轮，轮数上限可配置；模型可返回空消息数组主动选择不回复）
 - AgentHarness tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` 可在 loop 中多次调用）
 - 手动 Compact（通过 harness.compact 触发会话压缩）
 - 特殊消息类型（前情提要、系统消息）
@@ -59,7 +59,7 @@ src/
     models-factory.ts   -- 模型注册、bot Models 单例与 assignment 解析
     harness-factory.ts  -- AgentHarness `Session` 缓存与按群复用
     reply-tool.ts       -- 回复工具（`reply`），由 AgentHarness 调用
-    reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列）
+    reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列、回合链编排）
     reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
     graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 AgentTool 供 reply-agent 调用
@@ -80,7 +80,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       Layout.astro    -- 暗色主题全局布局
     pages/
       index.astro     -- 群列表
-      group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗 + 按日期范围导入历史消息）
+      group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗[带图片的消息同时展示图片描述，含 reply/forward 嵌套图片] + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
@@ -109,7 +109,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### Prompt 构建封装
 
-- `ReplyAgent.generateReply(task)` 触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`
+- `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（append + prompt + reminder + 结果解析）
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
@@ -129,22 +129,23 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词，搜索 Graphiti 取最近 5 条记忆，注入到最后一条 user message 末尾（带 `--- 记忆自动检索 ---` 分割线）
-- **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出
+- **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
+- **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
-- 如果 Agent loop 结束时未调用回复工具，或调用了回复工具但回复内容为空，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
+- 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
-- **失败回退**：@触发第一轮失败返回 `@响应失败`，闲时触发则静默失败；深度研究第二轮失败时，引用第一轮即时回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但最终回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
-- **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`generateFirstTurn` 返回 `noop: true`，静默跳过不发送失败回退
-- 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续第二轮
+- **失败回退**：消息轮失败时 @触发返回 `@响应失败`（`prompts.atFailureFallback`），闲时/定时触发则静默失败；深度研究轮失败时，引用上一轮回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
+- **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`runMessageTurn` 返回 `noop: true`，静默跳过不发送失败回退
+- 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续研究轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
-- 深度研究后的第二轮回复消息会添加 `reply` segment 指向第一轮的即时回复消息
+- 深度研究轮（及其链式后续回合）的回复消息会添加 `reply` segment 指向上一轮的最后一条回复消息
 
 ### 定时任务触发机制
 
 - `input.scheduled_tasks` 按群号配置任务数组，群号必须同时存在于 `group_whitelist`
 - 每个任务使用 Croner 注册 crontab-like 表达式，支持 5/6/7 字段、nickname、timezone，并启用 `protect` 防止同一任务重入
 - 任务触发时由 `GroupReplyManager.triggerScheduledReply` 插入一条 `special_type='system'` 的系统消息，内容为任务自定义 `prompt`，再以 `type='scheduled'` 入单群 FIFO 队列
-- 若任务配置 `deep_research_topic`，队列执行时会通过 `ReplyTask.preResearchTopic` 传递给 `ReplyAgent.generateReply`，将预研究开始/结束写入系统消息；随后继续走普通第一轮回复和可能的后续两轮回复流程
+- 若任务配置 `deep_research_topic`，队列执行时会通过 `ReplyTask.preResearchTopic` 传递给 `ReplyAgent.runMessageTurn`，将预研究开始/结束写入系统消息；随后继续走普通消息轮回复和可能的后续深度研究轮流程
 - 定时任务不会自动添加 reply segment，失败回退行为与闲时触发一致，静默失败
 
 ### Compact 机制
@@ -159,7 +160,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
 - `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
-- `input.max_tool_call_rounds`：每轮回复中允许的非 `reply` 工具调用轮数上限，默认 5
+- `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
+- `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/index.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
@@ -198,7 +200,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
-- `src/util/reply-manager.ts` — 群回复触发管理与队列
+- `src/util/reply-manager.ts` — 群回复触发管理、队列与回合链编排
 - `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
 - `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
 - `src/util/models-factory.ts` — 模型注册、bot Models 单例与 assignment 解析
