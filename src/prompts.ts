@@ -92,12 +92,12 @@ export class Prompts {
   }
 
   replyReminder(): string {
-    return '未检测到有效reply工具调用，回复失败。请使用 reply 工具进行回复。';
+    return '未检测到有效reply工具调用。请使用 reply 工具进行决策。';
   }
 
   /** API 错误（stopReason='error'/'aborted'）后重新引导的提示词 */
   replyErrorReminder(): string {
-    return 'reply调用正确但服务端出现未知错误，请重新使用reply工具进行回复。';
+    return 'reply调用正确但服务端出现未知错误，请重新使用reply工具进行决策。';
   }
 
   /** 深度研究轮的引导语（研究结果已写入系统消息，随新消息一起读入） */

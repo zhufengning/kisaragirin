@@ -265,7 +265,7 @@ function renderReply (seg: StoredReplySegment, ctx: RenderContext): string {
             descCache: ctx.descCache
         });
         const refId = typeof refMsg.id === 'number' ? `(#${refMsg.id})` : '';
-        return `\n${indentStr(ctx.indent + 1)}${refId}[ref ${sender}]: ${body}\n`;
+        return `\n${indentStr(ctx.indent + 1)}${refId}[ref ${sender}]: ${body}\n+++\n\n`;
     }
     return `[ref ${sender}]`;
 }
