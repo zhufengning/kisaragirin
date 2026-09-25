@@ -18,7 +18,7 @@
 
 ## 包管理
 
-yarn
+pnpm
 
 ## 约束
 
@@ -29,13 +29,13 @@ yarn
 - `lib/` 是上游 SDK，不写业务逻辑
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
 - 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
-- 完成修改后，bot部分的修改运行以下yarn任务：type:check, lint，webui部分非修改运行web:check, web:lint。所有warning、hint视同error处理。
+- 完成修改后，bot部分的修改运行以下pnpm任务：type:check, lint，webui部分非修改运行web:check, web:lint。所有warning、hint视同error处理。
 - pi ai和pi agent的文档和源码保存在~/repos/their/pi
 - 其余库可通过context7查询文档
 - 对于任何库，先阅读相关文档，再写代码
 - 优先阅读文档，无法找到答案的，再阅读源代码
 - 不到万不得已，禁止从node_modules中读取这些经过编译、压缩的代码。在此之前求助于文档，而不是你的记忆和想象
-- 未经允许严禁私自运行服务和测试，禁止运行任何package.json中未定义的编译、打包、测试、类型检查指令.运行时必须通过yarn运行，禁止手动编写命令。
+- 未经允许严禁私自运行服务和测试，禁止运行任何package.json中未定义的编译、打包、测试、类型检查指令.运行时必须通过pnpm运行，禁止手动编写命令。
 - 用户要求编辑配置文件，而没有要求编辑实例时，严禁对example做出任何修改。
 
 ## 架构设计

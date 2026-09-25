@@ -23,11 +23,11 @@
         }
     },
     "scripts": {
-        "prepublish": "yarn run build",
+        "prepublish": "pnpm run build",
         "type:check": "tsc --noEmit",
         "type:watch": "tsc --noEmit --watch",
         "lint": "eslint ./src --ext .ts",
-        "start": "yarn web:build;tsx ./src/index.ts",
+        "start": "tsx ./src/index.ts",
         "build": "rimraf ./dist/ && tsc -p tsconfig.dist.json",
         "web:build": "cd web && astro build",
         "web:check": "cd web && astro check && tsc --noEmit",

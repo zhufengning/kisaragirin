@@ -22,7 +22,7 @@ cp config.example.ts config.ts
 
 # 修改 config.ts，填写 ai.assignments.agent_harness 和 ai.assignments.deep_research
 
-yarn web:build && yarn start
+pnpm web:build && pnpm start
 ```
 
 ## 回复机制

@@ -168,6 +168,9 @@ class ServerState:
     graphiti: Graphiti | None = None
     initialized: bool = False
     config: dict[str, Any] = field(default_factory=dict)
+    # 添加记忆之间互斥：graphiti-core 的写入路径不保证并发安全，
+    # add_episode 之间串行执行；只读方法（search/get_*）不加锁，与添加并发执行
+    add_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 state = ServerState()
@@ -268,14 +271,15 @@ async def handle_add_episode(params: dict[str, Any]) -> Any:
     else:
         ref_dt = datetime.now(timezone.utc)
 
-    result = await state.graphiti.add_episode(
-        name=name,
-        episode_body=content,
-        source_description=source_description,
-        reference_time=ref_dt,
-        source=EpisodeType.json,
-        group_id=group_id,
-    )
+    async with state.add_lock:
+        result = await state.graphiti.add_episode(
+            name=name,
+            episode_body=content,
+            source_description=source_description,
+            reference_time=ref_dt,
+            source=EpisodeType.json,
+            group_id=group_id,
+        )
 
     return {"status": "ok", "episode_uuid": getattr(result, "episode_uuid", None)}
 
@@ -654,11 +658,7 @@ async def handle_get_neighbors(params: dict[str, Any]) -> Any:
 
 
 async def handle_shutdown(_params: dict[str, Any]) -> Any:
-    """Graceful shutdown."""
-    if state.graphiti is not None:
-        await state.graphiti.close()
-        state.graphiti = None
-    state.initialized = False
+    """响应关闭请求；实际关闭由 main 循环等待在途任务完成后执行。"""
     return {"status": "shutting_down"}
 
 
@@ -705,11 +705,31 @@ async def handle_request(line: str) -> dict[str, Any]:
 
 
 async def main() -> None:
-    """Main loop: read JSON-RPC requests from stdin, write responses to stdout."""
-    loop = asyncio.get_event_loop()
+    """Main loop: read JSON-RPC requests from stdin, dispatch concurrently.
 
-    # 优雅退出：收到 SIGINT/SIGTERM 时正常关闭
+    Each request runs as an independent task; responses are written when the
+    handler completes and are matched by id on the Node side, so out-of-order
+    responses are safe. shutdown/EOF/signal waits for in-flight tasks before
+    closing the Graphiti connection.
+    """
+    loop = asyncio.get_event_loop()
+    write_lock = asyncio.Lock()
+    pending_tasks: set[asyncio.Task] = set()
+    shutdown_started = False
+
+    async def process_line(line: str) -> None:
+        response = await handle_request(line)
+        async with write_lock:
+            _write_response(response)
+
     async def graceful_shutdown() -> None:
+        nonlocal shutdown_started
+        if shutdown_started:
+            return
+        shutdown_started = True
+        # 等待在途任务（含 add_lock 内排队中的 add_episode）完成后再关闭连接
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
         if state.graphiti is not None:
             try:
                 await state.graphiti.close()
@@ -739,8 +759,9 @@ async def main() -> None:
         if not line.strip():
             continue
 
-        response = await handle_request(line)
-        _write_response(response)
+        task = asyncio.create_task(process_line(line))
+        pending_tasks.add(task)
+        task.add_done_callback(pending_tasks.discard)
 
         # Check if this was a shutdown request
         try:
@@ -750,7 +771,7 @@ async def main() -> None:
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # 循环结束后确保关闭连接
+    # 循环结束后等待在途任务完成并关闭连接
     await graceful_shutdown()
 
 
