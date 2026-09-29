@@ -160,6 +160,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
 - `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
+- `input.silence_recent_window` / `input.silence_recent_bot_threshold` / `input.silence_recent_bot_multiplier`：闲时触发前检查最近 `silence_recent_window` 条消息，其中 bot 消息数达到 `silence_recent_bot_threshold` 时闲时等待时间按 `silence_recent_bot_multiplier` 倍延长（默认 1，不放大）；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示禁用该检查
 - `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线

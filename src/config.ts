@@ -18,6 +18,12 @@ export class InputConfig {
     merge_window = 30;
     silence_wait_time = 30;
     reply_probability = 0.1;
+    /** 闲时触发前检查最近多少条消息，0 表示禁用该检查 */
+    silence_recent_window = 0;
+    /** 最近 silence_recent_window 条消息中 bot 消息数达到该值时闲时等待时间按 silence_recent_bot_multiplier 倍延长，0 表示禁用该检查 */
+    silence_recent_bot_threshold = 0;
+    /** bot 消息占比超阈值时闲时等待时间的放大倍数，默认 1（不放大） */
+    silence_recent_bot_multiplier = 1;
     max_tool_call_rounds = 5;
     /** 每个任务内允许的最大深度研究次数（深度研究轮可链式再次请求研究，达到上限后忽略），默认 3 */
     max_deep_research_rounds = 3;

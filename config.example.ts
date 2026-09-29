@@ -64,6 +64,15 @@ export const config: AppConfig = {
         debug_dump_prompt: false
         /** 每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究），默认 3 */
         // max_deep_research_rounds: 3,
+        /**
+         * 闲时触发前检查最近 silence_recent_window 条消息：
+         * 其中 bot 消息数达到 silence_recent_bot_threshold 时，闲时等待时间按 silence_recent_bot_multiplier 倍延长。
+         * 每次有新消息都会重新计算等待时间。
+         * window 或 threshold 为 0（默认）表示禁用该检查
+         */
+        // silence_recent_window: 10,
+        // silence_recent_bot_threshold: 3,
+        // silence_recent_bot_multiplier: 2,
     },
     web: {
         host: '0.0.0.0',

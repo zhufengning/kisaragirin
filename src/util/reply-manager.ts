@@ -219,8 +219,38 @@ export class GroupReplyManager {
         });
     }
 
+    /**
+     * 最近 silence_recent_window 条消息中 bot 消息数是否达到 silence_recent_bot_threshold。
+     * 任一项未配置（<= 0）时返回 false。better-sqlite3 为同步驱动，可直接同步查询。
+     */
+    private recentBotMessagesDominate (): boolean {
+        const window = this.config.input.silence_recent_window;
+        const threshold = this.config.input.silence_recent_bot_threshold;
+        if (window <= 0 || threshold <= 0) return false;
+
+        const rows = this.db
+            .select({isBot: schema.messages.isBot})
+            .from(schema.messages)
+            .where(eq(schema.messages.groupId, this.groupId))
+            .orderBy(desc(schema.messages.id))
+            .limit(window)
+            .all();
+
+        const botCount = rows.filter(r => r.isBot).length;
+        const dominated = botCount >= threshold;
+        if (dominated) {
+            this.logger.debug(
+                `[ReplyManager] [${this.groupId}] recent ${rows.length} messages contain ` +
+                `${botCount} bot message(s) (>= ${threshold}), silence wait time multiplied`);
+        }
+        return dominated;
+    }
+
     private startSilenceTimer (): void {
-        const minutes = this.config.input.silence_wait_time;
+        // 每次有新消息进来都会重新启动定时器，等待时间按当前消息构成重新计算
+        const multiplier = this.recentBotMessagesDominate() ?
+            this.config.input.silence_recent_bot_multiplier : 1;
+        const minutes = this.config.input.silence_wait_time * multiplier;
         this.logger.debug(`[ReplyManager] [${this.groupId}] silence timer started (${minutes}min)`);
         this.silenceTimeout = setTimeout(() => this.onSilenceTimeout(), minutes * 60 * 1000);
     }
