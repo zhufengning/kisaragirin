@@ -96,6 +96,20 @@ export interface GraphitiConfig {
  */
 export type ModelAssignmentKey = string | string[];
 
+/** 深度研究使用的 pi rpc 配置 */
+export interface PiRpcConfig {
+    /** pi CLI 命令，默认 pi */
+    command?: string;
+    /** 追加在 `--mode rpc` 之后的命令行参数，默认 ['--no-session']（不保存会话文件） */
+    args?: string[];
+    /** 子进程环境变量，覆盖 process.env 中的同名变量 */
+    env?: Record<string, string>;
+    /** 子进程工作目录，默认当前工作目录 */
+    cwd?: string;
+    /** 单次研究从提交到完成的超时时间（毫秒），默认 1800000 */
+    timeout_ms?: number;
+}
+
 /** 单个时段模型配置 */
 export interface TimeSlot {
     /** 起始时间 HH:mm（24h） */
@@ -118,7 +132,8 @@ export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
         vision: ModelAssignmentKey | ScheduledModelAssignment;
-        deep_research: ModelAssignmentKey | ScheduledModelAssignment;
+        /** 深度研究：pi rpc 配置，字符串形式为 pi CLI 命令的简写（等价于 `{command: 字符串}`） */
+        deep_research: string | PiRpcConfig;
         /** Agent harness 模型 */
         agent_harness: ModelAssignmentKey | ScheduledModelAssignment;
         /** 记忆关键词生成模型 */

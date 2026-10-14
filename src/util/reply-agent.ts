@@ -1,8 +1,8 @@
 import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
-import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
+import {type AssistantMessage, type Models} from '@earendil-works/pi-ai';
 import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
-import type {AppConfig, ModelEntry} from '~/config';
+import type {AppConfig, ModelEntry, PiRpcConfig} from '~/config';
 import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {ReplyTask} from './reply-manager';
@@ -17,6 +17,7 @@ import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './re
 import {createGraphitiTools} from './graphiti-tool';
 import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
+import {runPiRpcPrompt} from './pi-rpc-client';
 import OpenAI from 'openai';
 
 function formatToolParameters (toolSchema: AgentTool['parameters']): string {
@@ -73,28 +74,10 @@ async function buildUserPromptArray (
     return [body];
 }
 
-function extractText (response: AssistantMessage): string {
-    return response.content
-        .filter((c): c is Extract<typeof c, { type: 'text' }> => c.type === 'text')
-        .map(c => c.text)
-        .join('')
-        .trim();
-}
-
 function formatUsage (usage: AssistantMessage['usage']): string {
     const totalInput = usage.input + usage.cacheRead;
     const cacheRatio = totalInput > 0 ? ((usage.cacheRead / totalInput) * 100).toFixed(2) : '0.00';
     return `input=${usage.input} output=${usage.output} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} cacheWrite1h=${usage.cacheWrite1h ?? 0} cacheRead/totalInput=${cacheRatio}%`;
-}
-
-function stringifyMessageContent (content: Context['messages'][number]['content']): string {
-    if (typeof content === 'string') return content;
-    return content
-        .map(block => {
-            if (block.type === 'text') return block.text;
-            return JSON.stringify(block);
-        })
-        .join('\n');
 }
 
 /**
@@ -120,7 +103,6 @@ export class ReplyAgent {
     private db: Db;
     private descQueue: DescQueue;
     private config: AppConfig;
-    private models: Models;
     private groupId: number;
     private session: Session<JsonlSessionMetadata>;
     private harness: AgentHarness;
@@ -137,7 +119,6 @@ export class ReplyAgent {
         db: Db;
         descQueue: DescQueue;
         config: AppConfig;
-        models: Models;
         groupId: number;
         session: Session<JsonlSessionMetadata>;
         harness: AgentHarness;
@@ -148,7 +129,6 @@ export class ReplyAgent {
         this.db = options.db;
         this.descQueue = options.descQueue;
         this.config = options.config;
-        this.models = options.models;
         this.groupId = options.groupId;
         this.session = options.session;
         this.harness = options.harness;
@@ -223,7 +203,6 @@ export class ReplyAgent {
             db,
             descQueue,
             config,
-            models,
             groupId,
             session,
             harness,
@@ -892,73 +871,27 @@ export class ReplyAgent {
     }
 
     private async doDeepResearch (topic: string): Promise<string> {
-        // 按回退链依次尝试：API 错误时切换下一个模型
-        const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.deep_research);
+        const assignment = this.config.ai.assignments.deep_research;
+        const rpcConfig: PiRpcConfig = typeof assignment === 'string' ? {command: assignment} : assignment;
+        const message = `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`;
 
-        let lastError: unknown;
-        for (const [index, modelEntry] of modelEntries.entries()) {
-            try {
-                return await this.completeDeepResearch(modelEntry, topic);
-            } catch (err) {
-                lastError = err;
-                this.logger.error(
-                    `[ReplyAgent] [${this.groupId}] deep research failed ` +
-                    `(model=${modelEntry.model.id}):`, err);
-                if (index < modelEntries.length - 1) {
-                    this.logger.warn(
-                        `[ReplyAgent] [${this.groupId}] deep research falling back to model ${
-                            modelEntries[index + 1].model.id}`);
-                }
-            }
-        }
+        this.dumpDeepResearchPrompt(rpcConfig, message);
+        this.logger.debug(
+            `[ReplyAgent] [${this.groupId}] pi rpc deep research start command=${
+                rpcConfig.command ?? 'pi'} cwd=${rpcConfig.cwd ?? process.cwd()}`);
 
-        throw lastError instanceof Error ? lastError : new Error(String(lastError));
-    }
+        const text = await runPiRpcPrompt({
+            command: rpcConfig.command,
+            args: rpcConfig.args,
+            env: rpcConfig.env,
+            cwd: rpcConfig.cwd,
+            message,
+            timeoutMs: rpcConfig.timeout_ms
+        });
 
-    private async completeDeepResearch (modelEntry: ModelEntry, topic: string): Promise<string> {
-        this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch model=${modelEntry.model.name} topic=${topic}`);
-
-        const context: Context = {
-            messages: [{
-                role: 'user',
-                content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`,
-                timestamp: Date.now()
-            }]
-        };
-        const dumpPrefix = this.dumpDeepResearchPrompt(context);
-
-        let response: AssistantMessage | undefined;
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1_800_000);
-
-            response = await this.models.completeSimple(modelEntry.model, context, {
-                apiKey: modelEntry.apiKey,
-                signal: controller.signal,
-                timeoutMs: 1_800_000,
-                onPayload: payload => {
-                    this.dumpDeepResearchPayload(dumpPrefix, payload);
-                }
-            });
-
-            clearTimeout(timeoutId);
-            this.dumpDeepResearchConversation(context, response);
-
-            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
-                throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
-            }
-
-            this.logger.info(`[ReplyAgent] [${this.groupId}] deep research usage: ${formatUsage(response.usage)}`);
-
-            const text = extractText(response);
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] doDeepResearch done text length=${text.length}`);
-            return text;
-        } catch (err) {
-            if (!response) {
-                this.dumpDeepResearchConversation(context, undefined, err);
-            }
-            throw err;
-        }
+        this.dumpDeepResearchResult(text);
+        this.logger.debug(`[ReplyAgent] [${this.groupId}] pi rpc deep research done length=${text.length}`);
+        return text;
     }
 
     async appendBotMessage (storedMessage: StoredMessage): Promise<void> {
@@ -1042,7 +975,7 @@ export class ReplyAgent {
         );
     }
 
-    private dumpDeepResearchPrompt (context: Context): string | undefined {
+    private dumpDeepResearchPrompt (rpcConfig: PiRpcConfig, message: string): void {
         if (!this.config.input.debug_dump_prompt) return;
 
         const debugPrefix = this.debugPrefix || this.createDebugPrefix(this.groupId, 'deep-research');
@@ -1051,67 +984,33 @@ export class ReplyAgent {
         const dir = join('data', 'debug', debugPrefix);
         mkdirSync(dir, {recursive: true});
 
-        if (context.systemPrompt) {
-            writeFileSync(join(dir, 'deep-research-system.txt'), context.systemPrompt, 'utf-8');
-        }
+        writeFileSync(join(dir, 'deep-research-prompt.txt'), message, 'utf-8');
         writeFileSync(
-            join(dir, 'deep-research-user.txt'),
-            context.messages.map(msg => stringifyMessageContent(msg.content)).join('\n\n'),
-            'utf-8'
-        );
-        writeFileSync(
-            join(dir, 'deep-research-prompt.json'),
-            JSON.stringify(context, null, 2),
+            join(dir, 'deep-research-rpc.json'),
+            JSON.stringify({
+                command: rpcConfig.command ?? 'pi',
+                args: rpcConfig.args ?? ['--no-session'],
+                cwd: rpcConfig.cwd ?? process.cwd(),
+                env: rpcConfig.env ?? {},
+                timeout_ms: rpcConfig.timeout_ms
+            }, null, 2),
             'utf-8'
         );
 
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] deep research prompt dumped to ` +
             `${debugPrefix}/deep-research-*`);
-
-        return debugPrefix;
     }
 
-    private dumpDeepResearchPayload (prefix: string | undefined, payload: unknown): void {
-        if (!this.config.input.debug_dump_prompt || !prefix) return;
-
-        const dir = join('data', 'debug', prefix);
-        mkdirSync(dir, {recursive: true});
-
-        const content = JSON.stringify(payload, null, 2);
-        writeFileSync(join(dir, 'deep-research-payload.json'), content, 'utf-8');
-
-        this.logger.debug(
-            `[ReplyAgent] [${this.groupId}] deep research provider payload dumped to ` +
-            `${prefix}/deep-research-payload.json (${content.length} chars)`);
-    }
-
-    private dumpDeepResearchConversation (
-        context: Context,
-        response?: AssistantMessage,
-        error?: unknown,
-    ): void {
+    private dumpDeepResearchResult (text: string): void {
         if (!this.config.input.debug_dump_prompt || !this.debugPrefix) return;
 
         const dir = join('data', 'debug', this.debugPrefix);
         mkdirSync(dir, {recursive: true});
-
-        const messages = response ? [...context.messages, response] : context.messages;
-        const content = JSON.stringify({
-            systemPrompt: context.systemPrompt,
-            messages,
-            response,
-            error: error instanceof Error ? {
-                name: error.name,
-                message: error.message,
-                stack: error.stack
-            } : error
-        }, null, 2);
-
-        writeFileSync(join(dir, 'deep-research-conversation.json'), content, 'utf-8');
+        writeFileSync(join(dir, 'deep-research-result.txt'), text, 'utf-8');
 
         this.logger.debug(
-            `[ReplyAgent] [${this.groupId}] deep research conversation dumped to ` +
-            `${this.debugPrefix}/deep-research-conversation.json (${content.length} chars)`);
+            `[ReplyAgent] [${this.groupId}] deep research result dumped to ` +
+            `${this.debugPrefix}/deep-research-result.txt (${text.length} chars)`);
     }
 }

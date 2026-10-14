@@ -61,6 +61,7 @@ src/
     reply-tool.ts       -- 回复工具（`reply`），由 AgentHarness 调用
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列、回合链编排）
     reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
+    pi-rpc-client.ts    -- pi CLI rpc 模式子进程客户端（深度研究）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
     graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 AgentTool 供 reply-agent 调用
     graphiti-client.ts  -- Graphiti Node.js 客户端（通过 stdio JSON-RPC 与 Python 服务通信）
@@ -136,7 +137,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
 - **失败回退**：消息轮失败时 @触发返回 `@响应失败`（`prompts.atFailureFallback`），闲时/定时触发则静默失败；深度研究轮失败时，引用上一轮回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
 - **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`runMessageTurn` 返回 `noop: true`，静默跳过不发送失败回退
-- 深度研究使用 `@earendil-works/pi-ai` 的 `completeSimple()` 调用 `ai.assignments.deep_research` 指定模型，不经过 Agent loop；深度研究指令拼入 user message 以兼容 Hermes；若返回 `stopReason='error'` / `aborted` 或空结果，记录错误并用 fallback 文本继续研究轮
+- 深度研究使用 `ai.assignments.deep_research` 配置的 pi CLI rpc 模式子进程（`src/util/pi-rpc-client.ts`）：以严格 JSONL 协议写入 prompt，等待 `agent_settled` 后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本；研究报告由 pi agent 自己的模型与工具（网络检索等）产出，子进程的模型、凭据与扩展由 `PI_CODING_AGENT_DIR` 指向的配置目录决定，不由 bot 的 `ai.models` 决定；深度研究指令（`prompts.deepResearchSystem`）拼入 prompt 文本；子进程退出、超时、assistant 报错或空结果时，记录错误并用 fallback 文本继续研究轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
 - 深度研究轮（及其链式后续回合）的回复消息会添加 `reply` segment 指向上一轮的最后一条回复消息
 
@@ -167,18 +168,18 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/index.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment（`string | ScheduledModelAssignment`）
-- `ai.assignments.deep_research`：深度研究专用模型 assignment（`string | ScheduledModelAssignment`）
+- `ai.assignments.deep_research`：深度研究使用的 pi rpc 配置（`string | PiRpcConfig`），字符串形式为 pi CLI 命令的简写（等价于 `{command: 字符串}`）；`PiRpcConfig` 字段：`command`（pi CLI 命令，默认 `pi`）、`args`（追加在 `--mode rpc` 之后的参数，默认 `['--no-session']`）、`env`（子进程环境变量，覆盖 `process.env` 同名变量）、`cwd`（子进程工作目录，默认当前工作目录）、`timeout_ms`（单次研究超时时间，默认 1800000）
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文（`string | ScheduledModelAssignment`）
 - `ai.memoryKeyword`：记忆关键词生成模型的额外配置
   - `disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，调用时注入 `thinking=disabled`，默认 `false`
   - `enable_entity_search`：是否启用实体搜索（`search_nodes`），默认 `false`；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
 - `ai.assignments` 所有字段均支持 `ScheduledModelAssignment` 时段调度：配置 `slots`（含 `start`/`end`/`model`，支持跨日如 `18:00→09:00`）和 `default`，运行时按当前时间匹配第一个命中的 slot 模型，未命中则用 default；也可直接用字符串指定单一模型
-- `ai.assignments` 所有字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。harness 回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；深度研究、记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）
+- `ai.assignments` 中模型字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。harness 回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）；深度研究不再使用模型 assignment，改由 pi rpc 执行
 - `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 - `ai.graphiti.llm.disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，server 侧给 AsyncOpenAI 客户端打补丁注入 `extra_body={"thinking": {"type": "disabled"}}`，默认 `false`
 
-- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究完整 prompt、provider payload、对话数据保存到 `data/debug/`，默认 `false`
+- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究的 prompt、pi rpc 启动配置、研究结果保存到 `data/debug/`，默认 `false`
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
@@ -204,6 +205,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
 - `src/util/reply-manager.ts` — 群回复触发管理、队列与回合链编排
 - `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
+- `src/util/pi-rpc-client.ts` — pi CLI rpc 模式子进程客户端（严格 JSONL 帧、prompt 提交、`agent_settled` 等待、最后一条 assistant 文本获取）
 - `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
 - `src/util/models-factory.ts` — 模型注册、bot Models 单例与 assignment 解析
 - `src/util/credential-store.ts` — pi-ai 凭据内存存储与初始化

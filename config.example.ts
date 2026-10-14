@@ -1,3 +1,4 @@
+import {join} from 'node:path';
 import {InputConfig, type AppConfig} from './src/config';
 import type {Model, Api} from '@earendil-works/pi-ai';
 
@@ -114,7 +115,23 @@ export const config: AppConfig = {
             //     ],
             //     default: ['hermes', 'minimax-m3']  // default 也支持元组回退
             // },
-            deep_research: 'hermes',
+            // 深度研究通过 pi rpc 子进程执行：pi 使用自己的模型配置与工具（网络检索等）
+            // 字符串形式是 pi CLI 命令的简写，等价于 {command: 字符串}
+            deep_research: {
+                // pi CLI 命令，默认 pi
+                // command: 'pi',
+                // 追加在 `--mode rpc` 之后的参数，默认 ['--no-session']
+                // args: ['--no-session'],
+                // 子进程环境变量，覆盖 process.env 中的同名变量
+                env: {
+                    // pi 的配置目录（models.json / auth.json / settings.json）
+                    PI_CODING_AGENT_DIR: join(process.cwd(), '.pi/agent')
+                },
+                // 子进程工作目录，默认当前工作目录
+                cwd: join(process.cwd(), '.pi/workspace'),
+                // 单次研究从提交到完成的超时时间（毫秒），默认 1800000
+                // timeout_ms: 1800000
+            },
             memory_keyword: 'minimax-m3'
         },
         /** 记忆关键词生成模型配置 */
