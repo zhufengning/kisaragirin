@@ -41,6 +41,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@4.20260531.1)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(@types/pg@8.11.0)(better-sqlite3@12.10.0)(pg@8.11.3)
+      jsonrepair:
+        specifier: ^3.15.0
+        version: 3.15.0
       mem0ai:
         specifier: 3.1.2
         version: 3.1.2(@anthropic-ai/sdk@0.40.1)(@azure/identity@4.13.1(supports-color@7.2.0))(@azure/search-documents@12.2.0(supports-color@7.2.0))(@cloudflare/workers-types@4.20260531.1)(@google/genai@1.52.0(bufferutil@4.0.8)(supports-color@7.2.0))(@langchain/core@1.1.48(@opentelemetry/api@1.9.0)(openai@7.8.0(@aws-sdk/credential-provider-node@3.972.47)(@smithy/signature-v4@5.4.5)(undici@7.29.0)(ws@8.18.0(bufferutil@4.0.8))(zod@3.25.76))(ws@8.18.0(bufferutil@4.0.8)))(@mistralai/mistralai@1.15.1(bufferutil@4.0.8))(@qdrant/js-client-rest@1.19.0(typescript@6.0.3))(@supabase/supabase-js@2.106.2)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.10.0)(cloudflare@4.5.0)(compromise@14.15.1)(debug@4.4.3(supports-color@7.2.0))(groq-sdk@0.3.0)(mongodb@7.2.0)(natural@8.1.1(@opentelemetry/api@1.9.0))(ollama@0.5.18)(pg@8.11.3)(redis@4.7.1)(supports-color@7.2.0)(ws@8.18.0(bufferutil@4.0.8))
@@ -3219,6 +3222,10 @@ packages:
 
   jsonc-parser@3.3.1:
     resolution: {integrity: sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==}
+
+  jsonrepair@3.15.0:
+    resolution: {integrity: sha512-wy8OTjwsJwQRnQJkKnMJJ9vcytRdBPAgIF/Hy6+s1dAj42BHMKiyL8JzEieIl3JY7idt8eyHwBWTO8mh/+mtwA==}
+    hasBin: true
 
   jsonwebtoken@9.0.3:
     resolution: {integrity: sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==}
@@ -8268,6 +8275,8 @@ snapshots:
   jsonc-parser@2.3.1: {}
 
   jsonc-parser@3.3.1: {}
+
+  jsonrepair@3.15.0: {}
 
   jsonwebtoken@9.0.3:
     dependencies:

@@ -7,6 +7,7 @@ import type {GraphitiClient} from './graphiti-client';
 import {resolveAssignmentModels} from './models-factory';
 import {prompts} from '~/prompts';
 import OpenAI from 'openai';
+import {JSONRepairError, jsonrepair} from 'jsonrepair';
 
 interface MemoryQueryParams {
     queries: string[];
@@ -126,9 +127,11 @@ export class MemoryContextBuilder {
         const completionBody: any = {
             model: modelEntry.model.id,
             messages: [{role: 'user', content: prompt}],
-            response_format: {type: 'json_object'},
             temperature: 0
         };
+        if (this.config.ai.memoryKeyword?.response_format ?? true) {
+            completionBody.response_format = {type: 'json_object'};
+        }
         if (disableThinking) {
             completionBody.thinking = {type: 'disabled'};
         }
@@ -138,7 +141,7 @@ export class MemoryContextBuilder {
     private parseQueryResponse (text: string, enableEntitySearch: boolean): MemoryQueryParams | null {
         let parsed: {queries?: unknown; entities?: unknown};
         try {
-            parsed = JSON.parse(text);
+            parsed = JSON.parse(this.repairJsonText(text));
         } catch {
             this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: invalid JSON`);
             return null;
@@ -157,6 +160,18 @@ export class MemoryContextBuilder {
         }
 
         return {queries, entities};
+    }
+
+    /** response_format 关闭时端点不保证返回纯 JSON：用 jsonrepair 修复 markdown 围栏与尾随内容 */
+    private repairJsonText (text: string): string {
+        if (this.config.ai.memoryKeyword?.response_format ?? true) return text;
+        try {
+            return jsonrepair(text);
+        } catch (err) {
+            if (!(err instanceof JSONRepairError) || err.position <= 0) throw err;
+            // jsonrepair 不接受根值之后的额外内容，按其给出的出错位置截断后重试
+            return jsonrepair(text.slice(0, err.position));
+        }
     }
 
     private async search (queryParams: MemoryQueryParams): Promise<string> {

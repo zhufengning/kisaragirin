@@ -27,6 +27,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+import pythonmonkey
 from neo4j.time import DateTime as Neo4jDateTime
 
 from graphiti_core import Graphiti
@@ -93,30 +94,26 @@ def _wrap_disable_thinking(client: AsyncOpenAI) -> None:
 # ---------------------------------------------------------------------------
 # JSON 输出清洗
 # ---------------------------------------------------------------------------
-# 部分 OpenAI 兼容端点不强制执行 response_format：模型输出完整 JSON 后继续
-# 输出多余内容（第二个 JSON 对象或尾随文字），graphiti-core 的裸 json.loads
-# 遇到首个 JSON 值之后的多余数据即抛 JSONDecodeError（Extra data），
-# tenacity 重试 4 次后整个 episode 添加失败。这里在传输层把 content 清洗为
-# 第一个完整 JSON 值；任何位置都解码不出 JSON 时保持原样，交给库自身的
-# 重试与报错路径。
+# 部分 OpenAI 兼容端点不强制执行 response_format：模型返回的 JSON 可能被 markdown
+# 围栏包裹、被 max_tokens 截断，或在完整 JSON 之后继续输出多余内容，graphiti-core
+# 的裸 json.loads 遇到这些情况即抛 JSONDecodeError（Extra data），tenacity 重试
+# 4 次后整个 episode 添加失败。这里在传输层用 jsonrepair（graphiti/json_repair.js）
+# 修复 content：覆盖围栏、截断、缺失括号等，根值之后的额外内容按 jsonrepair 给出的
+# 出错位置截断后重试。修复结果与原内容相同时视为无需清洗；无法修复时保持原样，
+# 交给库自身的重试与报错路径。
+
+_json_repair = pythonmonkey.require('./json_repair')
 
 
-def _truncate_to_first_json(text: str) -> str | None:
-    """从首个 '{' / '[' 起解码第一个完整 JSON 值。
-
-    返回截断后的文本；本身无尾随数据或解码失败时返回 None（None 表示无需清洗）。
-    """
-    starts = [i for i in (text.find('{'), text.find('[')) if i != -1]
-    if not starts:
-        return None
-    start = min(starts)
+def _repair_json_content(content: str) -> str | None:
+    """用 jsonrepair 修复模型返回的 JSON 文本；无需修复或无法修复时返回 None。"""
     try:
-        _obj, end = json.JSONDecoder().raw_decode(text, idx=start)
-    except json.JSONDecodeError:
+        repaired = _json_repair.repairJsonText(content)
+    except pythonmonkey.SpiderMonkeyError:
         return None
-    if text[end:].strip():
-        return text[start:end]
-    return None
+    if repaired == content:
+        return None
+    return repaired
 
 
 def _wrap_json_sanitize(client: AsyncOpenAI) -> None:
@@ -129,15 +126,16 @@ def _wrap_json_sanitize(client: AsyncOpenAI) -> None:
         content = msg.content
         if not content:
             return response
-        cleaned = _truncate_to_first_json(content)
-        if cleaned is not None:
+        repaired = _repair_json_content(content)
+        if repaired is not None:
             print(
-                f'[Graphiti] sanitized LLM response: truncated trailing data '
-                f'({len(content)} -> {len(cleaned)} chars)',
+                f'[Graphiti] sanitized LLM response: repaired invalid JSON '
+                f'({len(content)} -> {len(repaired)} chars)',
                 file=sys.stderr,
             )
             print(f'[Graphiti] raw LLM response: {content!r}', file=sys.stderr)
-            msg.content = cleaned
+            print(f'[Graphiti] repaired LLM response: {repaired!r}', file=sys.stderr)
+            msg.content = repaired
         return response
 
     client.chat.completions.create = create_json_sanitized  # type: ignore[method-assign]

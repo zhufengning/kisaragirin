@@ -144,6 +144,8 @@ export interface AiConfig {
     memoryKeyword?: {
         /** 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled，默认 false */
         disable_thinking?: boolean;
+        /** 调用时是否请求 response_format: {type: 'json_object'}，默认 true；端点不支持时设为 false，返回内容改用 jsonrepair 修复 */
+        response_format?: boolean;
         /** 是否启用实体搜索（search_nodes），默认 false；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入 */
         enable_entity_search?: boolean;
     };
