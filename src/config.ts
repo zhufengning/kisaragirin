@@ -134,7 +134,10 @@ export interface AiConfig {
     models: Record<string, ModelEntry>;
     assignments: {
         vision: ModelAssignmentKey | ScheduledModelAssignment;
-        /** 深度研究：pi rpc 配置，字符串形式为 pi CLI 命令的简写（等价于 `{command: 字符串}`） */
+        /**
+         * 深度研究：字符串为 `ai.models` 中的模型 assignment key，通过 LLM 兼容接口直接发起单次研究；
+         * 对象为 pi rpc 配置，改由 pi CLI 子进程执行
+         */
         deep_research: string | PiRpcConfig;
         /** Agent harness 模型 */
         agent_harness: ModelAssignmentKey | ScheduledModelAssignment;

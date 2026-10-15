@@ -7,9 +7,26 @@ import type {ReplyDebugDumper} from './reply-debug';
 import type {GraphitiClient} from './graphiti-client';
 import {addMessageEpisode} from './graphiti-episode';
 import {runPiRpcPrompt} from './pi-rpc-client';
+import {resolveModelEntry} from './models-factory';
+import {formatUsage} from './reply-prompt';
 import {prompts} from '~/prompts';
+import {type AssistantMessage, type Context, type Models} from '@earendil-works/pi-ai';
 
-/** 深度研究执行：调用 pi rpc 子进程并把开始/结果/结束写入系统消息与记忆 */
+/** 模型路径（LLM 兼容接口）单次研究的超时时间（毫秒） */
+const MODEL_DEEP_RESEARCH_TIMEOUT_MS = 1_800_000;
+
+function extractText (response: AssistantMessage): string {
+    return response.content
+        .filter((c): c is Extract<typeof c, { type: 'text' }> => c.type === 'text')
+        .map(c => c.text)
+        .join('')
+        .trim();
+}
+
+/**
+ * 深度研究执行：字符串 assignment 用 `ai.models` 中的模型通过 LLM 兼容接口发起单次研究，
+ * 对象 assignment 用 pi rpc 子进程执行，并把开始/结果/结束写入系统消息与记忆。
+ */
 export class DeepResearchRunner {
     private readonly db: Db;
     private readonly groupId: number;
@@ -18,6 +35,7 @@ export class DeepResearchRunner {
     private readonly descQueue: DescQueue;
     private readonly graphiti: GraphitiClient | null;
     private readonly debug: ReplyDebugDumper;
+    private readonly models: Models;
 
     constructor (options: {
         db: Db;
@@ -27,6 +45,7 @@ export class DeepResearchRunner {
         descQueue: DescQueue;
         graphiti: GraphitiClient | null;
         debug: ReplyDebugDumper;
+        models: Models;
     }) {
         this.db = options.db;
         this.groupId = options.groupId;
@@ -35,6 +54,7 @@ export class DeepResearchRunner {
         this.descQueue = options.descQueue;
         this.graphiti = options.graphiti;
         this.debug = options.debug;
+        this.models = options.models;
     }
 
     async runWithSystemMessages (topic: string): Promise<{result: string; success: boolean}> {
@@ -50,7 +70,7 @@ export class DeepResearchRunner {
         let researchError: string | undefined;
 
         try {
-            researchResult = await this.invokePiRpc(researchTopic);
+            researchResult = await this.invokeResearch(researchTopic);
             this.logger.debug(`[ReplyAgent] [${this.groupId}] deep research done length=${researchResult.length}`);
             if (researchResult) {
                 await this.insertResultMessage(researchTopic, researchResult);
@@ -70,12 +90,68 @@ export class DeepResearchRunner {
         return {result: researchResult, success: researchError === undefined};
     }
 
-    private async invokePiRpc (topic: string): Promise<string> {
+    private async invokeResearch (topic: string): Promise<string> {
         const assignment = this.config.ai.assignments.deep_research;
-        const rpcConfig: PiRpcConfig = typeof assignment === 'string' ? {command: assignment} : assignment;
+        if (typeof assignment === 'string') {
+            return this.invokeModel(assignment, topic);
+        }
+        return this.invokePiRpc(assignment, topic);
+    }
+
+    /** 字符串 assignment：使用 ai.models 中的模型，通过 LLM 兼容接口发起单次研究 */
+    private async invokeModel (modelKey: string, topic: string): Promise<string> {
+        const modelEntry = resolveModelEntry(this.config, modelKey);
+        this.logger.debug(
+            `[ReplyAgent] [${this.groupId}] model deep research start model=${modelEntry.model.name} topic=${topic}`);
+
+        const context: Context = {
+            messages: [{
+                role: 'user',
+                content: `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`,
+                timestamp: Date.now()
+            }]
+        };
+        const dumpPrefix = this.debug.dumpDeepResearchModelPrompt(context);
+
+        let response: AssistantMessage | undefined;
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), MODEL_DEEP_RESEARCH_TIMEOUT_MS);
+
+            response = await this.models.completeSimple(modelEntry.model, context, {
+                apiKey: modelEntry.apiKey,
+                signal: controller.signal,
+                timeoutMs: MODEL_DEEP_RESEARCH_TIMEOUT_MS,
+                onPayload: payload => {
+                    this.debug.dumpDeepResearchModelPayload(dumpPrefix, payload);
+                }
+            });
+
+            clearTimeout(timeoutId);
+            this.debug.dumpDeepResearchModelConversation(context, response);
+
+            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+                throw new Error(response.errorMessage || `Deep research stopped: ${response.stopReason}`);
+            }
+
+            this.logger.info(`[ReplyAgent] [${this.groupId}] deep research usage: ${formatUsage(response.usage)}`);
+
+            const text = extractText(response);
+            this.logger.debug(`[ReplyAgent] [${this.groupId}] model deep research done text length=${text.length}`);
+            return text;
+        } catch (err) {
+            if (!response) {
+                this.debug.dumpDeepResearchModelConversation(context, undefined, err);
+            }
+            throw err;
+        }
+    }
+
+    /** 对象 assignment：pi CLI rpc 模式子进程，使用 pi 自己的模型与工具 */
+    private async invokePiRpc (rpcConfig: PiRpcConfig, topic: string): Promise<string> {
         const message = `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`;
 
-        this.debug.dumpDeepResearchPrompt(rpcConfig, message);
+        this.debug.dumpDeepResearchRpcPrompt(rpcConfig, message);
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] pi rpc deep research start command=${
                 rpcConfig.command ?? 'pi'} cwd=${rpcConfig.cwd ?? process.cwd()}`);
@@ -89,7 +165,7 @@ export class DeepResearchRunner {
             timeoutMs: rpcConfig.timeout_ms
         });
 
-        this.debug.dumpDeepResearchResult(text);
+        this.debug.dumpDeepResearchRpcResult(text);
         this.logger.debug(`[ReplyAgent] [${this.groupId}] pi rpc deep research done length=${text.length}`);
         return text;
     }

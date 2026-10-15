@@ -115,8 +115,10 @@ export const config: AppConfig = {
             //     ],
             //     default: ['hermes', 'minimax-m3']  // default 也支持元组回退
             // },
-            // 深度研究通过 pi rpc 子进程执行：pi 使用自己的模型配置与工具（网络检索等）
-            // 字符串形式是 pi CLI 命令的简写，等价于 {command: 字符串}
+            // 深度研究有两种执行方式：
+            // 1) 字符串：ai.models 中的模型 key，通过 LLM 兼容接口直接发起单次研究
+            // deep_research: 'hermes',
+            // 2) 对象：pi rpc 子进程，pi 使用自己的模型配置与工具（网络检索等）
             deep_research: {
                 // pi CLI 命令，默认 pi
                 // command: 'pi',
@@ -125,10 +127,10 @@ export const config: AppConfig = {
                 // 子进程环境变量，覆盖 process.env 中的同名变量
                 env: {
                     // pi 的配置目录（models.json / auth.json / settings.json）
-                    PI_CODING_AGENT_DIR: join(process.cwd(), '.pi/agent')
+                    PI_CODING_AGENT_DIR: join(process.cwd(), '.pi_dir/agent')
                 },
                 // 子进程工作目录，默认当前工作目录
-                cwd: join(process.cwd(), '.pi/workspace'),
+                cwd: join(process.cwd(), '.pi_dir/workspace'),
                 // 单次研究从提交到完成的超时时间（毫秒），默认 1800000
                 // timeout_ms: 1800000
             },

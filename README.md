@@ -30,7 +30,7 @@ pnpm web:build && pnpm start
 - 支持 `@触发` 与 `闲时触发` 两种模式
 - 闲时触发可配置 `input.silence_recent_window`、`input.silence_recent_bot_threshold` 与 `input.silence_recent_bot_multiplier`：最近 `silence_recent_window` 条消息中 bot 消息数达到 `silence_recent_bot_threshold` 时，闲时等待时间按 `silence_recent_bot_multiplier` 倍延长；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示关闭该检查
 - 支持按群配置定时任务触发
-- 采用回合链架构：消息轮即时回复，若模型要求则执行深度研究（由 pi CLI 的 rpc 模式子进程完成）并追加研究轮回复；研究轮中模型可再次请求深度研究（链式，上限由 `input.max_deep_research_rounds` 控制，默认 3）；模型也可返回空消息数组主动选择不回复
+- 采用回合链架构：消息轮即时回复，若模型要求则执行深度研究（按 `ai.assignments.deep_research` 的配置走模型或 pi rpc）并追加研究轮回复；研究轮中模型可再次请求深度研究（链式，上限由 `input.max_deep_research_rounds` 控制，默认 3）；模型也可返回空消息数组主动选择不回复
 - 新群的会话（harness session）创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
@@ -67,29 +67,30 @@ assignments: {
 
 ## 深度研究配置
 
-深度研究由 pi CLI 的 rpc 模式子进程执行，通过 `ai.assignments.deep_research` 配置：
+`ai.assignments.deep_research` 有两种写法：
 
 ```typescript
 assignments: {
-    // 字符串形式：pi CLI 命令的简写，等价于 {command: 'pi'}
-    deep_research: 'pi',
+    // 1. 字符串：ai.models 中的模型 key，通过 LLM 兼容接口直接发起单次研究
+    deep_research: 'hermes',
 
-    // 完整配置
+    // 2. 对象：pi CLI 的 rpc 模式子进程，pi 使用自己的模型配置与工具（网络检索等）
     deep_research: {
-        command: 'pi',                                                  // pi CLI 命令，默认 pi
-        args: ['--no-session'],                                         // 追加在 `--mode rpc` 之后的参数，默认 ['--no-session']
-        env: {PI_CODING_AGENT_DIR: join(process.cwd(), '.pi/agent')},   // 子进程环境变量，覆盖 process.env 的同名变量
-        cwd: join(process.cwd(), '.pi/workspace'),                      // 子进程工作目录，默认当前工作目录
-        timeout_ms: 1800000,                                            // 单次研究从提交到完成的超时时间，默认 1800000
+        command: 'pi',                                                      // pi CLI 命令，默认 pi
+        args: ['--no-session'],                                             // 追加在 `--mode rpc` 之后的参数，默认 ['--no-session']
+        env: {PI_CODING_AGENT_DIR: join(process.cwd(), '.pi_dir/agent')},   // 子进程环境变量，覆盖 process.env 的同名变量
+        cwd: join(process.cwd(), '.pi_dir/workspace'),                      // 子进程工作目录，默认当前工作目录
+        timeout_ms: 1800000,                                                // 单次研究从提交到完成的超时时间，默认 1800000
     },
 }
 ```
 
-- pi 使用的模型、凭据与扩展（网络检索等）由 `PI_CODING_AGENT_DIR` 指向的配置目录决定（`models.json`、`auth.json`、`settings.json`）
-- 请求以严格 JSONL 协议写入子进程 stdin，等待 `agent_settled` 事件后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本
-- 子进程无人值守运行：扩展对话框（select / confirm / input / editor）一律以 cancelled 回应，避免等待终端输入而挂起
+- 字符串形式使用 bot 自己的模型与 apiKey（`ai.models`），与 `agent_harness` 等 assignment 一样是单个模型 key
+- 对象形式下 pi 使用的模型、凭据与扩展（网络检索等）由 `PI_CODING_AGENT_DIR` 指向的配置目录决定（`models.json`、`auth.json`、`settings.json`）
+- 对象形式的请求以严格 JSONL 协议写入子进程 stdin，等待 `agent_settled` 事件后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本
+- 对象形式子进程无人值守运行：扩展对话框（select / confirm / input / editor）一律以 cancelled 回应，避免等待终端输入而挂起
 - `args` 默认包含 `--no-session`，研究过程不写入会话文件；也可用 `--tools` 限定 pi 可用的工具
-- 研究本身失败（子进程退出、超时、assistant 报错、空结果）时，按原有的失败兜底流程处理
+- 两种形式的失败（API 错误、子进程退出、超时、空结果）都按原有的失败兜底流程处理
 
 ## Web 面板
 

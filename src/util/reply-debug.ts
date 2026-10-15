@@ -1,8 +1,18 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import type {AssistantMessage} from '@earendil-works/pi-ai';
+import type {AssistantMessage, Context} from '@earendil-works/pi-ai';
 import type {AppConfig, PiRpcConfig} from '~/config';
 import type {Logger} from '@lib/util/logger';
+
+function stringifyMessageContent (content: Context['messages'][number]['content']): string {
+    if (typeof content === 'string') return content;
+    return content
+        .map(block => {
+            if (block.type === 'text') return block.text;
+            return JSON.stringify(block);
+        })
+        .join('\n');
+}
 
 /** 将一次回复流程中的 prompt、模型输出与深度研究产物写入 data/debug/ */
 export class ReplyDebugDumper {
@@ -50,7 +60,7 @@ export class ReplyDebugDumper {
         this.write('memory-query-response.json', JSON.stringify(response, null, 2));
     }
 
-    dumpDeepResearchPrompt (rpcConfig: PiRpcConfig, message: string): void {
+    dumpDeepResearchRpcPrompt (rpcConfig: PiRpcConfig, message: string): void {
         const prefix = this.ensurePrefix('deep-research');
         if (!prefix) return;
 
@@ -71,7 +81,7 @@ export class ReplyDebugDumper {
             `${prefix}/deep-research-*`);
     }
 
-    dumpDeepResearchResult (text: string): void {
+    dumpDeepResearchRpcResult (text: string): void {
         const prefix = this.ensurePrefix('deep-research');
         if (!prefix) return;
 
@@ -79,6 +89,56 @@ export class ReplyDebugDumper {
         this.logger.debug(
             `[ReplyAgent] [${this.groupId}] deep research result dumped to ` +
             `${prefix}/deep-research-result.txt (${text.length} chars)`);
+    }
+
+    /** 模型路径（LLM 兼容接口）的深度研究 prompt；返回本次导出目录前缀，供后续 payload dump 使用 */
+    dumpDeepResearchModelPrompt (context: Context): string | undefined {
+        const prefix = this.ensurePrefix('deep-research');
+        if (!prefix) return undefined;
+
+        if (context.systemPrompt) {
+            this.write('deep-research-system.txt', context.systemPrompt);
+        }
+        this.write(
+            'deep-research-user.txt',
+            context.messages.map(msg => stringifyMessageContent(msg.content)).join('\n\n')
+        );
+        this.write('deep-research-prompt.json', JSON.stringify(context, null, 2));
+
+        this.logger.debug(
+            `[ReplyAgent] [${this.groupId}] deep research prompt dumped to ` +
+            `${prefix}/deep-research-*`);
+        return prefix;
+    }
+
+    dumpDeepResearchModelPayload (prefix: string | undefined, payload: unknown): void {
+        if (!prefix) return;
+
+        this.write('deep-research-payload.json', JSON.stringify(payload, null, 2));
+        this.logger.debug(
+            `[ReplyAgent] [${this.groupId}] deep research provider payload dumped to ` +
+            `${prefix}/deep-research-payload.json`);
+    }
+
+    dumpDeepResearchModelConversation (context: Context, response?: AssistantMessage, error?: unknown): void {
+        if (!this.prefix) return;
+
+        const messages = response ? [...context.messages, response] : context.messages;
+        const content = JSON.stringify({
+            systemPrompt: context.systemPrompt,
+            messages,
+            response,
+            error: error instanceof Error ? {
+                name: error.name,
+                message: error.message,
+                stack: error.stack
+            } : error
+        }, null, 2);
+
+        this.write('deep-research-conversation.json', content);
+        this.logger.debug(
+            `[ReplyAgent] [${this.groupId}] deep research conversation dumped to ` +
+            `${this.prefix}/deep-research-conversation.json (${content.length} chars)`);
     }
 
     private ensurePrefix (fallbackLabel: string): string | undefined {

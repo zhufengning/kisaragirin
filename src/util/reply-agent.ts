@@ -67,6 +67,7 @@ export class ReplyAgent {
         systemPromptText: string;
         graphiti: GraphitiClient | null;
         lastBotReplyId: number;
+        models: Models;
     }) {
         this.db = options.db;
         this.descQueue = options.descQueue;
@@ -95,7 +96,8 @@ export class ReplyAgent {
             logger: this.logger,
             descQueue: this.descQueue,
             graphiti: this.graphiti,
-            debug: this.debug
+            debug: this.debug,
+            models: options.models
         });
     }
 
@@ -155,7 +157,8 @@ export class ReplyAgent {
             harness,
             systemPromptText: systemPrompt(),
             graphiti: graphiti ?? null,
-            lastBotReplyId
+            lastBotReplyId,
+            models
         });
 
         agentRef.current = agent;
