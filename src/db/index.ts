@@ -1,8 +1,9 @@
 import Database from 'better-sqlite3';
 import {drizzle} from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
+import type {MessageRow} from './schema';
 import {eq, inArray} from 'drizzle-orm';
-import type {StoredSegment} from '~/message-format';
+import type {StoredMessage, StoredSegment} from '~/message-format';
 
 export {schema};
 
@@ -86,6 +87,20 @@ export async function deleteMessagesByIds (db: Db, ids: number[]): Promise<numbe
     const result = await db.delete(schema.messages)
         .where(inArray(schema.messages.id, ids));
     return result.changes ?? 0;
+}
+
+export function rowToStoredMessage (row: MessageRow): StoredMessage {
+    return {
+        id: row.id,
+        time: row.time,
+        messageId: row.messageId,
+        senderId: row.userId,
+        senderName: row.senderName,
+        senderCard: row.senderCard ?? undefined,
+        isBot: row.isBot,
+        isAtBot: row.isAtBot,
+        segments: row.segments as StoredSegment[]
+    };
 }
 
 export async function insertSystemMessage (

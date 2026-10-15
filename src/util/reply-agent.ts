@@ -1,84 +1,24 @@
 import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
 import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
 import {type AssistantMessage, type Models} from '@earendil-works/pi-ai';
-import {schema, type Db, type JsonlSessionMetadata, insertSystemMessage, setGroupLastTriggerId} from '~/db';
-import type {AppConfig, ModelEntry, PiRpcConfig} from '~/config';
+import {schema, type Db, type JsonlSessionMetadata, rowToStoredMessage, setGroupLastTriggerId} from '~/db';
+import type {AppConfig, ModelEntry} from '~/config';
 import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
-import type {ReplyTask} from './reply-manager';
+import type {ReplyTask} from './reply-task';
 import {messagesToString, type StoredMessage} from '~/message-format';
 import {prompts} from '~/prompts';
-import {mkdirSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {getOrCreateGroupSession} from './harness-factory';
 import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
-import {addMessageEpisode, addMergedMessagesEpisode} from './graphiti-episode';
+import {addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
-import {runPiRpcPrompt} from './pi-rpc-client';
-import OpenAI from 'openai';
-
-function formatToolParameters (toolSchema: AgentTool['parameters']): string {
-    return JSON.stringify(toolSchema, null, 2);
-}
-
-function formatToolsDescription (tools: AgentTool[]): string {
-    if (tools.length === 0) return '无可用工具。';
-
-    return tools
-        .map(tool => {
-            const params = formatToolParameters(tool.parameters);
-            return `- ${tool.name}（${tool.label}）: ${tool.description}\n参数: ${params}`;
-        })
-        .join('\n');
-}
-
-function buildSystemPrompt ({
-    botName,
-    botPersona,
-    toolsDescription,
-    groupCustomPrompt
-}: {
-    botName: string;
-    botPersona: string;
-    toolsDescription: string;
-    groupCustomPrompt?: string;
-}): string {
-    const parts: string[] = [
-        prompts.jailBreak,
-        prompts.replyIdentity(botName),
-        botPersona,
-        '## 可用工具',
-        toolsDescription,
-        prompts.replyToolInstructions
-    ];
-
-    if (groupCustomPrompt) {
-        parts.push(`${prompts.groupCustomPromptStart}\n${groupCustomPrompt}\n${prompts.groupCustomPromptEnd}`);
-    }
-
-    return parts.join('\n\n');
-}
-
-async function buildUserPromptArray (
-    latestMessages: StoredMessage[],
-    descQueue: DescQueue
-): Promise<string[]> {
-    if (latestMessages.length === 0) return [];
-
-    const body = await messagesToString(latestMessages, sha => descQueue.resolve(sha));
-    if (!body.trim()) return [];
-
-    return [body];
-}
-
-function formatUsage (usage: AssistantMessage['usage']): string {
-    const totalInput = usage.input + usage.cacheRead;
-    const cacheRatio = totalInput > 0 ? ((usage.cacheRead / totalInput) * 100).toFixed(2) : '0.00';
-    return `input=${usage.input} output=${usage.output} cacheRead=${usage.cacheRead} cacheWrite=${usage.cacheWrite} cacheWrite1h=${usage.cacheWrite1h ?? 0} cacheRead/totalInput=${cacheRatio}%`;
-}
+import {buildSystemPrompt, buildUserPromptArray, formatToolsDescription, formatUsage} from './reply-prompt';
+import {ReplyDebugDumper} from './reply-debug';
+import {MemoryContextBuilder} from './memory-context';
+import {DeepResearchRunner} from './deep-research';
 
 /**
  * 一个回合（消息轮或深度研究轮）的执行结果。
@@ -108,7 +48,9 @@ export class ReplyAgent {
     private harness: AgentHarness;
     private logger: Logger;
     private systemPromptText: string;
-    private debugPrefix?: string;
+    private debug: ReplyDebugDumper;
+    private memoryContext: MemoryContextBuilder;
+    private researchRunner: DeepResearchRunner;
     private lastReplyToolParams: ReplyToolParams | null = null;
     private toolCallRoundCount = 0;
     private graphiti: GraphitiClient | null = null;
@@ -136,6 +78,25 @@ export class ReplyAgent {
         this.graphiti = options.graphiti;
         this.lastBotReplyId = options.lastBotReplyId;
         this.logger = new Logger();
+
+        this.debug = new ReplyDebugDumper({config: this.config, logger: this.logger, groupId: this.groupId});
+        this.memoryContext = new MemoryContextBuilder({
+            config: this.config,
+            groupId: this.groupId,
+            logger: this.logger,
+            graphiti: this.graphiti,
+            session: this.session,
+            debug: this.debug
+        });
+        this.researchRunner = new DeepResearchRunner({
+            db: this.db,
+            groupId: this.groupId,
+            config: this.config,
+            logger: this.logger,
+            descQueue: this.descQueue,
+            graphiti: this.graphiti,
+            debug: this.debug
+        });
     }
 
     static async create (options: {
@@ -183,10 +144,33 @@ export class ReplyAgent {
             thinkingLevel: 'high'
         });
 
-        const graphitiInstance = graphiti ?? null;
+        const lastBotReplyId = await ReplyAgent.restoreLastBotReplyId(db, groupId);
 
-        // 从数据库恢复该群最近一条 bot 回复行 id：
-        // 重启后 lastBotReplyId 内存状态丢失，否则重启前「回复生成期间送达」的消息无法被乱序检测覆盖
+        const agent = new ReplyAgent({
+            db,
+            descQueue,
+            config,
+            groupId,
+            session,
+            harness,
+            systemPromptText: systemPrompt(),
+            graphiti: graphiti ?? null,
+            lastBotReplyId
+        });
+
+        agentRef.current = agent;
+        ReplyAgent.installToolCallLimit(harness, agent, config, logger, groupId);
+
+        if (isNew) {
+            await ReplyAgent.bootstrapNewSession(db, groupId, logger);
+        }
+
+        logger.info(`[ReplyAgent] [${groupId}] harness created, isNew=${isNew}`);
+        return agent;
+    }
+
+    /** 从数据库恢复该群最近一条 bot 回复行 id；重启后内存状态丢失，否则重启前送达的乱序消息无法被检测 */
+    private static async restoreLastBotReplyId (db: Db, groupId: number): Promise<number> {
         const lastBotReply = await db
             .select({id: schema.messages.id})
             .from(schema.messages)
@@ -197,22 +181,16 @@ export class ReplyAgent {
             ))
             .orderBy(desc(schema.messages.id))
             .limit(1);
-        const lastBotReplyId = lastBotReply[0]?.id ?? 0;
+        return lastBotReply[0]?.id ?? 0;
+    }
 
-        const agent = new ReplyAgent({
-            db,
-            descQueue,
-            config,
-            groupId,
-            session,
-            harness,
-            systemPromptText: systemPrompt(),
-            graphiti: graphitiInstance,
-            lastBotReplyId
-        });
-
-        agentRef.current = agent;
-
+    private static installToolCallLimit (
+        harness: AgentHarness,
+        agent: ReplyAgent,
+        config: AppConfig,
+        logger: Logger,
+        groupId: number
+    ): void {
         harness.on('tool_call', event => {
             if (event.toolName === 'reply') {
                 return undefined;
@@ -226,23 +204,20 @@ export class ReplyAgent {
             }
             return undefined;
         });
+    }
 
-        if (isNew) {
-            logger.info(`[ReplyAgent] [${groupId}] new session created, no history imported`);
-            const latest = await db
-                .select({id: schema.messages.id})
-                .from(schema.messages)
-                .where(eq(schema.messages.groupId, groupId))
-                .orderBy(desc(schema.messages.id))
-                .limit(1);
-            if (latest.length > 0) {
-                await setGroupLastTriggerId(db, groupId, latest[0].id);
-                logger.info(`[ReplyAgent] [${groupId}] lastTriggerId set to ${latest[0].id}`);
-            }
+    private static async bootstrapNewSession (db: Db, groupId: number, logger: Logger): Promise<void> {
+        logger.info(`[ReplyAgent] [${groupId}] new session created, no history imported`);
+        const latest = await db
+            .select({id: schema.messages.id})
+            .from(schema.messages)
+            .where(eq(schema.messages.groupId, groupId))
+            .orderBy(desc(schema.messages.id))
+            .limit(1);
+        if (latest.length > 0) {
+            await setGroupLastTriggerId(db, groupId, latest[0].id);
+            logger.info(`[ReplyAgent] [${groupId}] lastTriggerId set to ${latest[0].id}`);
         }
-
-        logger.info(`[ReplyAgent] [${groupId}] harness created, isNew=${isNew}`);
-        return agent;
     }
 
     /**
@@ -271,17 +246,7 @@ export class ReplyAgent {
 
         let imported = 0;
         for (const row of rows) {
-            const msg: StoredMessage = {
-                id: row.id,
-                time: row.time,
-                messageId: row.messageId,
-                senderId: row.userId,
-                senderName: row.senderName,
-                senderCard: row.senderCard ?? undefined,
-                isBot: row.isBot,
-                isAtBot: row.isAtBot,
-                segments: row.segments as StoredMessage['segments']
-            };
+            const msg = rowToStoredMessage(row);
             const text = await messagesToString([msg], sha => this.descQueue.resolve(sha));
             if (!text.trim()) continue;
 
@@ -326,226 +291,7 @@ export class ReplyAgent {
             )
             .orderBy(asc(schema.messages.id));
 
-        return rows.map(row => ({
-            id: row.id,
-            time: row.time,
-            messageId: row.messageId,
-            senderId: row.userId,
-            senderName: row.senderName,
-            senderCard: row.senderCard ?? undefined,
-            isBot: row.isBot,
-            isAtBot: row.isAtBot,
-            segments: row.segments as StoredMessage['segments']
-        }));
-    }
-
-    private async generateMemoryQuery (
-        messagesText: string,
-        existingMemories: string[]
-    ): Promise<{queries: string[]; entities: string[]} | null> {
-        if (!this.config.ai.assignments.memory_keyword) return null;
-
-        const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.memory_keyword);
-        const existingBlock = existingMemories.length > 0 ?
-            existingMemories.join('\n') :
-            '（无）';
-        // 实体搜索未启用时不生成 entities 查询：prompt 中不注入 entities 字段说明，解析结果强制为空
-        const enableEntitySearch = this.config.ai.memoryKeyword?.enable_entity_search ?? false;
-        const prompt = prompts.memoryQueryPrompt
-            .replace('{entities_field}', enableEntitySearch ? prompts.memoryQueryPromptEntitiesField : '')
-            .replace('{existing_memories}', existingBlock)
-            .replace('{messages}', messagesText);
-
-        // Debug dump memory query prompt
-        if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-            const dir = join('data', 'debug', this.debugPrefix);
-            mkdirSync(dir, {recursive: true});
-            writeFileSync(join(dir, 'memory-query-prompt.txt'), prompt, 'utf-8');
-            this.logger.debug(
-                `[ReplyAgent] [${this.groupId}] memory query prompt dumped to ` +
-                `${this.debugPrefix}/memory-query-*`);
-        }
-
-        const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
-        if (disableThinking) {
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: disable thinking`);
-        }
-
-        // 按回退链依次尝试：API 错误时切换下一个模型
-        for (const [index, modelEntry] of modelEntries.entries()) {
-            try {
-                // 使用 OpenAI SDK 调用模型
-                const client = new OpenAI({
-                    apiKey: modelEntry.apiKey,
-                    baseURL: modelEntry.model.baseUrl
-                });
-
-                const completionBody: any = {
-                    model: modelEntry.model.id,
-                    messages: [{role: 'user', content: prompt}],
-                    response_format: {type: 'json_object'},
-                    temperature: 0
-                };
-                if (disableThinking) {
-                    completionBody.thinking = {type: 'disabled'};
-                }
-                const response: any = await client.chat.completions.create(completionBody);
-
-                // Debug dump memory query response
-                if (this.config.input.debug_dump_prompt && this.debugPrefix) {
-                    const dir = join('data', 'debug', this.debugPrefix);
-                    mkdirSync(dir, {recursive: true});
-                    writeFileSync(
-                        join(dir, 'memory-query-response.json'),
-                        JSON.stringify(response, null, 2), 'utf-8');
-                }
-
-                const text = response.choices[0]?.message?.content?.trim();
-                if (!text) {
-                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: empty response`);
-                    return null;
-                }
-
-                try {
-                    const parsed = JSON.parse(text);
-                    const queries = Array.isArray(parsed.queries) ? parsed.queries.filter((q: unknown) => typeof q === 'string' && q.trim()) : [];
-                    const entities = enableEntitySearch && Array.isArray(parsed.entities) ?
-                        parsed.entities.filter((e: unknown) => typeof e === 'string' && e.trim()) :
-                        [];
-
-                    if (queries.length === 0 && entities.length === 0) {
-                        this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: no queries or entities`);
-                        return null;
-                    }
-
-                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: ${queries.length} queries, ${entities.length} entities`);
-                    return {queries, entities};
-                } catch {
-                    this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: invalid JSON`);
-                    return null;
-                }
-            } catch (err) {
-                this.logger.error(
-                    `[ReplyAgent] [${this.groupId}] memory query generation error ` +
-                    `(model=${modelEntry.model.id}): ` +
-                    `${err instanceof Error ? err.message : String(err)}`);
-                if (index < modelEntries.length - 1) {
-                    this.logger.warn(
-                        `[ReplyAgent] [${this.groupId}] memory query falling back to model ${
-                            modelEntries[index + 1].model.id}`);
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private async searchMemories (queryParams: {queries: string[]; entities: string[]}): Promise<string> {
-        if (!this.graphiti) return '';
-
-        const groupName = `group-${this.groupId}`;
-        const uniqueMemories = new Map<string, string | null>();
-
-        // 搜索自然语言查询（事实）
-        for (const query of queryParams.queries) {
-            try {
-                const results = await this.graphiti.search(query, groupName, 5);
-                for (const e of results.results) {
-                    if (!uniqueMemories.has(e.fact)) {
-                        uniqueMemories.set(e.fact, e.valid_at);
-                    }
-                }
-            } catch (err) {
-                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for query "${query}":`, err);
-            }
-        }
-
-        const facts = Array.from(uniqueMemories.entries()).slice(0, 10);
-        this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${facts.length} relevant memories`);
-
-        // 实体搜索关闭时，「--- 记忆自动检索 ---」不分节，仅注入事实列表
-        if (!(this.config.ai.memoryKeyword?.enable_entity_search ?? false)) {
-            return facts.map(([fact, validAt]) => {
-                const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
-                return `- ${fact}${timeInfo}`;
-            }).join('\n');
-        }
-
-        // 搜索实体节点
-        const uniqueEntities = new Map<string, string | null>();
-        for (const entity of queryParams.entities) {
-            try {
-                const nodeResults = await this.graphiti.searchNodes(entity, groupName, 3);
-                for (const node of nodeResults.nodes) {
-                    if (!uniqueEntities.has(node.name)) {
-                        uniqueEntities.set(node.name, node.summary);
-                    }
-                }
-            } catch (err) {
-                this.logger.error(`[ReplyAgent] [${this.groupId}] memory search error for entity "${entity}":`, err);
-            }
-        }
-
-        const sections: string[] = [];
-        if (facts.length > 0) {
-            sections.push(
-                `${prompts.memorySearchFactsHeader}\n${
-                    facts.map(([fact, validAt]) => {
-                        const timeInfo = validAt ? ` (${validAt.split('T')[0]})` : '';
-                        return `- ${fact}${timeInfo}`;
-                    }).join('\n')}`
-            );
-        }
-
-        const entities = Array.from(uniqueEntities.entries()).slice(0, 10);
-        if (entities.length > 0) {
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] found ${entities.length} relevant entities`);
-            sections.push(
-                `${prompts.memorySearchEntitiesHeader}\n${
-                    entities.map(([name, summary]) => {
-                        if (!summary) return `- ${name}`;
-                        const trimmed = summary.length > 200 ? `${summary.slice(0, 200)}…` : summary;
-                        return `- ${name}：${trimmed}`;
-                    }).join('\n')}`
-            );
-        }
-
-        return sections.join('\n\n');
-    }
-
-    /**
-     * 从当前 session 分支中提取已注入的记忆事实。
-     * 扫描所有 message entry 中 "记忆自动检索" 分割线之后的内容，
-     * 提取以 "- " 开头的记忆条目，用于去重。
-     */
-    private async extractExistingMemories (): Promise<string[]> {
-        const facts: string[] = [];
-        try {
-            const entries = await this.session.getBranch();
-            for (const entry of entries) {
-                if (entry.type !== 'message') continue;
-                const msg = entry.message;
-                if (msg.role !== 'user') continue;
-                const text = typeof msg.content === 'string' ?
-                    msg.content :
-                    msg.content
-                        .filter(c => c.type === 'text')
-                        .map(c => c.text)
-                        .join('');
-                const separatorIdx = text.indexOf('--- 记忆自动检索 ---');
-                if (separatorIdx === -1) continue;
-                const memBlock = text.slice(separatorIdx + '--- 记忆自动检索 ---'.length);
-                for (const line of memBlock.split('\n')) {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('- ')) {
-                        facts.push(trimmed);
-                    }
-                }
-            }
-        } catch {
-            // ignore
-        }
-        return facts;
+        return rows.map(row => rowToStoredMessage(row));
     }
 
     private getReplyToolParams (): ReplyToolParams | null {
@@ -581,10 +327,10 @@ export class ReplyAgent {
      * scheduled 任务配置 preResearchTopic 时先执行预研究（结果写入系统消息，随新消息一起读入）。
      */
     async runMessageTurn (task: ReplyTask): Promise<TurnOutcome> {
-        this.debugPrefix = undefined;
+        this.debug.resetTurn();
 
         if (task.preResearchTopic) {
-            await this.doDeepResearchWithSystemMessages(task.preResearchTopic);
+            await this.researchRunner.runWithSystemMessages(task.preResearchTopic);
         }
 
         const latestMessages = await this.fetchMessagesSince(task.lastTriggerId ?? 0);
@@ -601,17 +347,11 @@ export class ReplyAgent {
         // 保存原始 userTexts（不包括记忆搜索结果与时序提示），用于 graphiti 记忆
         const originalUserTexts = [...userTexts];
 
-        // 设置 debugPrefix，以便后续 dump 操作可以使用
-        this.debugPrefix = this.createDebugPrefix(this.groupId, task.type);
+        this.debug.beginTurn(task.type);
 
-        // 从最近 bot 回复中提取已有的记忆（去重），避免重复搜索
-        const existingMemoryFacts = await this.extractExistingMemories();
-        const queryParams = await this.generateMemoryQuery(userTexts.join('\n'), existingMemoryFacts);
-        if (queryParams) {
-            const memories = await this.searchMemories(queryParams);
-            if (memories) {
-                userTexts[userTexts.length - 1] += `${prompts.memorySearchSeparator}\n${memories}`;
-            }
+        const memories = await this.memoryContext.build(userTexts.join('\n'));
+        if (memories) {
+            userTexts[userTexts.length - 1] += `${prompts.memorySearchSeparator}\n${memories}`;
         }
 
         // 乱序消息的时序提示拼在 user 消息最后；
@@ -650,7 +390,7 @@ export class ReplyAgent {
     async runResearchTurn (task: ReplyTask, topic: string, boundary: number): Promise<TurnOutcome> {
         let researchSuccess = false;
         try {
-            const research = await this.doDeepResearchWithSystemMessages(topic);
+            const research = await this.researchRunner.runWithSystemMessages(topic);
             researchSuccess = research.success;
         } catch (err) {
             this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
@@ -698,10 +438,10 @@ export class ReplyAgent {
         this.lastReplyToolParams = null;
         this.toolCallRoundCount = 0;
 
-        this.dumpSystemPrompt(this.debugPrefix, this.systemPromptText);
+        this.debug.dumpSystemPrompt(this.systemPromptText);
         const allTexts = [...appendTexts, promptText];
         for (let i = 0; i < allTexts.length; i++) {
-            this.dumpUserMessage(this.debugPrefix, i, allTexts[i]);
+            this.debug.dumpUserMessage(i, allTexts[i]);
         }
 
         for (const text of appendTexts) {
@@ -728,7 +468,7 @@ export class ReplyAgent {
             return {messages: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
-        this.dumpOutput(this.debugPrefix, assistant);
+        this.debug.dumpOutput(assistant);
 
         const params = this.getReplyToolParams();
         if (!params) {
@@ -804,96 +544,6 @@ export class ReplyAgent {
         return assistant;
     }
 
-    private async doDeepResearchWithSystemMessages (topic: string): Promise<{result: string; success: boolean}> {
-        const researchTopic = topic.trim();
-        const startTime = Math.floor(Date.now() / 1000);
-        const startText = `开始深度研究：${researchTopic}`;
-        const startId = await insertSystemMessage(this.db, this.groupId, startText, startTime);
-        this.logger.info(
-            `[ReplyAgent] [${this.groupId}] system message inserted, id=${startId}, ` +
-            `text=${startText.slice(0, 50)}${startText.length > 50 ? '...' : ''}`);
-
-        let researchResult: string | undefined;
-        let researchError: string | undefined;
-
-        try {
-            researchResult = await this.doDeepResearch(researchTopic);
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] deep research done length=${researchResult.length}`);
-            if (researchResult) {
-                const resultTime = Math.floor(Date.now() / 1000);
-                const resultText = `深度研究结果：${researchTopic}\n\n${researchResult}`;
-                const resultId = await insertSystemMessage(this.db, this.groupId, resultText, resultTime);
-                this.logger.info(
-                    `[ReplyAgent] [${this.groupId}] deep research result message inserted, id=${resultId}, ` +
-                    `topic=${researchTopic.slice(0, 50)}${researchTopic.length > 50 ? '...' : ''}`);
-
-                // 深度研究结果也写入 Graphiti 记忆
-                if (this.graphiti) {
-                    const resultStored: StoredMessage = {
-                        id: resultId,
-                        time: resultTime,
-                        messageId: 0,
-                        senderId: 0,
-                        senderName: '系统',
-                        isBot: true,
-                        isAtBot: false,
-                        segments: [{type: 'system', text: resultText}]
-                    };
-                    addMessageEpisode(this.graphiti, this.groupId, resultStored,
-                        sha => this.descQueue.resolve(sha));
-                }
-            } else {
-                this.logger.error(`[ReplyAgent] [${this.groupId}] deep research returned empty result`);
-                researchError = '深度研究未能获取结果';
-                researchResult = '（深度研究未能获取结果，请根据你已有的知识直接回复。）';
-            }
-        } catch (err) {
-            this.logger.error(`[ReplyAgent] [${this.groupId}] deep research failed:`, err);
-            researchError = err instanceof Error ? err.message : String(err);
-            researchResult = '（深度研究失败，请根据你已有的知识直接回复。）';
-        } finally {
-            const endTime = Math.floor(Date.now() / 1000);
-            let endMsg: string;
-            if (researchError) {
-                endMsg = `深度研究结束：${researchTopic}状态：错误\n\n${researchError}`;
-            } else if (researchResult) {
-                endMsg = `深度研究结束：${researchTopic}状态：成功\n\n`;
-            } else {
-                endMsg = `深度研究结束：${researchTopic}状态：未出错但无结果\n\n`;
-            }
-            const endId = await insertSystemMessage(this.db, this.groupId, endMsg, endTime);
-            this.logger.info(
-                `[ReplyAgent] [${this.groupId}] system message inserted, id=${endId}, ` +
-                `text=${endMsg.slice(0, 50)}${endMsg.length > 50 ? '...' : ''}`);
-        }
-
-        return {result: researchResult, success: researchError === undefined};
-    }
-
-    private async doDeepResearch (topic: string): Promise<string> {
-        const assignment = this.config.ai.assignments.deep_research;
-        const rpcConfig: PiRpcConfig = typeof assignment === 'string' ? {command: assignment} : assignment;
-        const message = `${prompts.deepResearchSystem}\n请深度研究以下主题：\n${topic}`;
-
-        this.dumpDeepResearchPrompt(rpcConfig, message);
-        this.logger.debug(
-            `[ReplyAgent] [${this.groupId}] pi rpc deep research start command=${
-                rpcConfig.command ?? 'pi'} cwd=${rpcConfig.cwd ?? process.cwd()}`);
-
-        const text = await runPiRpcPrompt({
-            command: rpcConfig.command,
-            args: rpcConfig.args,
-            env: rpcConfig.env,
-            cwd: rpcConfig.cwd,
-            message,
-            timeoutMs: rpcConfig.timeout_ms
-        });
-
-        this.dumpDeepResearchResult(text);
-        this.logger.debug(`[ReplyAgent] [${this.groupId}] pi rpc deep research done length=${text.length}`);
-        return text;
-    }
-
     async appendBotMessage (storedMessage: StoredMessage): Promise<void> {
         if (typeof storedMessage.id === 'number') {
             this.lastBotReplyId = Math.max(this.lastBotReplyId, storedMessage.id);
@@ -935,82 +585,5 @@ export class ReplyAgent {
 
     getBranch (): ReturnType<Session['getBranch']> {
         return this.session.getBranch();
-    }
-
-    // ==================== Debug Dump ====================
-
-    private createDebugPrefix (groupId: number, label: string): string | undefined {
-        if (!this.config.input.debug_dump_prompt) return;
-
-        const ts = new Date().toISOString()
-            .replace(/:/g, '-');
-        return `${groupId}/${label}/${ts}`;
-    }
-
-    private dumpSystemPrompt (prefix: string | undefined, systemPrompt: string): void {
-        if (!prefix) return;
-
-        const dir = join('data', 'debug', prefix);
-        mkdirSync(dir, {recursive: true});
-        writeFileSync(join(dir, 'system.txt'), systemPrompt, 'utf-8');
-    }
-
-    private dumpUserMessage (prefix: string | undefined, index: number, text: string): void {
-        if (!prefix) return;
-
-        const dir = join('data', 'debug', prefix);
-        mkdirSync(dir, {recursive: true});
-        writeFileSync(join(dir, `user-${index}.txt`), text, 'utf-8');
-    }
-
-    private dumpOutput (prefix: string | undefined, assistant: AssistantMessage): void {
-        if (!prefix) return;
-
-        const dir = join('data', 'debug', prefix);
-        mkdirSync(dir, {recursive: true});
-        writeFileSync(
-            join(dir, 'output.json'),
-            JSON.stringify(assistant, null, 2),
-            'utf-8'
-        );
-    }
-
-    private dumpDeepResearchPrompt (rpcConfig: PiRpcConfig, message: string): void {
-        if (!this.config.input.debug_dump_prompt) return;
-
-        const debugPrefix = this.debugPrefix || this.createDebugPrefix(this.groupId, 'deep-research');
-        if (!debugPrefix) return;
-
-        const dir = join('data', 'debug', debugPrefix);
-        mkdirSync(dir, {recursive: true});
-
-        writeFileSync(join(dir, 'deep-research-prompt.txt'), message, 'utf-8');
-        writeFileSync(
-            join(dir, 'deep-research-rpc.json'),
-            JSON.stringify({
-                command: rpcConfig.command ?? 'pi',
-                args: rpcConfig.args ?? ['--no-session'],
-                cwd: rpcConfig.cwd ?? process.cwd(),
-                env: rpcConfig.env ?? {},
-                timeout_ms: rpcConfig.timeout_ms
-            }, null, 2),
-            'utf-8'
-        );
-
-        this.logger.debug(
-            `[ReplyAgent] [${this.groupId}] deep research prompt dumped to ` +
-            `${debugPrefix}/deep-research-*`);
-    }
-
-    private dumpDeepResearchResult (text: string): void {
-        if (!this.config.input.debug_dump_prompt || !this.debugPrefix) return;
-
-        const dir = join('data', 'debug', this.debugPrefix);
-        mkdirSync(dir, {recursive: true});
-        writeFileSync(join(dir, 'deep-research-result.txt'), text, 'utf-8');
-
-        this.logger.debug(
-            `[ReplyAgent] [${this.groupId}] deep research result dumped to ` +
-            `${this.debugPrefix}/deep-research-result.txt (${text.length} chars)`);
     }
 }

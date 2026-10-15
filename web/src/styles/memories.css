@@ -1,0 +1,302 @@
+.view-switch {
+    display: inline-flex;
+    gap: 8px;
+    margin-left: auto;
+}
+.search-bar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+.search-input {
+    flex: 1;
+    min-width: 200px;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+}
+.search-input.user-input {
+    flex: 0 0 150px;
+    min-width: 120px;
+}
+.search-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+.search-input::placeholder {
+    color: var(--text-secondary);
+}
+.error-banner {
+    padding: 12px 16px;
+    background: rgba(224, 108, 117, 0.15);
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
+    color: var(--danger);
+    margin-bottom: 16px;
+}
+.hint {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 60px 20px;
+    font-size: 15px;
+}
+.result-info {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 16px;
+    padding: 0 4px;
+}
+.memory-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.memory-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    transition: background 0.15s;
+}
+.memory-card:hover {
+    background: var(--surface-hover);
+}
+.memory-header {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+.memory-id {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.memory-name {
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 500;
+}
+.memory-time {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+.memory-content {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+    word-break: break-word;
+}
+.memory-meta {
+    display: flex;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.memory-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+.empty {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 40px;
+}
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    margin-top: 24px;
+    padding: 16px;
+}
+.page-btn {
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 14px;
+    text-decoration: none;
+    transition: background 0.15s;
+}
+.page-btn:hover:not(.disabled) {
+    background: var(--surface-hover);
+    text-decoration: none;
+}
+.page-btn.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+.page-info {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+/* ---------- 图谱视图 ---------- */
+.graph-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.graph-toolbar select {
+    flex: 0 0 auto;
+    min-width: 150px;
+    padding: 6px 10px;
+}
+.graph-limit-select {
+    max-width: 180px;
+}
+.graph-status {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-left: auto;
+}
+.graph-status-error {
+    color: var(--danger);
+}
+.graph-layout {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+}
+#graph-canvas {
+    position: relative;
+    flex: 1;
+    height: calc(100vh - 220px);
+    min-height: 420px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+#graph-canvas.graph-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+    padding: 24px;
+}
+/* 悬停提示卡片：内容由脚本动态创建 */
+#graph-canvas .graph-tooltip {
+    position: absolute;
+    transform: translate(-50%, calc(-100% - 12px));
+    max-width: 300px;
+    background: var(--surface-hover);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text);
+    white-space: pre-line;
+    word-break: break-word;
+    pointer-events: none;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    z-index: 30;
+}
+.graph-panel {
+    flex: 0 0 320px;
+    max-width: 320px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    overflow-y: auto;
+    max-height: calc(100vh - 220px);
+}
+/* 面板内部元素由脚本运行时创建 */
+.graph-panel h3 {
+    font-size: 15px;
+    color: var(--accent);
+    margin-bottom: 10px;
+    word-break: break-all;
+}
+.graph-panel h4 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin: 14px 0 6px;
+}
+.graph-panel p {
+    font-size: 13px;
+    line-height: 1.6;
+    word-break: break-word;
+}
+.graph-panel p.hint {
+    padding: 30px 10px;
+}
+.graph-panel .panel-row {
+    display: flex;
+    gap: 8px;
+    font-size: 12.5px;
+    margin-bottom: 6px;
+}
+.graph-panel .panel-key {
+    flex: 0 0 44px;
+    color: var(--text-secondary);
+}
+.graph-panel .panel-val {
+    word-break: break-all;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+.graph-panel .panel-facts {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.graph-panel .panel-facts li {
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    word-break: break-word;
+}
+.graph-panel .panel-facts li:hover {
+    border-color: var(--accent);
+}
+.graph-panel .panel-fact-text {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.graph-panel .panel-actions {
+    margin-top: 14px;
+    display: flex;
+    gap: 8px;
+}
+@media (max-width: 900px) {
+    .graph-layout {
+        flex-direction: column;
+    }
+    #graph-canvas {
+        height: 60vh;
+    }
+    .graph-panel {
+        flex: 1;
+        max-width: none;
+    }
+}

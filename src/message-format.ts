@@ -288,24 +288,35 @@ function renderForward (seg: StoredForwardSegment, ctx: RenderContext): string {
     return lines.join('');
 }
 
+/** 单次渲染内批量预取图片描述并缓存 */
+async function preloadDescCache (
+    segmentGroups: StoredSegment[][],
+    resolveDesc?: (sha256: string) => Promise<string | undefined>
+): Promise<Map<string, string | undefined>> {
+    const descCache = new Map<string, string | undefined>();
+    if (!resolveDesc) return descCache;
+
+    const shaSet = new Set<string>();
+    for (const segments of segmentGroups) {
+        for (const seg of segments) {
+            collectImageSha256FromSegment(seg, shaSet);
+        }
+    }
+    const entries = await Promise.all(
+        Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
+    );
+    for (const [sha, desc] of entries) {
+        descCache.set(sha, desc);
+    }
+    return descCache;
+}
+
 /** 单条消息 toString（异步，支持通过 resolveDesc 查询图片描述） */
 export async function singleMessageToString (
     msg: StoredMessage,
     resolveDesc?: (sha256: string) => Promise<string | undefined>
 ): Promise<string> {
-    const descCache = new Map<string, string | undefined>();
-    if (resolveDesc) {
-        const shaSet = new Set<string>();
-        for (const seg of msg.segments) {
-            collectImageSha256FromSegment(seg, shaSet);
-        }
-        const entries = await Promise.all(
-            Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
-        );
-        for (const [sha, desc] of entries) {
-            descCache.set(sha, desc);
-        }
-    }
+    const descCache = await preloadDescCache([msg.segments], resolveDesc);
 
     const atMark = msg.isAtBot ? '(有人@我)' : '';
     const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
@@ -323,22 +334,7 @@ export async function messagesToString (
 ): Promise<string> {
     if (messages.length === 0) return '';
 
-    // 单次渲染：先收集所有 sha256，批量并发查询并缓存
-    const descCache = new Map<string, string | undefined>();
-    if (resolveDesc) {
-        const shaSet = new Set<string>();
-        for (const msg of messages) {
-            for (const seg of msg.segments) {
-                collectImageSha256FromSegment(seg, shaSet);
-            }
-        }
-        const entries = await Promise.all(
-            Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
-        );
-        for (const [sha, desc] of entries) {
-            descCache.set(sha, desc);
-        }
-    }
+    const descCache = await preloadDescCache(messages.map(m => m.segments), resolveDesc);
 
     const parts: string[] = ['---'];
     let lastTime: number | null = null;
@@ -378,6 +374,38 @@ export async function messagesToString (
     }
 
     return `${parts.join('\n')}\n`;
+}
+
+type ForwardedMessageItem = NonNullable<ForwardMessage['data']['content']>[number];
+
+/** 合并转发或引用消息中单条子消息的存储格式转换 */
+async function toNestedStoredMessage (
+    bot: Bot,
+    item: ForwardedMessageItem,
+): Promise<StoredMessage | null> {
+    if (!Array.isArray(item.message)) return null;
+    return {
+        time: item.time ?? 0,
+        messageId: item.message_id,
+        senderId: item.sender?.user_id,
+        senderName: item.sender?.nickname ?? '',
+        senderCard: item.sender?.card,
+        segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message)
+    };
+}
+
+async function toNestedStoredMessages (
+    bot: Bot,
+    items: unknown,
+): Promise<StoredMessage[] | undefined> {
+    if (!Array.isArray(items)) return undefined;
+    const nested: StoredMessage[] = [];
+    for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const msg = await toNestedStoredMessage(bot, item as ForwardedMessageItem);
+        if (msg) nested.push(msg);
+    }
+    return nested;
 }
 
 /** 将 OneBot Message 数组转换为 StoredSegment 数组（不生成描述） */
@@ -434,14 +462,13 @@ export async function onebotMessageToSegments (
                 const res = await bot.getMsg(m.data.id);
                 const nestedMsgs = typeof res.message === 'string' ? [] : res.message;
                 const nestedGroupId = 'group_id' in res ? (res as { group_id: number }).group_id : 0;
-                nested = {
+                nested = await toNestedStoredMessage(bot, {
                     time: res.time,
-                    messageId: res.message_id,
-                    senderId: res.sender.user_id,
-                    senderName: res.sender.nickname,
-                    senderCard: 'card' in res.sender ? res.sender.card : undefined,
-                    segments: await onebotMessageToSegments(bot, nestedGroupId, nestedMsgs)
-                };
+                    message_id: res.message_id,
+                    sender: res.sender,
+                    group_id: nestedGroupId,
+                    message: nestedMsgs
+                }) ?? undefined;
             } catch {
                 // API 失败时不阻塞主消息入库
             }
@@ -452,40 +479,14 @@ export async function onebotMessageToSegments (
             let nested: StoredMessage[] | undefined;
             const content = (m as ForwardMessage).data?.content;
             if (Array.isArray(content)) {
-                nested = [];
-                for (const item of content) {
-                    if (item && Array.isArray(item.message)) {
-                        nested.push({
-                            time: item.time ?? 0,
-                            messageId: item.message_id,
-                            senderId: item.sender?.user_id,
-                            senderName: item.sender?.nickname ?? '',
-                            senderCard: item.sender?.card,
-                            segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message)
-                        });
-                    }
-                }
+                nested = await toNestedStoredMessages(bot, content);
             } else {
                 try {
                     const res = await bot.getForwardMsg(String(m.data.id));
                     type ForwardResponse = {messages?: unknown; message?: unknown};
                     const rawMessages = (res as ForwardResponse).messages ??
                         (res as ForwardResponse).message;
-                    if (Array.isArray(rawMessages)) {
-                        nested = [];
-                        for (const item of rawMessages) {
-                            if (item && Array.isArray(item.message)) {
-                                nested.push({
-                                    time: item.time ?? 0,
-                                    messageId: item.message_id,
-                                    senderId: item.sender?.user_id,
-                                    senderName: item.sender?.nickname ?? '',
-                                    senderCard: item.sender?.card,
-                                    segments: await onebotMessageToSegments(bot, item.group_id ?? 0, item.message)
-                                });
-                            }
-                        }
-                    }
+                    nested = await toNestedStoredMessages(bot, rawMessages);
                 } catch {
                     // API 失败时不阻塞主消息入库
                 }

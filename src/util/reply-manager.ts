@@ -1,32 +1,32 @@
 import type {Bot} from '@lib/types';
-import type {Message} from '@lib/types/messages';
 import type {Models} from '@earendil-works/pi-ai';
-import {schema, type Db, getGroupLastTriggerId, setGroupLastTriggerId, insertSystemMessage} from '~/db';
+import {
+    schema,
+    type Db,
+    getGroupLastTriggerId,
+    setGroupLastTriggerId,
+    insertSystemMessage,
+    rowToStoredMessage
+} from '~/db';
 import {eq, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
 import type {StoredMessage, StoredSegment} from '~/message-format';
 import type {AppConfig} from '~/config';
 import {ReplyAgent, type TurnOutcome} from './reply-agent';
-import type {ReplyMessageItem} from './reply-tool';
+import type {ReplyTask, ScheduledReplyTask} from './reply-task';
+import {ReplySender, type TurnLocation} from './reply-sender';
 import type {GraphitiClient} from './graphiti-client';
-import {addMessageEpisode} from './graphiti-episode';
-import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
 
-export interface ReplyTask {
-    type: 'at' | 'silence' | 'scheduled';
-    triggerDbId: number;
-    triggerMessageId: number;
-    triggerMessage: StoredMessage;
-    lastTriggerId: number;
-    scheduledTaskName?: string;
-    preResearchTopic?: string;
-}
-
-export interface ScheduledReplyTask {
-    name: string;
-    prompt: string;
-    deepResearchTopic?: string;
+interface GroupReplyManagerOptions {
+    groupId: number;
+    bot: Bot;
+    db: Db;
+    descQueue: DescQueue;
+    config: AppConfig;
+    botSelfId: number;
+    botName: string;
+    models: Models;
 }
 
 export class GroupReplyManager {
@@ -41,6 +41,7 @@ export class GroupReplyManager {
     private agent: ReplyAgent;
     private models: Models;
     private graphiti: GraphitiClient | null;
+    private sender: ReplySender;
 
     private _lastTriggerId: number = 0;
     private pendingAtTimeout: NodeJS.Timeout | null = null;
@@ -62,36 +63,45 @@ export class GroupReplyManager {
     }
 
     private constructor (
-        groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
-        config: AppConfig, botSelfId: number, botName: string,
-        models: Models, agent: ReplyAgent, lastTriggerId: number = 0,
-        graphiti: GraphitiClient | null = null,
+        options: GroupReplyManagerOptions,
+        agent: ReplyAgent,
+        lastTriggerId: number,
     ) {
-        this.groupId = groupId;
-        this.bot = bot;
-        this.db = db;
-        this.descQueue = descQueue;
-        this.config = config;
-        this.botSelfId = botSelfId;
-        this.botName = botName;
-        this.models = models;
+        this.groupId = options.groupId;
+        this.bot = options.bot;
+        this.db = options.db;
+        this.descQueue = options.descQueue;
+        this.config = options.config;
+        this.botSelfId = options.botSelfId;
+        this.botName = options.botName;
+        this.models = options.models;
         this.agent = agent;
-        this.graphiti = graphiti;
+        this.graphiti = options.config.ai.graphiti ? globalThis.__graphiti__ ?? null : null;
         this._lastTriggerId = lastTriggerId;
         this.logger = new Logger();
+        this.sender = new ReplySender({
+            bot: this.bot,
+            db: this.db,
+            agent: this.agent,
+            descQueue: this.descQueue,
+            graphiti: this.graphiti,
+            logger: this.logger,
+            groupId: this.groupId,
+            botSelfId: this.botSelfId,
+            botName: this.botName,
+            onBotMessage: () => this.onBotMessage()
+        });
     }
 
-    static async create (
-        groupId: number, bot: Bot, db: Db, descQueue: DescQueue,
-        config: AppConfig, botSelfId: number, botName: string,
-        models: Models,
-    ): Promise<GroupReplyManager> {
+    static async create (options: GroupReplyManagerOptions): Promise<GroupReplyManager> {
+        const {groupId, db, config} = options;
+
         const agent = await ReplyAgent.create({
             groupId,
             db,
-            descQueue,
+            descQueue: options.descQueue,
             config,
-            models,
+            models: options.models,
             graphiti: config.ai.graphiti ? globalThis.__graphiti__ ?? undefined : undefined
         });
 
@@ -102,10 +112,7 @@ export class GroupReplyManager {
             new Logger().error(`[ReplyManager] failed to load lastTriggerId for group ${groupId}:`, err);
         }
 
-        return new GroupReplyManager(
-            groupId, bot, db, descQueue, config, botSelfId, botName, models, agent, lastTriggerId,
-            config.ai.graphiti ? globalThis.__graphiti__ ?? null : null
-        );
+        return new GroupReplyManager(options, agent, lastTriggerId);
     }
 
     getAgent (): ReplyAgent {
@@ -143,7 +150,7 @@ export class GroupReplyManager {
         }
     }
 
-    onBotMessage (_rowId: number): void {
+    onBotMessage (_rowId?: number): void {
         this.clearSilenceTimeout();
         // bot 消息不启动沉默定时器
     }
@@ -298,16 +305,7 @@ export class GroupReplyManager {
         }
 
         const row = latest[0];
-        const stored: StoredMessage = {
-            time: row.time,
-            messageId: row.messageId,
-            senderId: row.userId,
-            senderName: row.senderName,
-            senderCard: row.senderCard ?? undefined,
-            isBot: row.isBot,
-            isAtBot: row.isAtBot,
-            segments: row.segments as StoredMessage['segments']
-        };
+        const stored = rowToStoredMessage(row);
 
         this.enqueueTask({
             type: 'silence',
@@ -351,9 +349,8 @@ export class GroupReplyManager {
         this.logger.debug(`[ReplyManager] [${this.groupId}] processQueue done`);
     }
 
+    /** 回合链：消息轮 →（模型要求时）深度研究轮 →（可继续链式）深度研究轮 … */
     private async executeTask (task: ReplyTask): Promise<void> {
-        const agent = this.agent;
-
         // 队列中先执行的任务可能已推进水位线，避免本任务重复注入已处理的消息
         task.lastTriggerId = Math.max(task.lastTriggerId, this.lastTriggerId);
 
@@ -363,16 +360,9 @@ export class GroupReplyManager {
                 `pre-research: ${task.preResearchTopic}`);
         }
 
-        let botCard: string | null = null;
-        try {
-            const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
-            botCard = memberInfo.card || null;
-        } catch {
-            this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
-        }
+        const botCard = await this.fetchBotCard();
 
-        // 回合链：消息轮 →（模型要求时）深度研究轮 →（可继续链式）深度研究轮 …
-        let outcome = await agent.runMessageTurn(task);
+        let outcome = await this.agent.runMessageTurn(task);
         // 无新消息：触发消息已被队列中前序任务吸收进其 prompt，静默跳过
         if (outcome.noop) {
             this.logger.info(
@@ -380,36 +370,19 @@ export class GroupReplyManager {
             return;
         }
 
-        /** 上一轮实际发送的信息，供下一轮回复引用与兜底定位 */
-        let prevTurn: {messageId?: number; time?: number; messages: ReplyMessageItem[]} | undefined;
+        let prevTurn: TurnLocation | undefined;
         let researchRounds = 0;
         const maxResearchRounds = this.config.input.max_deep_research_rounds;
 
         for (;;) {
-            // 水位线只推进到本轮实际读入 prompt 的消息 id：回复执行期间到达的新消息
-            // id 小于 bot 回复行 id，若以 bot 回复行为界会永久跳过这些消息
-            if (outcome.processedUpToId) {
-                this.lastTriggerId = Math.max(this.lastTriggerId, outcome.processedUpToId);
-            }
+            this.advanceWatermark(outcome);
 
             if (outcome.failed) {
-                await this.sendFailureFallback(task, outcome, botCard, prevTurn);
+                await this.sender.sendFailureFallback(task, outcome, botCard, prevTurn);
                 return;
             }
 
-            if (outcome.messages.length > 0) {
-                const sendResults = await this.sendTurn(task, {
-                    messages: outcome.messages,
-                    prevTurn,
-                    botCard
-                });
-                const last = sendResults[sendResults.length - 1];
-                prevTurn = {messageId: last?.messageId, time: last?.time, messages: outcome.messages};
-            } else {
-                // 模型以空消息数组主动选择不回复
-                this.logger.info(
-                    `[ReplyManager] [${this.groupId}] model chose not to reply (empty messages)`);
-            }
+            prevTurn = await this.deliverTurn(task, outcome, botCard, prevTurn) ?? prevTurn;
 
             if (!outcome.requiresDeepResearch) return;
 
@@ -421,8 +394,8 @@ export class GroupReplyManager {
             }
             researchRounds++;
 
-            const topic = outcome.deepResearchTopic || outcome.messages.map(m => m.text).join('');
-            if (!topic.trim()) {
+            const topic = this.resolveResearchTopic(outcome);
+            if (!topic) {
                 this.logger.warn(
                     `[ReplyManager] [${this.groupId}] requires_deep_research without topic ` +
                     `and reply text, skip research`);
@@ -431,174 +404,55 @@ export class GroupReplyManager {
             this.logger.info(
                 `[ReplyManager] [${this.groupId}] deep research round ` +
                 `${researchRounds}/${maxResearchRounds}: ${topic}`);
-            outcome = await agent.runResearchTurn(task, topic, this.lastTriggerId);
+            outcome = await this.agent.runResearchTurn(task, topic, this.lastTriggerId);
         }
     }
 
     /**
-     * 回合失败时的兜底发送。
-     * 消息轮失败：@ 触发回兜底文案，其他触发静默；
-     * 深度研究轮失败：所有触发类型都发兜底文案（按研究是否成功区分），并引用上一轮回复
+     * 水位线只推进到本轮实际读入 prompt 的消息 id：回复执行期间到达的新消息
+     * id 小于 bot 回复行 id，若以 bot 回复行为界会永久跳过这些消息
      */
-    private async sendFailureFallback (
+    private advanceWatermark (outcome: TurnOutcome): void {
+        if (outcome.processedUpToId) {
+            this.lastTriggerId = Math.max(this.lastTriggerId, outcome.processedUpToId);
+        }
+    }
+
+    /** 发送本回合的消息并返回新的上一轮位置；模型未回复时返回 undefined */
+    private async deliverTurn (
         task: ReplyTask,
         outcome: TurnOutcome,
         botCard: string | null,
-        prevTurn?: {messageId?: number; time?: number; messages: ReplyMessageItem[]}
-    ): Promise<void> {
-        if (outcome.researchSuccess === undefined) {
-            if (task.type === 'at') {
-                this.logger.info(`[ReplyManager] [${this.groupId}] message turn failed, sending fallback`);
-                const segments: Message[] = [{type: 'text', data: {text: prompts.atFailureFallback}}];
-                await this.bot.sendGroupMsg(this.groupId, segments);
-            } else {
-                this.logger.info(`[ReplyManager] [${this.groupId}] message turn failed, silent fallback`);
-            }
-            return;
+        prevTurn: TurnLocation | undefined
+    ): Promise<TurnLocation | undefined> {
+        if (outcome.messages.length === 0) {
+            // 模型以空消息数组主动选择不回复
+            this.logger.info(
+                `[ReplyManager] [${this.groupId}] model chose not to reply (empty messages)`);
+            return undefined;
         }
 
-        const fallbackText = outcome.researchSuccess ?
-            prompts.deepResearchFinalFailedFallback :
-            prompts.deepResearchFailedFallback;
-        this.logger.info(
-            `[ReplyManager] [${this.groupId}] research turn failed, sending fallback: ${fallbackText}`);
-        await this.sendTurn(task, {
-            messages: [{text: fallbackText}],
+        const sendResults = await this.sender.sendTurn(task, {
+            messages: outcome.messages,
             prevTurn,
             botCard
         });
+        const last = sendResults[sendResults.length - 1];
+        return {messageId: last?.messageId, time: last?.time, messages: outcome.messages};
     }
 
-    private async resolveRefMessageId (dbId: number): Promise<number | undefined> {
-        const rows = await this.db
-            .select({messageId: schema.messages.messageId})
-            .from(schema.messages)
-            .where(eq(schema.messages.id, dbId))
-            .limit(1);
-        return rows[0]?.messageId ?? undefined;
+    private resolveResearchTopic (outcome: TurnOutcome): string | null {
+        const topic = (outcome.deepResearchTopic || outcome.messages.map(m => m.text).join('')).trim();
+        return topic || null;
     }
 
-    private async sendTurn (
-        task: ReplyTask,
-        options: {
-            messages: ReplyMessageItem[];
-            /** 上一轮实际发送的信息；提供时本轮首条消息默认引用上一轮最后一条回复 */
-            prevTurn?: {messageId?: number; time?: number; messages: ReplyMessageItem[]};
-            botCard: string | null;
+    private async fetchBotCard (): Promise<string | null> {
+        try {
+            const memberInfo = await this.bot.getGroupMemberInfo(this.groupId, this.botSelfId);
+            return memberInfo.card || null;
+        } catch {
+            this.logger.debug(`[ReplyManager] [${this.groupId}] failed to get self group member info`);
+            return null;
         }
-    ): Promise<Array<{rowId: number | null; messageId?: number; time?: number}>> {
-        const {messages, prevTurn, botCard} = options;
-
-        this.logger.info(
-            `[ReplyManager] [${this.groupId}] sending reply ` +
-            `${prevTurn ? '(follow-up turn)' : '(message turn)'}: ${messages.length} message(s)`);
-
-        const results: Array<{rowId: number | null; messageId?: number; time?: number}> = [];
-
-        for (let i = 0; i < messages.length; i++) {
-            const item = messages[i];
-
-            // Determine reply reference
-            let refOnebotId: number | undefined;
-            let refDbSegment: StoredSegment | undefined;
-
-            if (typeof item.ref === 'number') {
-                refOnebotId = await this.resolveRefMessageId(item.ref);
-                if (refOnebotId) {
-                    refDbSegment = {type: 'reply', id: item.ref};
-                }
-            } else if (i === 0) {
-                if (!prevTurn && task.type === 'at') {
-                    // 消息轮 @ 触发：默认引用触发消息
-                    refOnebotId = task.triggerMessageId;
-                    refDbSegment = {type: 'reply', id: task.triggerMessageId, message: task.triggerMessage};
-                } else if (prevTurn?.messageId && typeof prevTurn.time === 'number') {
-                    // 后续回合：默认引用上一轮最后一条回复
-                    refOnebotId = prevTurn.messageId;
-                    refDbSegment = {
-                        type: 'reply',
-                        id: prevTurn.messageId,
-                        message: {
-                            time: prevTurn.time,
-                            messageId: prevTurn.messageId,
-                            senderId: this.botSelfId,
-                            senderName: this.botName,
-                            senderCard: botCard ?? undefined,
-                            isBot: true,
-                            isAtBot: false,
-                            segments: [{type: 'text', text: prevTurn.messages.map(m => m.text).join('')}]
-                        }
-                    };
-                }
-            }
-
-            // Build segments for this item
-            const onebotSegments: Message[] = [];
-            const dbSegments: StoredSegment[] = [];
-
-            if (refOnebotId) {
-                onebotSegments.push({type: 'reply', data: {id: refOnebotId}});
-            }
-            onebotSegments.push({type: 'text', data: {text: item.text}});
-
-            if (refDbSegment) {
-                dbSegments.push(refDbSegment);
-            }
-            dbSegments.push({type: 'text', text: item.text});
-
-            // Send this item as a separate message
-            this.logger.info(
-                `[ReplyManager] [${this.groupId}] sending item ${i + 1}/${messages.length}: ` +
-                `${item.text.slice(0, 80)}${item.text.length > 80 ? '...' : ''}` +
-                `${refOnebotId ? ` (ref=${item.ref})` : ''}`);
-
-            const sendResult = await this.bot.sendGroupMsg(this.groupId, onebotSegments);
-            const now = Math.floor(Date.now() / 1000);
-
-            const insertRows = await this.db.insert(schema.messages).values({
-                messageId: sendResult.message_id,
-                groupId: this.groupId,
-                userId: this.botSelfId,
-                time: now,
-                senderName: this.botName,
-                senderCard: botCard,
-                isBot: true,
-                isAtBot: false,
-                segments: dbSegments as StoredSegment[],
-                rawMessage: item.text
-            })
-                .returning({id: schema.messages.id});
-
-            if (!insertRows[0]) {
-                results.push({rowId: null});
-                continue;
-            }
-
-            const rowId = insertRows[0].id;
-            this.onBotMessage(rowId);
-
-            const botStoredMessage: StoredMessage = {
-                id: rowId,
-                time: now,
-                messageId: sendResult.message_id,
-                senderId: this.botSelfId,
-                senderName: this.botName,
-                senderCard: botCard ?? undefined,
-                isBot: true,
-                isAtBot: false,
-                segments: dbSegments
-            };
-            await this.agent.appendBotMessage(botStoredMessage);
-
-            // bot 自己的回复也写入 Graphiti 记忆
-            if (this.graphiti) {
-                addMessageEpisode(this.graphiti, this.groupId, botStoredMessage,
-                    sha => this.descQueue.resolve(sha));
-            }
-
-            results.push({rowId, messageId: sendResult.message_id, time: now});
-        }
-
-        return results;
     }
 }

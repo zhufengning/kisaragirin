@@ -1,6 +1,7 @@
 import {Cron, type CronOptions} from 'croner';
 import type {AppConfig, ScheduledGroupTask} from '~/config';
-import type {GroupReplyManager, ScheduledReplyTask} from './reply-manager';
+import type {GroupReplyManager} from './reply-manager';
+import type {ScheduledReplyTask} from './reply-task';
 import {Logger} from '@lib/util/logger';
 
 interface ScheduledJobRecord {

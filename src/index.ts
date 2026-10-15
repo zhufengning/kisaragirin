@@ -92,7 +92,9 @@ bot.on('meta_event.lifecycle.connect', async () => {
             if (!replyManagers.has(groupId)) {
                 replyManagers.set(
                     groupId,
-                    await GroupReplyManager.create(groupId, bot, db, queue, config, botSelfId, botName, models)
+                    await GroupReplyManager.create({
+                        groupId, bot, db, descQueue: queue, config, botSelfId, botName, models
+                    })
                 );
                 logger.debug(`[Bot] pre-initialized ReplyManager for group ${groupId}`);
             }
@@ -114,7 +116,9 @@ async function getReplyManager (groupId: number): Promise<GroupReplyManager | un
     if (!replyManagers.has(groupId)) {
         replyManagers.set(
             groupId,
-            await GroupReplyManager.create(groupId, bot, db, queue, config, botSelfId, botName, models)
+            await GroupReplyManager.create({
+                groupId, bot, db, descQueue: queue, config, botSelfId, botName, models
+            })
         );
     }
     return replyManagers.get(groupId)!;

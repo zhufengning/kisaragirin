@@ -1,8 +1,8 @@
 import type { APIRoute } from 'astro';
-import { db, schema } from '@lib/db';
+import { db, schema, rowToStoredMessage } from '@lib/db';
 import { eq, desc } from 'drizzle-orm';
 import type { StoredMessage } from '~/message-format';
-import type { ReplyTask } from '~/util/reply-manager';
+import type { ReplyTask } from '~/util/reply-task';
 import type { GroupReplyManager } from '~/util/reply-manager';
 
 function getReplyManagers(): Map<number, GroupReplyManager> {
@@ -47,16 +47,7 @@ export const GET: APIRoute = async ({ url }) => {
         }
 
         const row = latestRows[0];
-        const triggerMessage: StoredMessage = {
-            time: row.time,
-            messageId: row.messageId,
-            senderId: row.userId,
-            senderName: row.senderName,
-            senderCard: row.senderCard ?? undefined,
-            isBot: row.isBot,
-            isAtBot: row.isAtBot,
-            segments: row.segments as StoredMessage['segments'],
-        };
+        const triggerMessage: StoredMessage = rowToStoredMessage(row);
 
         const task: ReplyTask = {
             type: type === 'at' ? 'at' : 'silence',

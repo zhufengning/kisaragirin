@@ -59,7 +59,13 @@ src/
     models-factory.ts   -- 模型注册、bot Models 单例与 assignment 解析
     harness-factory.ts  -- AgentHarness `Session` 缓存与按群复用
     reply-tool.ts       -- 回复工具（`reply`），由 AgentHarness 调用
+    reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
+    reply-prompt.ts     -- 回复 system prompt 与 user message 构建
+    reply-debug.ts      -- 回复流程的 `data/debug/` 调试导出
+    memory-context.ts   -- 记忆关键词生成与 Graphiti 检索（含已注入记忆去重提取）
+    deep-research.ts    -- 深度研究执行 + 开始/结果/结束系统消息写入
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列、回合链编排）
+    reply-sender.ts     -- 回复发送、落库、引用解析与 Graphiti episode 写入
     reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
     pi-rpc-client.ts    -- pi CLI rpc 模式子进程客户端（深度研究）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
@@ -77,6 +83,22 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
     lib/
       db.ts           -- 复用 globalThis.__db__（fallback 自建连接）
       queue.ts        -- 复用 globalThis.__queue__
+      format-date.ts       -- 统一的时间展示格式
+      messages-query.ts    -- 群消息页服务端数据加载与 URL 构建
+      messages-render.ts   -- 群消息页渲染辅助（预览文本、发送者单元格、类型徽标）
+      messages-actions.ts  -- 群消息页操作（导入、compact、清空、单条/批量删除）
+      messages-detail-modal.ts -- 群消息详情弹窗
+      messages-client.ts   -- 群消息页客户端入口
+      memories-query.ts    -- 记忆管理页服务端数据加载与 URL 构建
+      memories-graph.ts    -- 记忆实体图谱视图（cytoscape 布局、选中、悬浮提示）
+      memories-panel.ts    -- 记忆图谱详情面板渲染
+      memories-client.ts   -- 记忆管理页客户端入口
+      harness-entry.ts     -- Harness 日志条目渲染与筛选
+      harness-client.ts    -- Harness 日志页客户端入口
+    styles/
+      messages.css     -- 群消息页样式
+      memories.css     -- 记忆管理页样式
+      harness.css      -- Harness 日志页样式
     layouts/
       Layout.astro    -- 暗色主题全局布局
     pages/
@@ -110,11 +132,11 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 
 ### Prompt 构建封装
 
-- `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（append + prompt + reminder + 结果解析）
+- `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `reply-prompt.ts` 的 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先由 `deep-research.ts` 研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（append + prompt + reminder + 结果解析）
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
-- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例被 `reply-agent.ts` / `reply-tool.ts` / `desc-queue.ts` 共用
+- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `desc-queue.ts`）
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在 harness 中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
@@ -129,7 +151,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
-- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
+- **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，`memory-context.ts` 每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
 - **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
@@ -137,7 +159,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
 - **失败回退**：消息轮失败时 @触发返回 `@响应失败`（`prompts.atFailureFallback`），闲时/定时触发则静默失败；深度研究轮失败时，引用上一轮回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
 - **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`runMessageTurn` 返回 `noop: true`，静默跳过不发送失败回退
-- 深度研究使用 `ai.assignments.deep_research` 配置的 pi CLI rpc 模式子进程（`src/util/pi-rpc-client.ts`）：以严格 JSONL 协议写入 prompt，等待 `agent_settled` 后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本；研究报告由 pi agent 自己的模型与工具（网络检索等）产出，子进程的模型、凭据与扩展由 `PI_CODING_AGENT_DIR` 指向的配置目录决定，不由 bot 的 `ai.models` 决定；深度研究指令（`prompts.deepResearchSystem`）拼入 prompt 文本；子进程退出、超时、assistant 报错或空结果时，记录错误并用 fallback 文本继续研究轮
+- 深度研究使用 `ai.assignments.deep_research` 配置的 pi CLI rpc 模式子进程（`src/util/deep-research.ts` + `src/util/pi-rpc-client.ts`）：以严格 JSONL 协议写入 prompt，等待 `agent_settled` 后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本；研究报告由 pi agent 自己的模型与工具（网络检索等）产出，子进程的模型、凭据与扩展由 `PI_CODING_AGENT_DIR` 指向的配置目录决定，不由 bot 的 `ai.models` 决定；深度研究指令（`prompts.deepResearchSystem`）拼入 prompt 文本；子进程退出、超时、assistant 报错或空结果时，记录错误并用 fallback 文本继续研究轮
 - 深度研究会向群内写入系统消息（`开始深度研究：{keyword}` / `深度研究结束：{keyword}`）到数据库，这些系统消息会随 `lastTriggerId` 之后的新消息一起被打包进 user message，供模型在后续回复中参考
 - 深度研究轮（及其链式后续回合）的回复消息会添加 `reply` segment 指向上一轮的最后一条回复消息
 
@@ -179,7 +201,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 - `ai.graphiti.llm.disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，server 侧给 AsyncOpenAI 客户端打补丁注入 `extra_body={"thinking": {"type": "disabled"}}`，默认 `false`
 
-- `debug_dump_prompt`：是否将每次回复的 system prompt、user prompt、模型输出以及深度研究的 prompt、pi rpc 启动配置、研究结果保存到 `data/debug/`，默认 `false`
+- `debug_dump_prompt`：由 `reply-debug.ts` 将每次回复的 system prompt、user prompt、模型输出以及深度研究的 prompt、pi rpc 启动配置、研究结果保存到 `data/debug/`，默认 `false`
 
 通过`satisfies Model<Api>`让 TypeScript 在编译期校验模型字段，近似模型可复用基础对象后展开。
 
@@ -203,8 +225,14 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
+- `src/util/reply-task.ts` — `ReplyTask` / `ScheduledReplyTask` 任务类型
 - `src/util/reply-manager.ts` — 群回复触发管理、队列与回合链编排
+- `src/util/reply-sender.ts` — 回复发送、落库、引用解析与 Graphiti episode 写入
+- `src/util/reply-prompt.ts` — 回复 system prompt 与 user message 构建
+- `src/util/reply-debug.ts` — 回复流程的 `data/debug/` 调试导出
 - `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
+- `src/util/memory-context.ts` — 记忆关键词生成、Graphiti 检索与已注入记忆去重
+- `src/util/deep-research.ts` — 深度研究执行与开始/结果/结束系统消息写入
 - `src/util/pi-rpc-client.ts` — pi CLI rpc 模式子进程客户端（严格 JSONL 帧、prompt 提交、`agent_settled` 等待、最后一条 assistant 文本获取）
 - `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
 - `src/util/models-factory.ts` — 模型注册、bot Models 单例与 assignment 解析
@@ -217,6 +245,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/mem0-tool.ts` — [已弃用] mem0 记忆工具
 - `src/prompts.ts` — `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可通过 `input.prompts` 覆盖）
 - `src/web/server.ts` — Web 面板 Node adapter
+- `web/src/lib/messages-*.ts` / `memories-*.ts` / `harness-*.ts` — Web 页面的服务端数据加载、渲染辅助与客户端脚本
+- `web/src/styles/*.css` — Web 页面样式
 - `lib/types/messages.ts` — OneBot 消息段类型
 
 ## 相关

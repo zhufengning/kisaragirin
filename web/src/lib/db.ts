@@ -14,4 +14,5 @@ if (globalThis.__db__) {
 }
 
 export { db, schema };
+export { rowToStoredMessage } from '~/db';
 export type { Db };
