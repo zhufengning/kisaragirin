@@ -121,7 +121,10 @@ export class MemoryContextBuilder {
     ): Promise<any> {
         const client = new OpenAI({
             apiKey: modelEntry.apiKey,
-            baseURL: modelEntry.model.baseUrl
+            baseURL: modelEntry.model.baseUrl,
+            // 与 vision / agent_harness 的 pi-ai stream 行为一致：
+            // 携带 model.headers，null 值用于删除 SDK 默认头部
+            defaultHeaders: modelEntry.model.headers
         });
 
         const completionBody: any = {
