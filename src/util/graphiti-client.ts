@@ -59,6 +59,8 @@ export interface GraphitiInitConfig {
         temperature?: number;
         max_tokens?: number;
         disable_thinking?: boolean;
+        /** 附加到 LLM 请求的头部；值为 null 表示删除 SDK 默认头部（如 X-Stainless-*） */
+        headers?: Record<string, string | null>;
     };
     embedder: {
         api_key: string;

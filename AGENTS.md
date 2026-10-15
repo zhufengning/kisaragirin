@@ -202,6 +202,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 - `ai.graphiti.llm.disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，server 侧给 AsyncOpenAI 客户端打补丁注入 `extra_body={"thinking": {"type": "disabled"}}`，默认 `false`
+- `ai.graphiti.llm.headers`：附加到 Graphiti LLM 请求的头部（`Record<string, string | null>`），值为 `null` 表示删除 SDK 默认头部（如 `X-Stainless-*`）；server 侧在构造 AsyncOpenAI 客户端时把 `null` 转换为 Python SDK 的 `omit` 哨兵后作为 `default_headers` 传入。该配置只作用于生成型 LLM，嵌入与重排由 graphiti-core 内部各自创建客户端，不受其影响
 
 - `debug_dump_prompt`：由 `reply-debug.ts` 将每次回复的 system prompt、user prompt、模型输出以及深度研究的 prompt、pi rpc 启动配置、研究结果保存到 `data/debug/`，默认 `false`
 

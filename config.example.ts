@@ -153,7 +153,9 @@ export const config: AppConfig = {
                 model: 'MiniMax-M3',
                 base_url: 'https://api.minimaxi.com/anthropic/v1',
                 // 所用模型/端点默认开启深度思考时设为 true，注入 thinking=disabled
-                disable_thinking: false
+                disable_thinking: false,
+                // 附加到 LLM 请求的头部；值为 null 表示删除 SDK 默认头部（如 X-Stainless-*）
+                headers: {}
             },
             embedder: {
                 api_key: '',

@@ -36,7 +36,7 @@ from graphiti_core.llm_client import client as llm_client
 import graphiti_core.llm_client.openai_generic_client as _ogc
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, omit
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 
@@ -248,7 +248,19 @@ async def handle_initialize(params: dict[str, Any]) -> Any:
         temperature=llm_cfg.get("temperature", 0),
         max_tokens=llm_max_tokens,
     )
-    openai_client = AsyncOpenAI(api_key=llm_config.api_key, base_url=llm_config.base_url)
+    # ai.graphiti.llm.headers：值为 null 表示删除 SDK 默认头部。Python SDK 删除默认头部
+    # 需要在 client 的 default_headers 中传 omit 哨兵（_build_headers 经 _merge_mappings
+    # 剔除 Omit 项），直接传 None 会作为头部值进入 httpx 而报错。
+    llm_headers = llm_cfg.get("headers") or {}
+    default_headers = {
+        name: (omit if value is None else value)
+        for name, value in llm_headers.items()
+    }
+    openai_client = AsyncOpenAI(
+        api_key=llm_config.api_key,
+        base_url=llm_config.base_url,
+        default_headers=default_headers or None,
+    )
     if llm_cfg.get("disable_thinking", False):
         _wrap_disable_thinking(openai_client)
     _wrap_json_sanitize(openai_client)
