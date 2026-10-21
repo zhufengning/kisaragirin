@@ -63,6 +63,21 @@ export const config: AppConfig = {
         },
         /** 是否将每次回复的 prompt 与模型输出保存到 data/debug/，默认 false */
         debug_dump_prompt: false
+        /**
+         * 发送给 vision 模型的图片处理参数：
+         * vision_max_size_bytes：压缩后的字节上限（默认6MB）
+         * vision_max_frames：动图最多抽取的帧数（默认5）
+         * vision_initial_quality：动图抽帧与长边缩放时使用的 jpeg 质量（默认80）
+         * vision_max_long_edge：长边像素上限（默认0，表示不限制）
+         * vision_max_total_pixels：总像素上限（默认0，表示不限制）
+         */
+        // vision_max_size_bytes: 6 * 1024 * 1024,
+        // vision_max_frames: 5,
+        // vision_initial_quality: 80,
+        // vision_max_long_edge: 2048,
+        // vision_max_total_pixels: 4 * 1024 * 1024,
+        /** 图片描述 Agent 的思考级别（off / minimal / low / medium / high / xhigh / max），默认 off；端点不接受关闭思考时设为 minimal 等级别 */
+        // vision_thinking_level: 'minimal',
         /** 每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究），默认 3 */
         // max_deep_research_rounds: 3,
         /**
@@ -138,9 +153,11 @@ export const config: AppConfig = {
         },
         /** 记忆关键词生成模型配置 */
         memoryKeyword: {
-            // 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled
+            // 仅对 openai-completions 协议生效：模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled
             disable_thinking: false,
-            // 调用时是否请求 response_format: {type: 'json_object'}；端点不支持时设为 false，返回内容改用 jsonrepair 修复
+            // 仅对 openai-responses 协议生效：设置后注入 reasoning.effort，可选 none / minimal / low / medium / high / xhigh / max；不设置则不注入
+            // reasoning_effort: 'minimal',
+            // 调用时是否请求 JSON 输出格式；端点不支持时设为 false，返回内容改用 jsonrepair 修复
             response_format: true,
             // 是否启用实体搜索（search_nodes）；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
             enable_entity_search: false

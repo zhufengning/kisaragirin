@@ -35,8 +35,8 @@ pnpm web:build && pnpm start
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息生成搜索关键词（自然语言查询 + 实体名称）检索 Graphiti，将相关记忆按「事实」与「相关实体」两节注入上下文；实体搜索由 `ai.memoryKeyword.enable_entity_search` 控制（默认关闭，关闭时仅注入事实列表）
-- 可通过 `ai.memoryKeyword.disable_thinking` 禁用记忆关键词生成模型的深度思考
-- 记忆关键词生成默认请求 `response_format: {type: 'json_object'}`；端点不支持时可将 `ai.memoryKeyword.response_format` 设为 false，此时返回内容由 jsonrepair 修复后再解析
+- 可通过 `ai.memoryKeyword.disable_thinking` 关闭记忆关键词生成模型的深度思考（`openai-completions` 协议注入 `thinking=disabled`）；`openai-responses` 协议用 `ai.memoryKeyword.reasoning_effort` 指定 `reasoning.effort`，不设置则不注入
+- 记忆关键词生成的请求协议按所配模型 `model.api` 区分：`openai-responses` 走 `/responses`（JSON 输出用 `text: {format: {type: 'json_object'}}`），其余走 OpenAI 兼容的 chat completions（JSON 输出用 `response_format: {type: 'json_object'}`）；端点不支持时可将 `ai.memoryKeyword.response_format` 设为 false，此时返回内容由 jsonrepair 修复后再解析
 
 ## 模型 Assignment 配置
 
@@ -154,6 +154,24 @@ input: {
 
 - 字符串字段直接给值即可覆盖；方法（如 `replyIdentity`）需提供同签名函数，若函数内部引用了其他成员请使用普通函数以保证 `this` 绑定
 - 未覆盖的成员使用 `src/prompts.ts` 中的默认值
+
+## 图片处理配置
+
+消息中的图片在交给 vision 模型描述前按上限处理：长边或总像素超过上限时按比例缩小，字节数超过上限时压缩，这几种处理后输出的都是 jpg；未超过上限的图片保持原有格式；帧的mimeType按实际字节格式给出。参数在 `config.ts` 的 `input` 中配置：
+
+```typescript
+input: {
+    // ... 其他配置
+    vision_max_size_bytes: 6 * 1024 * 1024,   // 压缩后的字节上限，默认6MB；超过则依次降低 jpeg 质量（70/60/50/40）并按每级0.75倍缩小尺寸，直到不超限或宽高都不大于400像素
+    vision_max_frames: 5,                     // 动图最多抽取的帧数，默认5（按帧号均匀抽取）
+    vision_initial_quality: 80,               // 动图抽帧与尺寸缩放时使用的 jpeg 质量，默认80
+    vision_max_long_edge: 0,                  // 长边像素上限，默认0（不限制）；超过则按比例缩小
+    vision_max_total_pixels: 0,               // 总像素（宽乘高）上限，默认0（不限制）；超过则按比例缩小
+    vision_thinking_level: 'off',             // 图片描述 Agent 的思考级别，默认 off；端点不接受关闭思考时设为 minimal 等级别
+}
+```
+
+长边与总像素两项上限取其中缩得更多的那一个，用 `vision_initial_quality` 重新编码；超过字节上限的图片再走字节上限的压缩流程。
 
 ## 技术栈
 

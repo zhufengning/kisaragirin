@@ -7,7 +7,7 @@ import {schema, type Db} from '~/db';
 import {findImagePath} from './image-store';
 import {prompts} from '~/prompts';
 import {withRetry} from './agent-retry';
-import {preprocessImage} from './image-preprocess';
+import {preprocessImage, type ImagePreprocessOptions} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
 import {resolveAssignmentModels} from './models-factory';
 
@@ -51,12 +51,20 @@ export class DescQueue {
     /** 回退链：API 错误时按顺序切换到下一个模型 */
     private modelEntries: ModelEntry[];
     private concurrency: number;
+    private imageOptions: ImagePreprocessOptions;
     private logger: Logger;
 
     constructor (db: Db) {
         this.db = db;
         this.logger = new Logger();
         this.concurrency = config.input.vision_concurrency;
+        this.imageOptions = {
+            maxSizeBytes: config.input.vision_max_size_bytes,
+            maxFrames: config.input.vision_max_frames,
+            initialQuality: config.input.vision_initial_quality,
+            maxLongEdge: config.input.vision_max_long_edge,
+            maxTotalPixels: config.input.vision_max_total_pixels
+        };
         this.modelEntries = resolveAssignmentModels(config, config.ai.assignments.vision);
         this.agents = Array.from({length: this.concurrency}, () => this.createAgent(0));
     }
@@ -66,7 +74,8 @@ export class DescQueue {
         return new Agent({
             initialState: {
                 systemPrompt: prompts.visionSystem,
-                model: modelEntry.model
+                model: modelEntry.model,
+                thinkingLevel: config.input.vision_thinking_level
             },
             getApiKey: () => modelEntry.apiKey
         });
@@ -172,7 +181,7 @@ export class DescQueue {
     }
 
     private async describe (path: string, workerId: number): Promise<string | undefined> {
-        const result = await preprocessImage(path);
+        const result = await preprocessImage(path, this.imageOptions);
         this.logger.debug(
             `[DescQueue] describe start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
 

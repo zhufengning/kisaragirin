@@ -53,7 +53,7 @@ src/
   util/
     desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个）
     image-store.ts      -- 图片下载 + 本地存储
-    image-preprocess.ts -- 图片转 jpg、压缩到 6MB 以下、动图切帧
+    image-preprocess.ts -- 图片按大小上限压缩、长边与总像素按上限缩小、动图切帧，帧的mimeType按实际字节格式给出
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
     credential-store.ts -- pi-ai 凭据内存存储与初始化
     models-factory.ts   -- 模型注册、bot Models 单例与 assignment 解析
@@ -184,6 +184,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
 - `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
+- `input.vision_thinking_level`：图片描述 Agent 的思考级别（`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`），默认 `off`；端点不接受关闭思考（如 `openai-responses` 只接受 `minimal` 及以上）时设为 `minimal` 等级别
+- `input.vision_max_size_bytes` / `input.vision_max_frames` / `input.vision_initial_quality` / `input.vision_max_long_edge` / `input.vision_max_total_pixels`：发送给 vision 模型的图片预处理参数，分别为压缩后的字节上限（默认 6MB）、动图最多抽取的帧数（默认 5）、动图抽帧与尺寸缩放时使用的 jpeg 质量（默认 80）、长边像素上限与总像素上限（超过则按比例缩小，0（默认）表示不限制）
 - `input.silence_recent_window` / `input.silence_recent_bot_threshold` / `input.silence_recent_bot_multiplier`：闲时触发前检查最近 `silence_recent_window` 条消息，其中 bot 消息数达到 `silence_recent_bot_threshold` 时闲时等待时间按 `silence_recent_bot_multiplier` 倍延长（默认 1，不放大）；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示禁用该检查
 - `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
@@ -194,8 +196,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.assignments.deep_research`：深度研究执行方式（`string | PiRpcConfig`）。字符串为 `ai.models` 中的模型 key，通过 LLM 兼容接口直接发起单次研究；对象为 pi rpc 配置，字段：`command`（pi CLI 命令，默认 `pi`）、`args`（追加在 `--mode rpc` 之后的参数，默认 `['--no-session']`）、`env`（子进程环境变量，覆盖 `process.env` 同名变量）、`cwd`（子进程工作目录，默认当前工作目录）、`timeout_ms`（单次研究超时时间，默认 1800000）
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文（`string | ScheduledModelAssignment`）
 - `ai.memoryKeyword`：记忆关键词生成模型的额外配置
-  - `disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，调用时注入 `thinking=disabled`，默认 `false`
-  - `response_format`：调用时是否请求 `response_format: {type: 'json_object'}`，默认 `true`；端点不支持时设为 `false`，返回内容由 jsonrepair 修复后再解析
+  - `disable_thinking`：仅对 `openai-completions` 协议生效，所用模型/端点默认开启深度思考时设为 `true`，调用时注入 `thinking=disabled`，默认 `false`
+  - `reasoning_effort`：仅对 `openai-responses` 协议生效，设值后注入 `reasoning.effort`，取值 `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；不设置则不注入，沿用端点默认
+  - `response_format`：调用时是否请求 JSON 输出格式，默认 `true`；`openai-responses` 协议用 `text: {format: {type: 'json_object'}}`，其余协议用 `response_format: {type: 'json_object'}`。端点不支持时设为 `false`，返回内容由 jsonrepair 修复后再解析
   - `enable_entity_search`：是否启用实体搜索（`search_nodes`），默认 `false`；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
 - `ai.assignments` 所有字段均支持 `ScheduledModelAssignment` 时段调度：配置 `slots`（含 `start`/`end`/`model`，支持跨日如 `18:00→09:00`）和 `default`，运行时按当前时间匹配第一个命中的 slot 模型，未命中则用 default；也可直接用字符串指定单一模型
 - `ai.assignments` 中模型字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。harness 回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）；深度研究为 `string | PiRpcConfig`，字符串形式是单个 `ai.models` key（不参与回退链），对象形式改由 pi rpc 执行
@@ -227,7 +230,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/db/schema.ts` — Drizzle 表定义（messages / images / kv_store）
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
-- `src/util/image-preprocess.ts` — 发送给 LLM 前统一转 jpg、压缩、动图切帧
+- `src/util/image-preprocess.ts` — 发送给 LLM 前按上限压缩与缩小、动图切帧，帧的mimeType按实际字节格式给出
 - `src/util/reply-task.ts` — `ReplyTask` / `ScheduledReplyTask` 任务类型
 - `src/util/reply-manager.ts` — 群回复触发管理、队列与回合链编排
 - `src/util/reply-sender.ts` — 回复发送、落库、引用解析与 Graphiti episode 写入

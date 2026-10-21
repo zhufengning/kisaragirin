@@ -59,18 +59,10 @@ export class MemoryContextBuilder {
 
         this.debug.dumpMemoryQueryPrompt(prompt);
 
-        const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
-        if (disableThinking) {
-            this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: disable thinking`);
-        }
-
         // 按回退链依次尝试：API 错误时切换下一个模型
         for (const [index, modelEntry] of modelEntries.entries()) {
             try {
-                const response = await this.callKeywordModel(modelEntry, prompt, disableThinking);
-                this.debug.dumpMemoryQueryResponse(response);
-
-                const text = response.choices[0]?.message?.content?.trim();
+                const text = await this.callKeywordModel(modelEntry, prompt);
                 if (!text) {
                     this.logger.debug(`[ReplyAgent] [${this.groupId}] memory query: empty response`);
                     return null;
@@ -114,11 +106,11 @@ export class MemoryContextBuilder {
             .replace('{messages}', messagesText);
     }
 
+    /** 按 model.api 声明的协议发起请求：openai-responses 走 /responses，其余走 OpenAI 兼容的 chat completions */
     private async callKeywordModel (
         modelEntry: ModelEntry,
-        prompt: string,
-        disableThinking: boolean
-    ): Promise<any> {
+        prompt: string
+    ): Promise<string | null> {
         const client = new OpenAI({
             apiKey: modelEntry.apiKey,
             baseURL: modelEntry.model.baseUrl,
@@ -127,18 +119,42 @@ export class MemoryContextBuilder {
             defaultHeaders: modelEntry.model.headers
         });
 
-        const completionBody: any = {
+        const wantJson = this.config.ai.memoryKeyword?.response_format ?? true;
+        const reasoningEffort = this.config.ai.memoryKeyword?.reasoning_effort;
+        const disableThinking = this.config.ai.memoryKeyword?.disable_thinking ?? false;
+
+        if (modelEntry.model.api === 'openai-responses') {
+            const body: any = {
+                model: modelEntry.model.id,
+                input: prompt,
+                temperature: 0
+            };
+            // Responses 协议的深度思考由 reasoning.effort 控制
+            if (reasoningEffort) {
+                body.reasoning = {effort: reasoningEffort};
+            }
+            if (wantJson) {
+                body.text = {format: {type: 'json_object'}};
+            }
+            const response = await client.responses.create(body);
+            this.debug.dumpMemoryQueryResponse(response);
+            return response.output_text?.trim() ?? null;
+        }
+
+        const body: any = {
             model: modelEntry.model.id,
             messages: [{role: 'user', content: prompt}],
             temperature: 0
         };
-        if (this.config.ai.memoryKeyword?.response_format ?? true) {
-            completionBody.response_format = {type: 'json_object'};
-        }
         if (disableThinking) {
-            completionBody.thinking = {type: 'disabled'};
+            body.thinking = {type: 'disabled'};
         }
-        return client.chat.completions.create(completionBody);
+        if (wantJson) {
+            body.response_format = {type: 'json_object'};
+        }
+        const response = await client.chat.completions.create(body);
+        this.debug.dumpMemoryQueryResponse(response);
+        return response.choices[0]?.message?.content?.trim() ?? null;
     }
 
     private parseQueryResponse (text: string, enableEntitySearch: boolean): MemoryQueryParams | null {

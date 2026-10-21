@@ -1,4 +1,5 @@
 import type {Model, Api} from '@earendil-works/pi-ai';
+import type {ThinkingLevel} from '@earendil-works/pi-agent-core';
 import type {Prompts} from './prompts';
 
 export interface OneBotConfig {
@@ -28,6 +29,18 @@ export class InputConfig {
     /** 每个任务内允许的最大深度研究次数（深度研究轮可链式再次请求研究，达到上限后忽略），默认 3 */
     max_deep_research_rounds = 3;
     vision_concurrency = 5;
+    /** 图片描述 Agent 的思考级别，默认 off（不请求深度思考）；端点不接受关闭思考时设为 minimal 等级别 */
+    vision_thinking_level: ThinkingLevel = 'off';
+    /** 发送给 vision 模型的图片大小上限（字节），超过则降低压缩质量并缩小尺寸 */
+    vision_max_size_bytes = 6 * 1024 * 1024;
+    /** 动图最多抽取的帧数 */
+    vision_max_frames = 5;
+    /** 动图抽帧与长边缩放时使用的 jpeg 质量 */
+    vision_initial_quality = 80;
+    /** 发送给 vision 模型的图片长边像素上限，超过则按比例缩小，0（默认）表示不限制 */
+    vision_max_long_edge = 0;
+    /** 发送给 vision 模型的图片总像素上限，超过则按比例缩小，0（默认）表示不限制 */
+    vision_max_total_pixels = 0;
     bot_name?: string;
     bot_persona?: string;
     group_custom_prompts?: Record<number, string>;
@@ -147,14 +160,19 @@ export interface AiConfig {
     graphiti?: GraphitiConfig;
     /** 记忆关键词生成模型的额外配置 */
     memoryKeyword?: {
-        /** 所用模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled，默认 false */
+        /** 仅对 openai-completions 协议生效：模型/端点默认开启深度思考时设为 true，调用时注入 thinking=disabled，默认 false */
         disable_thinking?: boolean;
-        /** 调用时是否请求 response_format: {type: 'json_object'}，默认 true；端点不支持时设为 false，返回内容改用 jsonrepair 修复 */
+        /** 仅对 openai-responses 协议生效：设值后注入 reasoning.effort，不设置则不注入（沿用端点默认） */
+        reasoning_effort?: ReasoningEffort;
+        /** 调用时是否请求 JSON 输出格式，默认 true；端点不支持时设为 false，返回内容改用 jsonrepair 修复 */
         response_format?: boolean;
         /** 是否启用实体搜索（search_nodes），默认 false；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入 */
         enable_entity_search?: boolean;
     };
 }
+
+/** openai-responses 协议的 reasoning.effort 取值 */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface AppConfig {
     onebot: OneBotConfig;
