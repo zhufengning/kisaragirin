@@ -110,7 +110,7 @@ bot.on('meta_event.lifecycle.connect', async () => {
 });
 
 async function getReplyManager (groupId: number): Promise<GroupReplyManager | undefined> {
-    logger.debug(`[Bot] getReplyManager group=${groupId} botInfoReady=${botInfoReady}`);
+    // logger.debug(`[Bot] getReplyManager group=${groupId} botInfoReady=${botInfoReady}`);
     if (!botInfoReady) return;
     if (!config.input.group_whitelist.includes(groupId)) return;
     if (!replyManagers.has(groupId)) {
@@ -176,7 +176,7 @@ async function handleGroupMessage (e: GroupMessageEvent): Promise<void> {
     })
         .returning({id: schema.messages.id});
 
-    logger.info(`[Bot] [${e.group_id}] msg ${stored.messageId} from ${stored.senderId} atBot=${stored.isAtBot}`);
+    // logger.info(`[Bot] [${e.group_id}] msg ${stored.messageId} from ${stored.senderId} atBot=${stored.isAtBot}`);
 
     if (e.raw_message === 'Ciallo ～(∠・ω< )⌒★!') {
         await e.reply('Ciallo ～(∠・ω< )⌒★!');

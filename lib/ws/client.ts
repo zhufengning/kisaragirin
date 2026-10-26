@@ -29,7 +29,7 @@ export class Client implements Bot {
         });
         this.ws.on('message', data => {
             const event: OneBotEvent = JSON.parse(data.toString());
-            this.logger.debug('Received message:\n', event);
+            // this.logger.debug('Received message:\n', event);
 
             if (!('post_type' in event)) return;
 
