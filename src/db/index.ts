@@ -14,6 +14,10 @@ export function createDb (path = './data.db') {
 
 export type Db = ReturnType<typeof createDb>;
 
+export function closeDb (db: Db): void {
+    (db as {$client: Database.Database}).$client.close();
+}
+
 export interface JsonlSessionMetadata {
     id: string;
     createdAt: string;

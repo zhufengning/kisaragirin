@@ -51,6 +51,8 @@ export class GroupReplyManager {
     private isReplying: boolean = false;
     private replyQueue: ReplyTask[] = [];
     private processingQueue: boolean = false;
+    private stopped: boolean = false;
+    private queueIdleWaiters: Array<() => void> = [];
 
     get lastTriggerId (): number {
         return this._lastTriggerId;
@@ -119,11 +121,30 @@ export class GroupReplyManager {
         return this.agent;
     }
 
+    /** 停止接收新任务、清理定时器，并等待进行中的回复任务与 Agent 结束 */
+    async shutdown (): Promise<void> {
+        this.stopped = true;
+        this.clearPendingAt();
+        this.pendingAtMessage = null;
+        this.pendingAtRowId = null;
+        this.clearSilenceTimeout();
+        await this.waitForQueueIdle();
+        await this.agent.waitForIdle();
+    }
+
+    private waitForQueueIdle (): Promise<void> {
+        if (!this.processingQueue) return Promise.resolve();
+        return new Promise(resolve => {
+            this.queueIdleWaiters.push(resolve);
+        });
+    }
+
     getLastTriggerId (): number {
         return this._lastTriggerId;
     }
 
     onMessage (stored: StoredMessage, _rowId: number): void {
+        if (this.stopped) return;
         // 任何消息打破沉默
         this.clearSilenceTimeout();
 
@@ -156,6 +177,7 @@ export class GroupReplyManager {
     }
 
     async triggerScheduledReply (task: ScheduledReplyTask): Promise<void> {
+        if (this.stopped) return;
         const prompt = task.prompt.trim();
         if (!prompt) {
             this.logger.warn(
@@ -317,6 +339,11 @@ export class GroupReplyManager {
     }
 
     private enqueueTask (task: ReplyTask): void {
+        if (this.stopped) {
+            this.logger.debug(
+                `[ReplyManager] [${this.groupId}] manager stopped, task discarded`);
+            return;
+        }
         this.logger.debug(
             `[ReplyManager] [${this.groupId}] enqueueTask type=${task.type} ` +
             `msg=${task.triggerMessageId} queueLen=${this.replyQueue.length + 1}`);
@@ -346,6 +373,9 @@ export class GroupReplyManager {
 
         this.processingQueue = false;
         this.isReplying = false;
+        const waiters = this.queueIdleWaiters;
+        this.queueIdleWaiters = [];
+        waiters.forEach(resolve => resolve());
         this.logger.debug(`[ReplyManager] [${this.groupId}] processQueue done`);
     }
 

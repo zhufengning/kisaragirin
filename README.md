@@ -174,6 +174,31 @@ input: {
 
 长边与总像素两项上限取其中缩得更多的那一个，用 `vision_initial_quality` 重新编码；超过字节上限的图片再走字节上限的压缩流程。
 
+## 集成测试
+
+`test/integration/` 提供完整的消息回复调度集成测试，覆盖消息入库顺序、@合并窗口、闲时触发、定时任务、每群 FIFO 与跨群并行、水位线与乱序提示、工具循环、深度研究回合链、模型回退与 reminder、Graphiti 检索与 episode、图片描述队列以及进程重启恢复。
+
+```bash
+pnpm run test:integration
+```
+
+测试只替换外部服务，项目内部组件全部运行真实代码：OneBot WebSocket 客户端与消息转换、SQLite 与迁移、`GroupReplyManager`、`ScheduledTaskManager`、`ReplyAgent`、`DescQueue` 与图片预处理、`GraphitiClient` 的 stdio JSON-RPC 通信、Croner 定时器。
+
+- 每个场景通过 `src/app.ts` 组合入口启动一个独立的应用子进程，使用场景目录自己的 SQLite、harness 会话与端口
+- 假 OneBot server 注入真实格式的群消息事件；假 OpenAI Completions server 按 channel 返回流式工具调用、文本、非流式 JSON 或 HTTP 错误，并用闸门控制并发时序；假图片资源 server 提供真实图片字节；假 Graphiti server 用 Python 标准库实现，通过控制文件与记录文件与测试父进程交换状态
+- 并发时序由闸门与事件等待控制，时间相关场景使用缩短后的合并窗口与闲时等待，`reply_probability` 固定为 0 或 1
+- 场景产物保存在 `data/test-runs/<scenario>-<uuid>/`（`config.json`、`app.log`、`app.out.log`、`onebot-events.jsonl`、`openai-requests.jsonl`、`graphiti-calls.jsonl`、`messages.db`、`data/`），成功场景自动删除，失败场景保留用于诊断
+
+完整验证命令：
+
+```bash
+pnpm run type:check
+pnpm run lint
+pnpm run web:check
+pnpm run web:lint
+pnpm run test:integration
+```
+
 ## 技术栈
 
 - **Bot**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM

@@ -2,7 +2,6 @@ import {createProvider, type MutableModels} from '@earendil-works/pi-ai';
 import {openAICompletionsApi} from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import {openAIResponsesApi} from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import type {AppConfig, ModelAssignmentKey, ModelEntry, ScheduledModelAssignment} from '../config';
-import {models, credentialStore} from '../../config';
 
 function apiStreamsFor (modelApi: string) {
     if (modelApi === 'openai-completions') {
@@ -38,11 +37,6 @@ export function registerCustomProviders (modelsInstance: MutableModels, config: 
             }),
         );
     }
-}
-
-export function createBotModels (config: AppConfig): MutableModels {
-    registerCustomProviders(models, config);
-    return models;
 }
 
 export function resolveModelEntry (config: AppConfig, assignment: string): ModelEntry {
@@ -103,5 +97,3 @@ function resolveScheduledKey (assignment: ScheduledModelAssignment): ModelAssign
 
     return assignment.default;
 }
-
-export {models, credentialStore};

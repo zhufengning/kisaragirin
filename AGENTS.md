@@ -29,7 +29,7 @@ pnpm
 - `lib/` 是上游 SDK，不写业务逻辑
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
 - 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
-- 完成修改后，bot部分的修改运行以下pnpm任务：type:check, lint，webui部分非修改运行web:check, web:lint。所有warning、hint视同error处理。
+- 完成修改后，bot部分的修改运行以下pnpm任务：type:check, lint，webui部分非修改运行web:check, web:lint，集成测试改动运行test:integration。所有warning、hint视同error处理。
 - pi ai和pi agent的文档和源码保存在~/repos/their/pi
 - 其余库可通过context7查询文档
 - 对于任何库，先阅读相关文档，再写代码
@@ -44,19 +44,20 @@ pnpm
 
 ```
 src/
-      index.ts              -- 入口：初始化 bot、db、queue、web panel
+      index.ts              -- 入口：读取生产配置并调用 `createApplication(...).start()`，安装信号处理
+      app.ts                -- 应用组合入口：`createApplication(options)` 创建 bot、db、desc queue、reply manager、定时任务、Graphiti 与 web panel，提供 `start()` / `ready()` / `stop()`
       config.ts             -- 根目录 TS 配置，使用 `@earendil-works/pi-ai` 的 `Model<Api>` 类型定义模型
       message-format.ts     -- OneBot 消息 ↔ 存储格式转换 + 渲染
       db/
         schema.ts           -- Drizzle SQLite 表定义（messages / images / kv_store）
         index.ts            -- Database 连接工厂 + KV Store 工具 + 迁移逻辑 + 消息批量删除 helper
   util/
-    desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个）
+    desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个；配置与超时参数由构造函数注入）
     image-store.ts      -- 图片下载 + 本地存储
     image-preprocess.ts -- 图片按大小上限压缩、长边与总像素按上限缩小、动图切帧，帧的mimeType按实际字节格式给出
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
     credential-store.ts -- pi-ai 凭据内存存储与初始化
-    models-factory.ts   -- 模型注册、bot Models 单例与 assignment 解析
+    models-factory.ts   -- 模型注册与 assignment 解析（不读取生产配置）
     harness-factory.ts  -- AgentHarness `Session` 缓存与按群复用
     reply-tool.ts       -- 回复工具（`reply`），由 AgentHarness 调用
     reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
@@ -116,16 +117,40 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         compact.ts           -- 手动触发群消息 compact API
         harness.ts           -- AgentHarness 会话条目 API（调用 agent.getBranch）
         group/[id]/import.ts -- 按日期范围导入历史消息 API（调用 agent.importMessagesByDateRange）
+
+test/integration/       -- 消息回复调度集成测试（不使用外部账号或网络服务）
+  app/
+    child.ts            -- 应用子进程：等待 IPC 消息后动态导入 `src/app.ts` 并按场景配置启动
+    create-test-config.ts -- 指向假服务的测试配置（模型、群白名单、时段参数）
+  fakes/
+    onebot-server.ts    -- 假 OneBot WebSocket server：事件注入、API 响应、发送闸门与记录
+    openai-completions-server.ts -- 假 OpenAI Chat Completions server：channel 响应序列、流式工具调用、闸门与请求记录
+    asset-server.ts     -- 假图片资源 server：真实图片字节与按资源延迟
+    graphiti_server.py  -- 假 Graphiti server（Python 标准库）：JSON-RPC 服务、文件闸门与调用记录
+    fixtures/           -- 真实的 png 与动图 fixture
+  runner/
+    scenario.ts         -- 场景环境：假服务、应用子进程（AppProcess）、只读数据库检查器与产物目录
+    scenario-runner.ts  -- 统一运行场景并处理产物保留
+    artifacts.ts        -- data/test-runs/<scenario>-<uuid>/ 产物目录
+    wait-for.ts         -- 条件等待与静默观察窗口
+    database-inspector.ts -- better-sqlite3 只读数据库检查器
+    messages.ts         -- OneBot 消息段构造与请求文本提取
+  scenarios/            -- 调度场景（ingress-order / at-merge / silence / queue-fifo / watermark /
+                           scheduled / tools-research / failures / graphiti / desc-queue / restart）
 ```
 
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
+- `src/app.ts` 的 `createApplication(options)` 是唯一组合入口：接收 `AppConfig` 与 `Models`，不读取生产配置；`src/index.ts` 只负责导入生产配置、启动并安装信号处理
+- `ready()` 在登录信息处理、白名单群 `ReplyManager` 预初始化与定时任务启动完成后返回；`stop()` 依次停止定时任务、等待回复会话与 Agent 结束（让进行中的回复先完成再关闭连接）、释放 OneBot 连接、停止 Web 面板与描述队列、关闭 session、关闭 Graphiti，最后关闭 SQLite 并清理 `globalThis` 上的应用引用
+- `DescQueue` 通过构造函数接收 `AppConfig`；`describeTimeoutMs` / `abortSettleGraceMs` 可覆盖默认超时；`stop()` 会中止进行中的模型请求、等待 worker 退出并通知剩余等待者，`waitForIdle()` 等待队列全部处理完毕
+- `GroupReplyManager.shutdown()` 清理合并窗口与沉默定时器、拒绝新任务，并等待队列与 Agent 空闲
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentHarness`
 - `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `Session`；新 session 不再自动从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息），历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
-- `models-factory.ts` / `credential-store.ts` 负责 pi-ai `Models` 单例、自定义 provider 注册与凭据填充；运行时 `config.ts` 导出 `models` 单例供 bot 使用
+- `models-factory.ts` 负责自定义 provider 注册与 assignment 解析；`config.ts` 导出 `models` 单例并注入 `createApplication`
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
@@ -191,7 +216,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
-- `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/index.ts` 调用 `applyPromptsOverrides` 应用
+- `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment（`string | ScheduledModelAssignment`）
 - `ai.assignments.deep_research`：深度研究执行方式（`string | PiRpcConfig`）。字符串为 `ai.models` 中的模型 key，通过 LLM 兼容接口直接发起单次研究；对象为 pi rpc 配置，字段：`command`（pi CLI 命令，默认 `pi`）、`args`（追加在 `--mode rpc` 之后的参数，默认 `['--no-session']`）、`env`（子进程环境变量，覆盖 `process.env` 同名变量）、`cwd`（子进程工作目录，默认当前工作目录）、`timeout_ms`（单次研究超时时间，默认 1800000）
@@ -224,10 +249,12 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `lib/` — 上游 OneBot SDK，**禁止写业务逻辑**
 - `src/` — 核心业务代码
 - `web/` — Astro 前端项目，**与 `src/` 共享 DB schema 类型**
+- `test/integration/` — 消息回复调度集成测试（假外部服务 + 真实内部组件）
 
 ## 核心文件
 
-- `src/index.ts` — 入口
+- `src/index.ts` — 入口（读取生产配置并启动应用）
+- `src/app.ts` — 应用组合入口（`createApplication` / `start` / `ready` / `stop`）
 - `src/message-format.ts` — 消息数据结构 + simple-id 序列化，`StoredMessage` 含内部自增 `id` 用于触发边界
 - `src/db/schema.ts` — Drizzle 表定义（messages / images / kv_store）
 - `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
@@ -243,7 +270,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `src/util/deep-research.ts` — 深度研究执行（模型路径 / pi rpc 路径）与开始/结果/结束系统消息写入
 - `src/util/pi-rpc-client.ts` — pi CLI rpc 模式子进程客户端（严格 JSONL 帧、prompt 提交、`agent_settled` 等待、最后一条 assistant 文本获取）
 - `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
-- `src/util/models-factory.ts` — 模型注册、bot Models 单例与 assignment 解析
+- `src/util/models-factory.ts` — 模型注册与 assignment 解析
 - `src/util/credential-store.ts` — pi-ai 凭据内存存储与初始化
 - `src/util/reply-tool.ts` — 回复工具（`reply`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
@@ -256,10 +283,13 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `web/src/lib/messages-*.ts` / `memories-*.ts` / `harness-*.ts` — Web 页面的服务端数据加载、渲染辅助与客户端脚本
 - `web/src/styles/*.css` — Web 页面样式
 - `lib/types/messages.ts` — OneBot 消息段类型
+- `test/integration/runner/scenario.ts` — 集成测试场景环境（假服务、应用子进程与数据库检查器）
+- `test/integration/scenarios/*.test.ts` — 调度回归场景
 
 ## 相关
 
 - [docs/消息格式.md](docs/消息格式.md)
+- [docs/消息回复调度测试系统设计.md](docs/消息回复调度测试系统设计.md)
 - [config.ts](config.ts)
 - [package.json](package.json)
 - [web/astro.config.mjs](web/astro.config.mjs)

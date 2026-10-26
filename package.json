@@ -26,7 +26,7 @@
         "prepublish": "pnpm run build",
         "type:check": "tsc --noEmit",
         "type:watch": "tsc --noEmit --watch",
-        "lint": "eslint ./src --ext .ts",
+        "lint": "eslint ./src ./test --ext .ts",
         "start": "tsx ./src/index.ts",
         "build": "rimraf ./dist/ && tsc -p tsconfig.dist.json",
         "web:build": "cd web && astro build",
@@ -34,7 +34,8 @@
         "web:lint": "cd web && eslint src --ext .ts,.astro",
         "db:generate": "drizzle-kit generate",
         "db:migrate": "drizzle-kit migrate",
-        "db:studio": "drizzle-kit studio"
+        "db:studio": "drizzle-kit studio",
+        "test:integration": "tsx --test --test-concurrency=1 test/integration/scenarios/*.test.ts"
     },
     "files": [
         "dist/**/*",

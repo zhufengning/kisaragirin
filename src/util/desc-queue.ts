@@ -1,7 +1,6 @@
-import {Agent} from '@earendil-works/pi-agent-core';
-import type {AssistantMessage} from '@earendil-works/pi-ai';
-import {config} from '@/config';
-import type {ModelEntry} from '~/config';
+import {Agent, type ThinkingLevel} from '@earendil-works/pi-agent-core';
+import type {AssistantMessage, Models} from '@earendil-works/pi-ai';
+import type {AppConfig, ModelEntry} from '~/config';
 import {eq} from 'drizzle-orm';
 import {schema, type Db} from '~/db';
 import {findImagePath} from './image-store';
@@ -11,21 +10,21 @@ import {preprocessImage, type ImagePreprocessOptions} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
 import {resolveAssignmentModels} from './models-factory';
 
-/**
- * 单次 describe 的兜底超时（毫秒）。
- * 模型请求可能永久挂起（SDK 自带超时并不总是触发），若不加保护，
- * worker 会卡死在 describe() 里，processing 集合中的 sha256 永不释放，
- * 导致队列状态永远显示还剩 1 张。
- */
-const DESCRIBE_TIMEOUT_MS = 6 * 60 * 1000;
-/** abort 后等待 Agent run 完全结束的宽限时间 */
-const ABORT_SETTLE_GRACE_MS = 5 * 1000;
+/** 单次 describe 的默认兜底超时（毫秒） */
+const DEFAULT_DESCRIBE_TIMEOUT_MS = 6 * 60 * 1000;
+/** abort 后等待 Agent run 完全结束的默认宽限时间（毫秒） */
+const DEFAULT_ABORT_SETTLE_GRACE_MS = 5 * 1000;
 
-function withTimeout<T> (promise: Promise<T>, ms: number, onTimeout: () => void | Promise<void>): Promise<T> {
+function withTimeout<T> (
+    promise: Promise<T>,
+    ms: number,
+    onTimeout: () => void | Promise<void>,
+    message: string,
+): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => {
             void Promise.resolve(onTimeout()).finally(() => {
-                reject(new Error(`describe timed out after ${ms}ms`));
+                reject(new Error(message));
             });
         }, ms);
         promise.then(
@@ -41,23 +40,45 @@ function withTimeout<T> (promise: Promise<T>, ms: number, onTimeout: () => void 
     });
 }
 
+export interface DescQueueOptions {
+    db: Db;
+    config: AppConfig;
+    models: Models;
+    /** 单次 describe 的兜底超时（毫秒） */
+    describeTimeoutMs?: number;
+    /** abort 后等待 Agent run 完全结束的宽限时间（毫秒） */
+    abortSettleGraceMs?: number;
+}
+
 export class DescQueue {
     private queue: string[] = [];
     private processing = new Set<string>();
     private waiters = new Map<string, Array<(desc: string | undefined) => void>>();
     private db: Db;
     private running = false;
+    private closing = false;
+    private started = false;
+    private loops: Promise<void>[] = [];
     private agents: Agent[];
     /** 回退链：API 错误时按顺序切换到下一个模型 */
     private modelEntries: ModelEntry[];
     private concurrency: number;
     private imageOptions: ImagePreprocessOptions;
     private logger: Logger;
+    private describeTimeoutMs: number;
+    private abortSettleGraceMs: number;
+    private thinkingLevel: ThinkingLevel;
+    private models: Models;
 
-    constructor (db: Db) {
+    constructor (options: DescQueueOptions) {
+        const {db, config, models} = options;
         this.db = db;
+        this.models = models;
         this.logger = new Logger();
         this.concurrency = config.input.vision_concurrency;
+        this.describeTimeoutMs = options.describeTimeoutMs ?? DEFAULT_DESCRIBE_TIMEOUT_MS;
+        this.abortSettleGraceMs = options.abortSettleGraceMs ?? DEFAULT_ABORT_SETTLE_GRACE_MS;
+        this.thinkingLevel = config.input.vision_thinking_level;
         this.imageOptions = {
             maxSizeBytes: config.input.vision_max_size_bytes,
             maxFrames: config.input.vision_max_frames,
@@ -75,8 +96,10 @@ export class DescQueue {
             initialState: {
                 systemPrompt: prompts.visionSystem,
                 model: modelEntry.model,
-                thinkingLevel: config.input.vision_thinking_level
+                thinkingLevel: this.thinkingLevel
             },
+            streamFn: (model, context, streamOptions) =>
+                this.models.streamSimple(model, context, streamOptions),
             getApiKey: () => modelEntry.apiKey
         });
     }
@@ -84,13 +107,36 @@ export class DescQueue {
     start () {
         if (this.running) return;
         this.running = true;
-        for (let i = 0; i < this.concurrency; i++) {
-            this.loop(i);
+        this.closing = false;
+        if (!this.started) {
+            this.started = true;
+            for (let i = 0; i < this.concurrency; i++) {
+                this.loops.push(this.loop(i));
+            }
         }
     }
 
-    stop () {
+    /** 停止接收新任务，中止进行中的请求，等待 worker 退出并通知剩余等待者 */
+    async stop (): Promise<void> {
         this.running = false;
+        this.closing = true;
+        for (const agent of this.agents) {
+            agent.abort();
+        }
+        await Promise.allSettled(this.loops);
+        this.loops = [];
+        this.started = false;
+        this.queue = [];
+        for (const sha256 of Array.from(this.waiters.keys())) {
+            this.notify(sha256, undefined);
+        }
+    }
+
+    /** 等待队列中所有任务处理结束 */
+    async waitForIdle (): Promise<void> {
+        while (this.queue.length > 0 || this.processing.size > 0) {
+            await new Promise(r => setTimeout(r, 10));
+        }
     }
 
     enqueue (sha256: string, toFront = false) {
@@ -191,6 +237,7 @@ export class DescQueue {
 
         // 按回退链依次尝试：API 错误（或模型返回错误/空文本）时切换下一个模型
         for (let modelIndex = 0; modelIndex < this.modelEntries.length; modelIndex++) {
+            if (this.closing) return;
             const modelEntry = this.modelEntries[modelIndex];
             this.agents[workerId] = this.createAgent(modelIndex);
             const agent = this.agents[workerId];
@@ -208,11 +255,17 @@ export class DescQueue {
                                 this.logger.debug(`[DescQueue] prompt submitted, waiting for idle...`);
                                 await agent.waitForIdle();
                             })(),
-                            DESCRIBE_TIMEOUT_MS,
+                            this.describeTimeoutMs,
                             async () => {
                                 agent.abort();
-                                await withTimeout(agent.waitForIdle(), ABORT_SETTLE_GRACE_MS, () => {});
+                                await withTimeout(
+                                    agent.waitForIdle(),
+                                    this.abortSettleGraceMs,
+                                    () => {},
+                                    `describe abort settle timed out after ${this.abortSettleGraceMs}ms`,
+                                );
                             },
+                            `describe timed out after ${this.describeTimeoutMs}ms`,
                         );
                         this.logger.debug(`[DescQueue] agent idle`);
                     },
