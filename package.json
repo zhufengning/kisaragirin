@@ -1,7 +1,9 @@
 {
-    "name": "philia-onebot",
-    "description": "Fastly build your own QQ bot",
-    "version": "1.4.1",
+    "name": "kisaragirin-onebot",
+    "description": "基于 OneBot V11 的 QQ 群聊机器人",
+    "version": "0.1.0",
+    "author": "zhufengning <z@zhufn.fun>",
+    "license": "BSD-3-Clause",
     "type": "module",
     "exports": {
         ".": {
