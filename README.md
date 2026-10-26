@@ -34,6 +34,7 @@ pnpm web:build && pnpm start
 - 新群的会话（harness session）创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
+- `ai.graphiti.llm.structured_output_mode` 指定 Graphiti 抽取等结构化输出的请求方式，默认 `json_schema`（`response_format` 携带 pydantic schema）。端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时设为 `json_object`：`response_format` 为 `json_object`，schema 拼入 prompt 末尾。端点完全不提供 `response_format` 时设为 `none`：请求不带该字段，schema 只拼入 prompt 末尾；返回内容由 jsonrepair 清洗后再解析
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息生成搜索关键词（自然语言查询 + 实体名称）检索 Graphiti，将相关记忆按「事实」与「相关实体」两节注入上下文；实体搜索由 `ai.memoryKeyword.enable_entity_search` 控制（默认关闭，关闭时仅注入事实列表）
 - 可通过 `ai.memoryKeyword.disable_thinking` 关闭记忆关键词生成模型的深度思考（`openai-completions` 协议注入 `thinking=disabled`）；`openai-responses` 协议用 `ai.memoryKeyword.reasoning_effort` 指定 `reasoning.effort`，不设置则不注入
 - 记忆关键词生成的请求协议按所配模型 `model.api` 区分：`openai-responses` 走 `/responses`（JSON 输出用 `text: {format: {type: 'json_object'}}`），其余走 OpenAI 兼容的 chat completions（JSON 输出用 `response_format: {type: 'json_object'}`）；端点不支持时可将 `ai.memoryKeyword.response_format` 设为 false，此时返回内容由 jsonrepair 修复后再解析

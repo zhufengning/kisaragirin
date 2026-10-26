@@ -92,6 +92,26 @@ def _wrap_disable_thinking(client: AsyncOpenAI) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 不发送 response_format
+# ---------------------------------------------------------------------------
+# 部分端点的模型不支持结构化输出（json_schema 被严格校验拒绝，json_object 也不接受），
+# 此时只能把 schema 写进 prompt，由模型自行生成 JSON，再交给 pydantic 校验。
+# graphiti-core 的 json_object 模式正是把 schema 拼入 prompt 的那个路径，因此构造时仍传
+# json_object，再在传输层移除请求体中的 response_format 字段。
+
+
+def _wrap_strip_response_format(client: AsyncOpenAI) -> None:
+    """移除请求中的 response_format 字段。"""
+    original_create = client.chat.completions.create
+
+    async def create_without_response_format(*args: Any, **kwargs: Any) -> Any:
+        kwargs.pop('response_format', None)
+        return await original_create(*args, **kwargs)
+
+    client.chat.completions.create = create_without_response_format  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------------------
 # JSON 输出清洗
 # ---------------------------------------------------------------------------
 # 部分 OpenAI 兼容端点不强制执行 response_format：模型返回的 JSON 可能被 markdown
@@ -263,6 +283,11 @@ async def handle_initialize(params: dict[str, Any]) -> Any:
     )
     if llm_cfg.get("disable_thinking", False):
         _wrap_disable_thinking(openai_client)
+    structured_output_mode = llm_cfg.get("structured_output_mode", "json_schema")
+    if structured_output_mode == "none":
+        # 端点不接受任何 response_format：schema 走 prompt，请求体中移除该字段
+        _wrap_strip_response_format(openai_client)
+        structured_output_mode = "json_object"
     _wrap_json_sanitize(openai_client)
     # 注意：OpenAIGenericClient 构造函数的 max_tokens 参数会覆盖 LLMConfig 中的
     # 同名配置，必须显式透传，否则静默回落到库默认的 16384
@@ -270,6 +295,7 @@ async def handle_initialize(params: dict[str, Any]) -> Any:
         config=llm_config,
         client=openai_client,
         max_tokens=llm_max_tokens,
+        structured_output_mode=structured_output_mode,
     )
 
     # Embedder config

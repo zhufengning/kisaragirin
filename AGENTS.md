@@ -151,6 +151,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - **JSON 输出修复**：graphiti 服务端在传输层补丁 `AsyncOpenAI.chat.completions.create`，用 jsonrepair（`graphiti/json_repair.js`，经 pythonmonkey 加载并用 `require` 解析 bot 的 `node_modules/jsonrepair`）修复模型返回的非法 JSON：markdown 围栏、被 max_tokens 截断、缺失括号等；jsonrepair 不接受根值之后的额外内容，此时按其 `JSONRepairError.position` 截断后重试。修复结果与原内容相同或修复失败时保持原样，交给 graphiti-core 自身的重试与报错路径
+- **不发送 response_format**：`ai.graphiti.llm.structured_output_mode` 为 `none` 时，graphiti 服务端在传输层从请求体中移除 `response_format`，同时把客户端按 json_object 模式构造，使 graphiti-core 把 pydantic schema 拼入 prompt 末尾
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，`memory-context.ts` 每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
@@ -206,6 +207,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 - `ai.graphiti.llm.disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，server 侧给 AsyncOpenAI 客户端打补丁注入 `extra_body={"thinking": {"type": "disabled"}}`，默认 `false`
 - `ai.graphiti.llm.headers`：附加到 Graphiti LLM 请求的头部（`Record<string, string | null>`），值为 `null` 表示删除 SDK 默认头部（如 `X-Stainless-*`）；server 侧在构造 AsyncOpenAI 客户端时把 `null` 转换为 Python SDK 的 `omit` 哨兵后作为 `default_headers` 传入。该配置只作用于生成型 LLM，嵌入与重排由 graphiti-core 内部各自创建客户端，不受其影响
+- `ai.graphiti.llm.structured_output_mode`：Graphiti 结构化输出（抽取、去重、摘要）的请求方式，`json_schema`（默认）把 pydantic `model_json_schema()` 作为 `response_format.json_schema.schema` 发送；`json_object` 把 `response_format` 设为 `json_object`，schema 拼入 prompt 末尾；`none` 不发送 `response_format`，schema 只拼入 prompt 末尾（客户端仍按 json_object 模式向 prompt 注入 schema，并在传输层移除该字段）。三种方式返回内容都经 jsonrepair 清洗后由 pydantic 校验；端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时用 `json_object`
 
 - `debug_dump_prompt`：由 `reply-debug.ts` 将每次回复的 system prompt、user prompt、模型输出，以及深度研究模型路径的 prompt/payload/对话、pi rpc 路径的 prompt/启动配置/研究结果保存到 `data/debug/`，默认 `false`
 

@@ -2,6 +2,7 @@ import {type ChildProcess, spawn} from 'node:child_process';
 import {dirname, join} from 'node:path';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {Logger} from '@lib/util/logger';
+import type {GraphitiStructuredOutputMode} from '../config';
 
 export interface GraphitiEdge {
     uuid: string | null;
@@ -61,6 +62,8 @@ export interface GraphitiInitConfig {
         disable_thinking?: boolean;
         /** 附加到 LLM 请求的头部；值为 null 表示删除 SDK 默认头部（如 X-Stainless-*） */
         headers?: Record<string, string | null>;
+        /** 结构化输出方式，默认 `json_schema`；`none` 表示请求不带 response_format，schema 只拼入 prompt */
+        structured_output_mode?: GraphitiStructuredOutputMode;
     };
     embedder: {
         api_key: string;

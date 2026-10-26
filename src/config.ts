@@ -71,6 +71,9 @@ export interface ModelEntry {
     apiKey: string;
 }
 
+/** Graphiti LLM 的结构化输出方式 */
+export type GraphitiStructuredOutputMode = 'json_schema' | 'json_object' | 'none';
+
 export interface GraphitiConfig {
     /** uv 可执行文件路径，默认 uv */
     uv_path?: string;
@@ -90,6 +93,13 @@ export interface GraphitiConfig {
         disable_thinking?: boolean;
         /** 附加到 LLM 请求的头部；值为 null 表示删除 SDK 默认头部（如 X-Stainless-*） */
         headers?: Record<string, string | null>;
+        /**
+         * 结构化输出方式，默认 `json_schema`（response_format 携带 pydantic schema）。
+         * 端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时设为 `json_object`：
+         * response_format 为 json_object，schema 拼入 prompt 末尾。
+         * 端点完全不提供 response_format 时设为 `none`：请求不带该字段，schema 只拼入 prompt
+         */
+        structured_output_mode?: GraphitiStructuredOutputMode;
     };
     embedder: {
         api_key: string;

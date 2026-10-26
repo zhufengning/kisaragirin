@@ -174,7 +174,9 @@ export const config: AppConfig = {
                 // 所用模型/端点默认开启深度思考时设为 true，注入 thinking=disabled
                 disable_thinking: false,
                 // 附加到 LLM 请求的头部；值为 null 表示删除 SDK 默认头部（如 X-Stainless-*）
-                headers: {}
+                headers: {},
+                // 结构化输出方式，默认 json_schema；端点按严格模式校验 schema 时用 json_object，完全不支持 response_format 时用 none
+                structured_output_mode: 'json_schema'
             },
             embedder: {
                 api_key: '',
