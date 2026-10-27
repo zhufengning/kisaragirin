@@ -1,14 +1,14 @@
-import type {AgentTool} from '@earendil-works/pi-agent-core';
+import type {ToolDefinition} from '@earendil-works/pi-coding-agent';
 import type {AssistantMessage} from '@earendil-works/pi-ai';
 import {messagesToString, type StoredMessage} from '~/message-format';
 import {prompts} from '~/prompts';
 import type {DescQueue} from './desc-queue';
 
-function formatToolParameters (toolSchema: AgentTool['parameters']): string {
+function formatToolParameters (toolSchema: ToolDefinition['parameters']): string {
     return JSON.stringify(toolSchema, null, 2);
 }
 
-export function formatToolsDescription (tools: AgentTool[]): string {
+export function formatToolsDescription (tools: ToolDefinition[]): string {
     if (tools.length === 0) return '无可用工具。';
 
     return tools

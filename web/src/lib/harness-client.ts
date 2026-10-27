@@ -1,5 +1,5 @@
 import { createEntryElement, matchesFilter } from './harness-entry';
-import type { SessionTreeEntry } from '@earendil-works/pi-agent-core';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 const PAGE_SIZE = 50;
 
@@ -29,7 +29,7 @@ export function initHarnessPage (): void {
     const filterButtons = document.querySelectorAll<HTMLButtonElement>('.filter-btn');
 
     let currentFilter = 'all';
-    let currentEntries: SessionTreeEntry[] = [];
+    let currentEntries: SessionEntry[] = [];
     let currentPage = 0;
 
     function renderPagination (totalPages: number): void {
@@ -73,7 +73,7 @@ export function initHarnessPage (): void {
         paginationEl.appendChild(nextBtn);
     }
 
-    function renderEntries (entries: SessionTreeEntry[]): void {
+    function renderEntries (entries: SessionEntry[]): void {
         currentEntries = entries;
         container.innerHTML = '';
 
@@ -121,7 +121,7 @@ export function initHarnessPage (): void {
             if (!Array.isArray(data.entries)) {
                 throw new Error('返回数据格式不正确');
             }
-            renderEntries(data.entries as SessionTreeEntry[]);
+            renderEntries(data.entries as SessionEntry[]);
         } catch (err) {
             errorEl.textContent = '加载失败：' + (err as Error).message;
             errorEl.style.display = 'block';

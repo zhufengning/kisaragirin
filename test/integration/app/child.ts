@@ -21,9 +21,9 @@ function reply (message: Record<string, unknown>): void {
 }
 
 async function handleStart (message: StartMessage): Promise<void> {
-    const {createModels} = await import('@earendil-works/pi-ai');
+    const {ModelRuntime} = await import('@earendil-works/pi-coding-agent');
     const {createApplication} = await import('../../../src/app');
-    const models = createModels();
+    const models = await ModelRuntime.create({modelsPath: null, refreshOnCreate: false});
     app = createApplication({
         config: message.config,
         models,

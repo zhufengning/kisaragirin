@@ -30,7 +30,7 @@ interface ReplyRef {
     dbSegment?: StoredSegment;
 }
 
-/** 回复发送与落库：一条一条发送回复消息，写入数据库、harness 与 Graphiti 记忆 */
+/** 回复发送与落库：一条一条发送回复消息，写入数据库、会话与 Graphiti 记忆 */
 export class ReplySender {
     private readonly bot: Bot;
     private readonly db: Db;

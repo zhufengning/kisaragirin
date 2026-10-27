@@ -1,33 +1,11 @@
-import type {ApiKeyCredential, Credential, CredentialStore} from '@earendil-works/pi-ai';
+import {InMemoryCredentialStore, type ApiKeyCredential, type CredentialStore} from '@earendil-works/pi-ai';
 import type {ModelEntry} from '../config';
 import {Logger} from '@lib/util/logger';
 
 const logger = new Logger();
 
-export function createInMemoryCredentialStore (): CredentialStore {
-    const credentials = new Map<string, Credential>();
-
-    return {
-        async read (providerId: string): Promise<Credential | undefined> {
-            return credentials.get(providerId);
-        },
-
-        async modify (
-            providerId: string,
-            fn: (current: Credential | undefined) => Promise<Credential | undefined>,
-        ): Promise<Credential | undefined> {
-            const current = credentials.get(providerId);
-            const next = await fn(current);
-            if (next !== undefined) {
-                credentials.set(providerId, next);
-            }
-            return next ?? current;
-        },
-
-        async delete (providerId: string): Promise<void> {
-            credentials.delete(providerId);
-        }
-    };
+export function createCredentialStore (): InMemoryCredentialStore {
+    return new InMemoryCredentialStore();
 }
 
 export async function populateCredentialStore (

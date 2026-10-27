@@ -1,7 +1,17 @@
-import {AgentHarness, type AgentMessage, type AgentTool, type Session} from '@earendil-works/pi-agent-core';
-import {NodeExecutionEnv} from '@earendil-works/pi-agent-core/node';
-import {type AssistantMessage, type Models} from '@earendil-works/pi-ai';
-import {schema, type Db, type JsonlSessionMetadata, rowToStoredMessage, setGroupLastTriggerId} from '~/db';
+import {
+    AgentSession,
+    createAgentSession,
+    DefaultResourceLoader,
+    getAgentDir,
+    SettingsManager,
+    type InlineExtension,
+    type ModelRuntime,
+    type SessionEntry,
+    type SessionManager,
+    type ToolDefinition
+} from '@earendil-works/pi-coding-agent';
+import type {AssistantMessage, Message, Models} from '@earendil-works/pi-ai';
+import {schema, type Db, rowToStoredMessage, setGroupLastTriggerId} from '~/db';
 import type {AppConfig, ModelEntry} from '~/config';
 import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
@@ -9,7 +19,7 @@ import type {ReplyTask} from './reply-task';
 import {messagesToString, type StoredMessage} from '~/message-format';
 import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
-import {getOrCreateGroupSession} from './harness-factory';
+import {getOrCreateGroupSession, registerAgentSession, emptyUsage} from './harness-factory';
 import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
@@ -44,8 +54,8 @@ export class ReplyAgent {
     private descQueue: DescQueue;
     private config: AppConfig;
     private groupId: number;
-    private session: Session<JsonlSessionMetadata>;
-    private harness: AgentHarness;
+    private sessionManager: SessionManager;
+    private session: AgentSession;
     private logger: Logger;
     private systemPromptText: string;
     private debug: ReplyDebugDumper;
@@ -54,16 +64,18 @@ export class ReplyAgent {
     private lastReplyToolParams: ReplyToolParams | null = null;
     private toolCallRoundCount = 0;
     private graphiti: GraphitiClient | null = null;
-    /** 已注入 harness 的最近一条 bot 回复的数据库 id，用于检测乱序消息（回复生成期间送达的消息 id 更小却排在回复之后） */
+    /** 已注入会话的最近一条 bot 回复的数据库 id，用于检测乱序消息（回复生成期间送达的消息 id 更小却排在回复之后） */
     private lastBotReplyId = 0;
+    /** 最近一轮 prompt 中最后一条 assistant 消息，由会话的 message_end 事件刷新 */
+    private lastAssistantMessage: AssistantMessage | undefined;
 
     private constructor (options: {
         db: Db;
         descQueue: DescQueue;
         config: AppConfig;
         groupId: number;
-        session: Session<JsonlSessionMetadata>;
-        harness: AgentHarness;
+        sessionManager: SessionManager;
+        session: AgentSession;
         systemPromptText: string;
         graphiti: GraphitiClient | null;
         lastBotReplyId: number;
@@ -73,12 +85,18 @@ export class ReplyAgent {
         this.descQueue = options.descQueue;
         this.config = options.config;
         this.groupId = options.groupId;
+        this.sessionManager = options.sessionManager;
         this.session = options.session;
-        this.harness = options.harness;
         this.systemPromptText = options.systemPromptText;
         this.graphiti = options.graphiti;
         this.lastBotReplyId = options.lastBotReplyId;
         this.logger = new Logger();
+
+        this.session.subscribe(event => {
+            if (event.type === 'message_end' && event.message.role === 'assistant') {
+                this.lastAssistantMessage = event.message;
+            }
+        });
 
         this.debug = new ReplyDebugDumper({config: this.config, logger: this.logger, groupId: this.groupId});
         this.memoryContext = new MemoryContextBuilder({
@@ -86,7 +104,7 @@ export class ReplyAgent {
             groupId: this.groupId,
             logger: this.logger,
             graphiti: this.graphiti,
-            session: this.session,
+            sessionManager: this.sessionManager,
             debug: this.debug
         });
         this.researchRunner = new DeepResearchRunner({
@@ -106,16 +124,15 @@ export class ReplyAgent {
         db: Db;
         descQueue: DescQueue;
         config: AppConfig;
-        models: Models;
+        models: ModelRuntime;
         graphiti?: GraphitiClient | null;
     }): Promise<ReplyAgent> {
         const {groupId, db, descQueue, config, models, graphiti} = options;
 
         const logger = new Logger();
-        const {session, isNew} = await getOrCreateGroupSession(groupId, config, db);
+        const {sessionManager, isNew} = await getOrCreateGroupSession(groupId, config, db);
 
         const harnessEntry = resolveAssignmentModels(config, config.ai.assignments.agent_harness)[0];
-        const env = new NodeExecutionEnv({cwd: process.cwd()});
 
         const agentRef: {current: ReplyAgent | null} = {current: null};
 
@@ -125,26 +142,60 @@ export class ReplyAgent {
             }
         });
 
-        const graphitiTools: AgentTool[] = graphiti ? createGraphitiTools(graphiti, config.log.level, groupId) : [];
-        const tools: AgentTool[] = [replyTool, ...graphitiTools];
+        const graphitiTools = graphiti ? createGraphitiTools(graphiti, config.log.level, groupId) : [];
+        const tools: ToolDefinition[] = [replyTool, ...graphitiTools];
 
-        const systemPrompt = () => buildSystemPrompt({
+        const systemPromptText = buildSystemPrompt({
             botName: config.input.bot_name || '机器人',
             botPersona: config.input.bot_persona || '',
             toolsDescription: formatToolsDescription(tools),
             groupCustomPrompt: config.input.group_custom_prompts?.[groupId]
         });
 
-        const harness = new AgentHarness({
-            env,
-            session,
-            models,
-            model: harnessEntry.model,
-            systemPrompt,
-            tools,
-            activeToolNames: tools.map(t => t.name),
-            thinkingLevel: 'high'
+        const runtimeExtension: InlineExtension = pi => {
+            pi.on('before_agent_start', () => ({systemPrompt: systemPromptText}));
+            pi.on('tool_call', event => agentRef.current?.checkToolCall(event.toolName));
+        };
+
+        const settingsManager = SettingsManager.inMemory({
+            retry: {enabled: false},
+            compaction: {enabled: false},
+            cacheWarming: 'off'
         });
+
+        const cwd = process.cwd();
+        const agentDir = getAgentDir();
+        const resourceLoader = new DefaultResourceLoader({
+            cwd,
+            agentDir,
+            settingsManager,
+            extensionFactories: [runtimeExtension],
+            noExtensions: true,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+            systemPrompt: systemPromptText,
+            appendSystemPrompt: [],
+            systemPromptOverride: () => systemPromptText,
+            appendSystemPromptOverride: () => []
+        });
+        await resourceLoader.reload();
+
+        const {session} = await createAgentSession({
+            cwd,
+            agentDir,
+            modelRuntime: models,
+            model: harnessEntry.model,
+            thinkingLevel: 'high',
+            noTools: 'builtin',
+            customTools: tools,
+            sessionManager,
+            settingsManager,
+            resourceLoader
+        });
+        await session.bindExtensions({});
+        registerAgentSession(session);
 
         const lastBotReplyId = await ReplyAgent.restoreLastBotReplyId(db, groupId);
 
@@ -153,22 +204,21 @@ export class ReplyAgent {
             descQueue,
             config,
             groupId,
+            sessionManager,
             session,
-            harness,
-            systemPromptText: systemPrompt(),
+            systemPromptText,
             graphiti: graphiti ?? null,
             lastBotReplyId,
             models
         });
 
         agentRef.current = agent;
-        ReplyAgent.installToolCallLimit(harness, agent, config, logger, groupId);
 
         if (isNew) {
             await ReplyAgent.bootstrapNewSession(db, groupId, logger);
         }
 
-        logger.info(`[ReplyAgent] [${groupId}] harness created, isNew=${isNew}`);
+        logger.info(`[ReplyAgent] [${groupId}] session created, isNew=${isNew}`);
         return agent;
     }
 
@@ -187,26 +237,22 @@ export class ReplyAgent {
         return lastBotReply[0]?.id ?? 0;
     }
 
-    private static installToolCallLimit (
-        harness: AgentHarness,
-        agent: ReplyAgent,
-        config: AppConfig,
-        logger: Logger,
-        groupId: number
-    ): void {
-        harness.on('tool_call', event => {
-            if (event.toolName === 'reply') {
-                return undefined;
-            }
-            agent.toolCallRoundCount++;
-            if (agent.toolCallRoundCount > config.input.max_tool_call_rounds) {
-                logger.warn(
-                    `[ReplyAgent] [${groupId}] tool call rounds exceeded ` +
-                    `${config.input.max_tool_call_rounds}, blocking`);
-                return {block: true, reason: 'tool call round limit exceeded'};
-            }
+    /**
+     * tool_call 事件处理：reply 直接放行，其余工具计入本轮配额，
+     * 超过 max_tool_call_rounds 后阻止执行，由 reminder 引导模型回复。
+     */
+    private checkToolCall (toolName: string): {block: true; reason: string} | undefined {
+        if (toolName === 'reply') {
             return undefined;
-        });
+        }
+        this.toolCallRoundCount++;
+        if (this.toolCallRoundCount > this.config.input.max_tool_call_rounds) {
+            this.logger.warn(
+                `[ReplyAgent] [${this.groupId}] tool call rounds exceeded ` +
+                `${this.config.input.max_tool_call_rounds}, blocking`);
+            return {block: true, reason: 'tool call round limit exceeded'};
+        }
+        return undefined;
     }
 
     private static async bootstrapNewSession (db: Db, groupId: number, logger: Logger): Promise<void> {
@@ -223,8 +269,25 @@ export class ReplyAgent {
         }
     }
 
+    /** 追加一条消息到持久化会话并同步到运行中的上下文 */
+    private appendSessionMessage (message: Message): void {
+        this.sessionManager.appendMessage(message);
+        this.session.refreshContext();
+    }
+
+    /** 构建写入会话的 assistant 消息；usage 为必填字段，缺失会让上下文估算读到 undefined */
+    private buildAssistantMessage (text: string, timestamp: number): Message {
+        return {
+            role: 'assistant',
+            content: [{type: 'text', text}],
+            usage: emptyUsage(),
+            stopReason: 'stop',
+            timestamp
+        } as Message;
+    }
+
     /**
-     * 手动导入指定时间范围内的历史消息到 harness 会话。
+     * 手动导入指定时间范围内的历史消息到会话。
      * 忽略所有压缩（compact）消息。返回实际导入的消息条数。
      */
     async importMessagesByDateRange (startTime: number, endTime: number): Promise<number> {
@@ -253,12 +316,14 @@ export class ReplyAgent {
             const text = await messagesToString([msg], sha => this.descQueue.resolve(sha));
             if (!text.trim()) continue;
 
-            const role = msg.isBot ? 'assistant' : 'user';
-            await this.harness.appendMessage({
-                role,
-                content: [{type: 'text', text}],
-                timestamp: msg.time * 1000
-            } as AgentMessage);
+            const message: Message = msg.isBot ?
+                this.buildAssistantMessage(text, msg.time * 1000) :
+                {
+                    role: 'user',
+                    content: [{type: 'text', text}],
+                    timestamp: msg.time * 1000
+                } as Message;
+            this.appendSessionMessage(message);
             imported++;
         }
 
@@ -270,7 +335,7 @@ export class ReplyAgent {
     }
 
     private async fetchMessagesSince (lastTriggerId: number): Promise<StoredMessage[]> {
-        // bot 普通聊天消息已通过 appendBotMessage 注入 harness，这里排除以避免重复；
+        // bot 普通聊天消息已通过 appendBotMessage 注入会话，这里排除以避免重复；
         // system / compact 等特殊消息仍保留。这样 lastTriggerId 只需推进到实际读入
         // prompt 的消息 id，回复执行期间到达的新消息不会被 bot 自己的回复行跳过。
         const notBotChat = or(
@@ -302,7 +367,7 @@ export class ReplyAgent {
     }
 
     /**
-     * 检测乱序消息：本轮读入的消息 id 小于等于已注入 harness 的最近 bot 回复 id，
+     * 检测乱序消息：本轮读入的消息 id 小于等于已注入会话的最近 bot 回复 id，
      * 说明它们是在上一轮回复生成期间送达的（bot 视角排在回复之后，实际发送更早）。
      * 返回拼在 user 消息末尾的时序提示文本，无乱序时返回 null。
      */
@@ -315,13 +380,13 @@ export class ReplyAgent {
         return prompts.outOfOrderHint(lateIds.map(id => `#${id}`).join('、'));
     }
 
-    private async syncHarnessModel (entry: ModelEntry): Promise<void> {
-        const current = this.harness.getModel();
-        if (current.id !== entry.model.id) {
-            await this.harness.setModel(entry.model);
+    private async syncSessionModel (entry: ModelEntry): Promise<void> {
+        const current = this.session.model;
+        if (!current || current.provider !== entry.model.provider || current.id !== entry.model.id) {
+            await this.session.setModel(entry.model);
             this.logger.info(
-                `[ReplyAgent] [${this.groupId}] harness model switched ` +
-                `from ${current.id} to ${entry.model.id}`);
+                `[ReplyAgent] [${this.groupId}] session model switched ` +
+                `from ${current ? current.id : 'none'} to ${entry.model.id}`);
         }
     }
 
@@ -425,7 +490,7 @@ export class ReplyAgent {
     }
 
     /**
-     * 回合公共逻辑：appendTexts 依次 append 到 harness，再以 promptText 发起 prompt
+     * 回合公共逻辑：appendTexts 依次 append 到会话，再以 promptText 发起 prompt
      * （含 reminder 重试与模型回退链），最后解析 reply 工具结果。
      * reply 工具被调用即视为成功——空 messages 是模型主动选择不回复，不算失败。
      */
@@ -448,11 +513,11 @@ export class ReplyAgent {
         }
 
         for (const text of appendTexts) {
-            await this.harness.appendMessage({
+            this.appendSessionMessage({
                 role: 'user',
                 content: [{type: 'text', text}],
                 timestamp: Date.now()
-            } as AgentMessage);
+            } as Message);
         }
 
         let assistant: AssistantMessage | undefined;
@@ -494,6 +559,19 @@ export class ReplyAgent {
         };
     }
 
+    /** 发起一次 prompt 并取回本轮最后一条 assistant 消息（无结果或抛错时返回 undefined） */
+    private async runPrompt (text: string): Promise<AssistantMessage | undefined> {
+        this.lastAssistantMessage = undefined;
+        try {
+            await this.session.prompt(text, {expandPromptTemplates: false});
+        } catch (err) {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] prompt error: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+        }
+        return this.lastAssistantMessage;
+    }
+
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
         let assistant: AssistantMessage | undefined;
         const MAX_REMINDERS = 2;
@@ -504,18 +582,29 @@ export class ReplyAgent {
         let fallbackIndex = 0;
 
         for (let i = 0; i <= MAX_REMINDERS; i++) {
-            await this.syncHarnessModel(modelEntries[fallbackIndex]);
+            await this.syncSessionModel(modelEntries[fallbackIndex]);
             this.lastReplyToolParams = null;
             if (i === 0) {
-                assistant = await this.harness.prompt(lastText);
+                assistant = await this.runPrompt(lastText);
             } else {
                 this.logger.info(
                     `[ReplyAgent] [${this.groupId}] sending reminder ${i}/${MAX_REMINDERS}...`);
-                assistant = await this.harness.prompt(
+                assistant = await this.runPrompt(
                     lastWasError ? prompts.replyErrorReminder() : prompts.replyReminder());
             }
 
             if (!assistant) {
+                // 没有 assistant 结果（prompt 抛错或运行未产出消息）按错误处理
+                if (fallbackIndex < modelEntries.length - 1) {
+                    fallbackIndex++;
+                    this.logger.warn(
+                        `[ReplyAgent] [${this.groupId}] turn produced no assistant message; ` +
+                        `falling back to model ${modelEntries[fallbackIndex].model.id}`);
+                    lastWasError = true;
+                    i--;
+                    continue;
+                }
+                lastWasError = true;
                 continue;
             }
             this.logger.info(`[ReplyAgent] [${this.groupId}] turn usage: ${formatUsage(assistant.usage)}`);
@@ -553,11 +642,7 @@ export class ReplyAgent {
         }
         const text = await messagesToString([storedMessage], sha => this.descQueue.resolve(sha));
         if (!text.trim()) return;
-        await this.harness.appendMessage({
-            role: 'assistant',
-            content: [{type: 'text', text}],
-            timestamp: storedMessage.time * 1000
-        } as AgentMessage);
+        this.appendSessionMessage(this.buildAssistantMessage(text, storedMessage.time * 1000));
     }
 
     async buildPreviewPrompt (task: ReplyTask): Promise<{ systemPrompt: string; userMessages: string[] }> {
@@ -578,15 +663,15 @@ export class ReplyAgent {
 
     async triggerCompact (_groupId?: number, _force = false): Promise<void> {
         await this.waitForIdle();
-        await this.harness.compact();
+        await this.session.compact();
         await this.waitForIdle();
     }
 
     async waitForIdle (): Promise<void> {
-        await this.harness.waitForIdle();
+        await this.session.waitForIdle();
     }
 
-    getBranch (): ReturnType<Session['getBranch']> {
-        return this.session.getBranch();
+    getBranch (): SessionEntry[] {
+        return this.sessionManager.getBranch();
     }
 }

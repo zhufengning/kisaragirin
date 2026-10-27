@@ -1,7 +1,27 @@
-import type { AgentMessage, SessionTreeEntry } from '@earendil-works/pi-agent-core';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ImageContent, TextContent, ThinkingContent, ToolCall } from '@earendil-works/pi-ai';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 
 const COLLAPSE_CHARS = 800;
+
+/** 旧版运行时写入的条目字段（新会话不再产生，但历史文件里仍存在） */
+interface LegacyEntryBase {
+    id: string;
+    parentId: string | null;
+    timestamp: string;
+}
+
+interface LegacyActiveToolsEntry extends LegacyEntryBase {
+    type: 'active_tools_change';
+    activeToolNames?: string[];
+}
+
+interface LegacyLeafEntry extends LegacyEntryBase {
+    type: 'leaf';
+    targetId?: string | null;
+}
+
+type RenderableEntry = SessionEntry | LegacyActiveToolsEntry | LegacyLeafEntry;
 
 type ContentBlock = TextContent | ThinkingContent | ToolCall | ImageContent;
 
@@ -149,7 +169,8 @@ function roleVariant (role: string): string {
     return 'default';
 }
 
-export function createEntryElement (entry: SessionTreeEntry, index: number): HTMLElement {
+export function createEntryElement (sessionEntry: SessionEntry, index: number): HTMLElement {
+    const entry = sessionEntry as RenderableEntry;
     const el = document.createElement('article');
     el.className = 'entry';
     el.dataset.type = entry.type;
@@ -208,6 +229,17 @@ export function createEntryElement (entry: SessionTreeEntry, index: number): HTM
         el.classList.add('entry--meta');
         meta.appendChild(createBadge('active-tools-change', 'default'));
         appendText(body, (entry.activeToolNames ?? []).join(', '));
+    } else if (entry.type === 'usage') {
+        el.classList.add('entry--meta');
+        meta.appendChild(createBadge(`usage · ${entry.kind || 'unknown'}`, 'default'));
+        appendText(body, `${entry.provider || 'unknown'} / ${entry.model || 'unknown'}`);
+        appendCodeBlock(body, 'usage', entry.usage);
+        if (entry.note) appendText(body, entry.note);
+    } else if (entry.type === 'context_edit') {
+        el.classList.add('entry--meta');
+        meta.appendChild(createBadge('context-edit', 'default'));
+        appendText(body, `target: ${entry.targetId || 'null'}`);
+        appendCodeBlock(body, 'replacement', entry.replacement ?? null);
     } else if (entry.type === 'thinking_level_change') {
         el.classList.add('entry--meta');
         meta.appendChild(createBadge('thinking-level-change', 'default'));
@@ -241,7 +273,6 @@ export function createEntryElement (entry: SessionTreeEntry, index: number): HTM
         meta.appendChild(createBadge((entry as { type: string }).type || 'unknown', 'default'));
         appendCodeBlock(body, 'entry', entry);
     }
-
     const idSpan = document.createElement('span');
     idSpan.className = 'entry-id';
     idSpan.title = entry.id || '';
@@ -277,7 +308,7 @@ export function createEntryElement (entry: SessionTreeEntry, index: number): HTM
     return el;
 }
 
-export function matchesFilter (entry: SessionTreeEntry, filter: string): boolean {
+export function matchesFilter (entry: SessionEntry, filter: string): boolean {
     if (filter === 'all') return true;
     if (filter === 'compaction') return entry.type === 'compaction';
     if (entry.type !== 'message') return false;

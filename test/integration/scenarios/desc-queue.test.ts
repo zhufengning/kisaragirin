@@ -1,7 +1,7 @@
 import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import {createModels} from '@earendil-works/pi-ai';
+import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {eq} from 'drizzle-orm';
 import {createDb, closeDb, runMigrations, schema, type Db} from '../../../src/db';
 import {DescQueue} from '../../../src/util/desc-queue';
@@ -47,7 +47,7 @@ async function createQueueEnvironment (
         logLevel: 'warn',
         ...overrides
     });
-    const models = createModels();
+    const models = await ModelRuntime.create({modelsPath: null, refreshOnCreate: false});
     registerCustomProviders(models, config);
 
     const db = createDb(artifacts.path('messages.db'));

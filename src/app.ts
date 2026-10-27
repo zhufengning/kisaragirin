@@ -1,6 +1,6 @@
 import {createBot} from '@lib';
 import type {Bot, GroupMessageEvent} from '@lib/types';
-import type {MutableModels} from '@earendil-works/pi-ai';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import type {AppConfig} from './config';
 import {applyPromptsOverrides} from './prompts';
 import {registerCustomProviders} from './util/models-factory';
@@ -22,7 +22,7 @@ import {rmSync, existsSync} from 'node:fs';
 
 export interface ApplicationOptions {
     config: AppConfig;
-    models: MutableModels;
+    models: ModelRuntime;
     /** 假 Graphiti server 文件路径，默认 graphiti/server.py */
     graphitiServerPath?: string;
     /** 是否启动 Astro Web 面板，默认启动 */

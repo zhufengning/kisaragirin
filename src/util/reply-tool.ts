@@ -1,5 +1,5 @@
 import {Type} from '@earendil-works/pi-ai';
-import type {AgentTool} from '@earendil-works/pi-agent-core';
+import {defineTool, type ToolDefinition} from '@earendil-works/pi-coding-agent';
 import {Logger} from '@lib/util/logger';
 import {prompts} from '~/prompts';
 
@@ -18,7 +18,7 @@ export interface CreateReplyToolOptions {
     onCalled?: (params: ReplyToolParams) => void;
 }
 
-export function createReplyTool (options: CreateReplyToolOptions): AgentTool<typeof replyToolSchema> {
+export function createReplyTool (options: CreateReplyToolOptions): ToolDefinition<typeof replyToolSchema> {
     const logger = new Logger();
     const parameterDescriptions = prompts.replyToolParameterDescriptions();
 
@@ -31,7 +31,7 @@ export function createReplyTool (options: CreateReplyToolOptions): AgentTool<typ
         deep_research_topic: Type.Optional(Type.String({description: parameterDescriptions.deepResearchTopic}))
     });
 
-    return {
+    return defineTool({
         name: 'reply',
         label: '回复',
         description: prompts.replyToolDescription(),
@@ -53,5 +53,5 @@ export function createReplyTool (options: CreateReplyToolOptions): AgentTool<typ
                 terminate: true
             };
         }
-    };
+    });
 }

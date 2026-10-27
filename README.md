@@ -31,7 +31,7 @@ pnpm web:build && pnpm start
 - 闲时触发可配置 `input.silence_recent_window`、`input.silence_recent_bot_threshold` 与 `input.silence_recent_bot_multiplier`：最近 `silence_recent_window` 条消息中 bot 消息数达到 `silence_recent_bot_threshold` 时，闲时等待时间按 `silence_recent_bot_multiplier` 倍延长；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示关闭该检查
 - 支持按群配置定时任务触发
 - 采用回合链架构：消息轮即时回复，若模型要求则执行深度研究（按 `ai.assignments.deep_research` 的配置走模型或 pi rpc）并追加研究轮回复；研究轮中模型可再次请求深度研究（链式，上限由 `input.max_deep_research_rounds` 控制，默认 3）；模型也可返回空消息数组主动选择不回复
-- 新群的会话（harness session）创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
+- 新群的会话创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
 - `ai.graphiti.llm.structured_output_mode` 指定 Graphiti 抽取等结构化输出的请求方式，默认 `json_schema`（`response_format` 携带 pydantic schema）。端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时设为 `json_object`：`response_format` 为 `json_object`，schema 拼入 prompt 末尾。端点完全不提供 `response_format` 时设为 `none`：请求不带该字段，schema 只拼入 prompt 末尾；返回内容由 jsonrepair 清洗后再解析
@@ -63,7 +63,7 @@ assignments: {
 ```
 
 - 回退触发条件：API 错误（`stopReason='error'/'aborted'`、网络错误、限流等）。模型正常返回但内容不合规（未调用 reply 工具等）不触发模型回退，仍走原有 reminder 重试
-- harness 回复中模型回退不消耗 reminder 额度；回退链全部失败后才进入原有 reminder 重试（最多 2 次）
+- 会话回复中模型回退不消耗 reminder 额度；回退链全部失败后才进入原有 reminder 重试（最多 2 次）
 - 每次触发回复时会重新解析 assignment（时段调度随时间生效）；回退只影响当次调用，下次触发仍从链首模型开始
 
 ## 深度研究配置
@@ -184,7 +184,7 @@ pnpm run test:integration
 
 测试只替换外部服务，项目内部组件全部运行真实代码：OneBot WebSocket 客户端与消息转换、SQLite 与迁移、`GroupReplyManager`、`ScheduledTaskManager`、`ReplyAgent`、`DescQueue` 与图片预处理、`GraphitiClient` 的 stdio JSON-RPC 通信、Croner 定时器。
 
-- 每个场景通过 `src/app.ts` 组合入口启动一个独立的应用子进程，使用场景目录自己的 SQLite、harness 会话与端口
+- 每个场景通过 `src/app.ts` 组合入口启动一个独立的应用子进程，使用场景目录自己的 SQLite、会话文件与端口
 - 假 OneBot server 注入真实格式的群消息事件；假 OpenAI Completions server 按 channel 返回流式工具调用、文本、非流式 JSON 或 HTTP 错误，并用闸门控制并发时序；假图片资源 server 提供真实图片字节；假 Graphiti server 用 Python 标准库实现，通过控制文件与记录文件与测试父进程交换状态
 - 并发时序由闸门与事件等待控制，时间相关场景使用缩短后的合并窗口与闲时等待，`reply_probability` 固定为 0 或 1
 - 场景产物保存在 `data/test-runs/<scenario>-<uuid>/`（`config.json`、`app.log`、`app.out.log`、`onebot-events.jsonl`、`openai-requests.jsonl`、`graphiti-calls.jsonl`、`messages.db`、`data/`），成功场景自动删除，失败场景保留用于诊断
@@ -202,6 +202,6 @@ pnpm run test:integration
 ## 技术栈
 
 - **Bot**: TypeScript + OneBot V11 (ws) + better-sqlite3 + Drizzle ORM
-- **LLM**: `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai` + Graphiti
+- **LLM**: `@earendil-works/pi-coding-agent` + `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai` + Graphiti
 - **Scheduling**: Croner
 - **Web UI**: Astro 6.4 SSR (Node middleware)

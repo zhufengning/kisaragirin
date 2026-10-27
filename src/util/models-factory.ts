@@ -1,4 +1,5 @@
-import {createProvider, type MutableModels} from '@earendil-works/pi-ai';
+import {createProvider} from '@earendil-works/pi-ai';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {openAICompletionsApi} from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import {openAIResponsesApi} from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import type {AppConfig, ModelAssignmentKey, ModelEntry, ScheduledModelAssignment} from '../config';
@@ -13,7 +14,7 @@ function apiStreamsFor (modelApi: string) {
     throw new Error(`Unsupported custom model API: ${modelApi}`);
 }
 
-export function registerCustomProviders (modelsInstance: MutableModels, config: AppConfig): void {
+export function registerCustomProviders (modelsInstance: ModelRuntime, config: AppConfig): void {
     for (const entry of Object.values(config.ai.models)) {
         const providerId = entry.model.provider;
 
@@ -21,7 +22,7 @@ export function registerCustomProviders (modelsInstance: MutableModels, config: 
             continue;
         }
 
-        modelsInstance.setProvider(
+        modelsInstance.registerNativeProvider(
             createProvider({
                 id: providerId,
                 name: providerId,

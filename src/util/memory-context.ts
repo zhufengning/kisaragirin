@@ -1,5 +1,4 @@
-import type {Session} from '@earendil-works/pi-agent-core';
-import type {JsonlSessionMetadata} from '~/db';
+import type {SessionManager} from '@earendil-works/pi-coding-agent';
 import type {AppConfig, ModelEntry} from '~/config';
 import type {Logger} from '@lib/util/logger';
 import type {ReplyDebugDumper} from './reply-debug';
@@ -20,7 +19,7 @@ export class MemoryContextBuilder {
     private readonly groupId: number;
     private readonly logger: Logger;
     private readonly graphiti: GraphitiClient | null;
-    private readonly session: Session<JsonlSessionMetadata>;
+    private readonly sessionManager: SessionManager;
     private readonly debug: ReplyDebugDumper;
 
     constructor (options: {
@@ -28,20 +27,20 @@ export class MemoryContextBuilder {
         groupId: number;
         logger: Logger;
         graphiti: GraphitiClient | null;
-        session: Session<JsonlSessionMetadata>;
+        sessionManager: SessionManager;
         debug: ReplyDebugDumper;
     }) {
         this.config = options.config;
         this.groupId = options.groupId;
         this.logger = options.logger;
         this.graphiti = options.graphiti;
-        this.session = options.session;
+        this.sessionManager = options.sessionManager;
         this.debug = options.debug;
     }
 
     /** 记忆自动检索总入口；返回空字符串表示没有可注入的内容 */
     async build (messagesText: string): Promise<string> {
-        const existingMemories = await this.extractExistingFacts();
+        const existingMemories = this.extractExistingFacts();
         const queryParams = await this.generateQuery(messagesText, existingMemories);
         if (!queryParams) return '';
         return this.search(queryParams);
@@ -276,32 +275,28 @@ export class MemoryContextBuilder {
      * 扫描所有 message entry 中 "记忆自动检索" 分割线之后的内容，
      * 提取以 "- " 开头的记忆条目，用于去重。
      */
-    private async extractExistingFacts (): Promise<string[]> {
+    private extractExistingFacts (): string[] {
         const facts: string[] = [];
-        try {
-            const entries = await this.session.getBranch();
-            for (const entry of entries) {
-                if (entry.type !== 'message') continue;
-                const msg = entry.message;
-                if (msg.role !== 'user') continue;
-                const text = typeof msg.content === 'string' ?
-                    msg.content :
-                    msg.content
-                        .filter(c => c.type === 'text')
-                        .map(c => c.text)
-                        .join('');
-                const separatorIdx = text.indexOf('--- 记忆自动检索 ---');
-                if (separatorIdx === -1) continue;
-                const memBlock = text.slice(separatorIdx + '--- 记忆自动检索 ---'.length);
-                for (const line of memBlock.split('\n')) {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('- ')) {
-                        facts.push(trimmed);
-                    }
+        const entries = this.sessionManager.getBranch();
+        for (const entry of entries) {
+            if (entry.type !== 'message') continue;
+            const msg = entry.message;
+            if (msg.role !== 'user') continue;
+            const text = typeof msg.content === 'string' ?
+                msg.content :
+                msg.content
+                    .filter(c => c.type === 'text')
+                    .map(c => c.text)
+                    .join('');
+            const separatorIdx = text.indexOf('--- 记忆自动检索 ---');
+            if (separatorIdx === -1) continue;
+            const memBlock = text.slice(separatorIdx + '--- 记忆自动检索 ---'.length);
+            for (const line of memBlock.split('\n')) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('- ')) {
+                    facts.push(trimmed);
                 }
             }
-        } catch {
-            // ignore
         }
         return facts;
     }

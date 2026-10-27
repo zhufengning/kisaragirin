@@ -1,5 +1,5 @@
 import type {Bot} from '@lib/types';
-import type {Models} from '@earendil-works/pi-ai';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {
     schema,
     type Db,
@@ -26,7 +26,7 @@ interface GroupReplyManagerOptions {
     config: AppConfig;
     botSelfId: number;
     botName: string;
-    models: Models;
+    models: ModelRuntime;
 }
 
 export class GroupReplyManager {
@@ -39,7 +39,7 @@ export class GroupReplyManager {
     private botName: string;
     private logger: Logger;
     private agent: ReplyAgent;
-    private models: Models;
+    private models: ModelRuntime;
     private graphiti: GraphitiClient | null;
     private sender: ReplySender;
 

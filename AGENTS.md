@@ -9,12 +9,12 @@
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
 - 多轮回复（回合链：消息轮 + 可链式的深度研究轮，轮数上限可配置；模型可返回空消息数组主动选择不回复）
-- AgentHarness tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` 可在 loop 中多次调用）
-- 手动 Compact（通过 harness.compact 触发会话压缩）
+- AgentSession tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` 可在 loop 中多次调用）
+- 手动 Compact（通过 `AgentSession.compact()` 触发会话压缩）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
 - 按群专属提示词（在 system prompt 人设之后注入群专属指令）
-- Web面板：AgentHarness 会话日志查看（只读，按群过滤，新在前排序 + 前端分页，错误/中止消息高亮，支持条目 JSON 原文切换）
+- Web面板：AgentSession 会话日志查看（只读，按群过滤，新在前排序 + 前端分页，错误/中止消息高亮，支持条目 JSON 原文切换）
 
 ## 包管理
 
@@ -29,6 +29,7 @@ pnpm
 - `lib/` 是上游 SDK，不写业务逻辑
 - 添加或修改功能、调整架构后需要更新README.md和AGENTS.md。
 - 修复bug时，如果没有影响行为和架构，则不需要更新README.md和AGENTS.md。
+- 新增功能时添加对应测试，修改功能时同时修改受影响的测试，修复bug时添加对应回归测试。
 - 完成修改后，bot部分的修改运行以下pnpm任务：type:check, lint，webui部分非修改运行web:check, web:lint，集成测试改动运行test:integration。所有warning、hint视同error处理。
 - pi ai和pi agent的文档和源码保存在~/repos/their/pi
 - 其余库可通过context7查询文档
@@ -46,7 +47,7 @@ pnpm
 src/
       index.ts              -- 入口：读取生产配置并调用 `createApplication(...).start()`，安装信号处理
       app.ts                -- 应用组合入口：`createApplication(options)` 创建 bot、db、desc queue、reply manager、定时任务、Graphiti 与 web panel，提供 `start()` / `ready()` / `stop()`
-      config.ts             -- 根目录 TS 配置，使用 `@earendil-works/pi-ai` 的 `Model<Api>` 类型定义模型
+      config.ts             -- 根目录 TS 配置，使用 `@earendil-works/pi-coding-agent` 的 `ModelRuntime` 与 `@earendil-works/pi-ai` 的 `Model<Api>` 类型定义模型
       message-format.ts     -- OneBot 消息 ↔ 存储格式转换 + 渲染
       db/
         schema.ts           -- Drizzle SQLite 表定义（messages / images / kv_store）
@@ -56,10 +57,10 @@ src/
     image-store.ts      -- 图片下载 + 本地存储
     image-preprocess.ts -- 图片按大小上限压缩、长边与总像素按上限缩小、动图切帧，帧的mimeType按实际字节格式给出
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
-    credential-store.ts -- pi-ai 凭据内存存储与初始化
+    credential-store.ts -- SDK `InMemoryCredentialStore` 实例与凭据初始化
     models-factory.ts   -- 模型注册与 assignment 解析（不读取生产配置）
-    harness-factory.ts  -- AgentHarness `Session` 缓存与按群复用
-    reply-tool.ts       -- 回复工具（`reply`），由 AgentHarness 调用
+    harness-factory.ts  -- `SessionManager` 缓存与按群复用（`data/harness/group-{id}.jsonl`）
+    reply-tool.ts       -- 回复工具（`reply`），由 AgentSession 调用
     reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
     reply-prompt.ts     -- 回复 system prompt 与 user message 构建
     reply-debug.ts      -- 回复流程的 `data/debug/` 调试导出
@@ -67,10 +68,10 @@ src/
     deep-research.ts    -- 深度研究执行（模型路径 / pi rpc 路径）+ 开始/结果/结束系统消息写入
     reply-manager.ts    -- 群回复触发管理（@触发、闲时触发、单群FIFO队列、回合链编排）
     reply-sender.ts     -- 回复发送、落库、引用解析与 Graphiti episode 写入
-    reply-agent.ts      -- 回复Agent（基于 `AgentHarness` 的自动 tool loop）
+    reply-agent.ts      -- 回复Agent（基于 `AgentSession` 的自动 tool loop）
     pi-rpc-client.ts    -- pi CLI rpc 模式子进程客户端（深度研究）
     scheduled-tasks.ts  -- Croner 定时任务调度，按群触发 ReplyManager
-    graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 AgentTool 供 reply-agent 调用
+    graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 ToolDefinition 供 reply-agent 调用
     graphiti-client.ts  -- Graphiti Node.js 客户端（通过 stdio JSON-RPC 与 Python 服务通信）
     graphiti-episode.ts -- Graphiti episode 创建辅助（群消息 / bot 回复 / 深度研究结果共用）
     mem0-tool.ts        -- [已弃用] mem0 记忆工具
@@ -106,7 +107,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       index.astro     -- 群列表
       group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗[带图片的消息同时展示图片描述，含 reply/forward 嵌套图片] + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
-      group/[id]/harness.astro -- AgentHarness 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
+      group/[id]/harness.astro -- AgentSession 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
       memories.astro         -- Graphiti 记忆管理（浏览 + 语义搜索 + 删除 + 实体图谱可视化：?view=graph 用 cytoscape.js 渲染实体事实网络，节点点击查看详情并可展开 1-hop 邻居，边点击查看事实并删除）
       api/
@@ -115,7 +116,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
         compact.ts           -- 手动触发群消息 compact API
-        harness.ts           -- AgentHarness 会话条目 API（调用 agent.getBranch）
+        harness.ts           -- AgentSession 会话条目 API（调用 agent.getBranch）
         group/[id]/import.ts -- 按日期范围导入历史消息 API（调用 agent.importMessagesByDateRange）
 
 test/integration/       -- 消息回复调度集成测试（不使用外部账号或网络服务）
@@ -142,38 +143,41 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 ### 关键组件关系
 
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
-- `src/app.ts` 的 `createApplication(options)` 是唯一组合入口：接收 `AppConfig` 与 `Models`，不读取生产配置；`src/index.ts` 只负责导入生产配置、启动并安装信号处理
+- `src/app.ts` 的 `createApplication(options)` 是唯一组合入口：接收 `AppConfig` 与 `ModelRuntime`，不读取生产配置；`src/index.ts` 只负责导入生产配置、启动并安装信号处理
 - `ready()` 在登录信息处理、白名单群 `ReplyManager` 预初始化与定时任务启动完成后返回；`stop()` 依次停止定时任务、等待回复会话与 Agent 结束（让进行中的回复先完成再关闭连接）、释放 OneBot 连接、停止 Web 面板与描述队列、关闭 session、关闭 Graphiti，最后关闭 SQLite 并清理 `globalThis` 上的应用引用
-- `DescQueue` 通过构造函数接收 `AppConfig`；`describeTimeoutMs` / `abortSettleGraceMs` 可覆盖默认超时；`stop()` 会中止进行中的模型请求、等待 worker 退出并通知剩余等待者，`waitForIdle()` 等待队列全部处理完毕
+- `DescQueue` 通过构造函数接收 `AppConfig`；使用 `Agent` 并显式传入 `streamFn`（`models.streamSimple`）；`describeTimeoutMs` / `abortSettleGraceMs` 可覆盖默认超时；`stop()` 会中止进行中的模型请求、等待 worker 退出并通知剩余等待者，`waitForIdle()` 等待队列全部处理完毕
 - `GroupReplyManager.shutdown()` 清理合并窗口与沉默定时器、拒绝新任务，并等待队列与 Agent 空闲
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
-- `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentHarness`
-- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `Session`；新 session 不再自动从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息），历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
-- `models-factory.ts` 负责自定义 provider 注册与 assignment 解析；`config.ts` 导出 `models` 单例并注入 `createApplication`
+- `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentSession`
+- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `SessionManager`（固定文件 `data/harness/group-{id}.jsonl`，可直接打开旧版运行时写入的 version 3 会话文件）；新 session 不再自动从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息），历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
+- `models-factory.ts` 负责自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析；`config.ts` 创建唯一的 `ModelRuntime` 单例（`modelsPath: null`、`refreshOnCreate: false`，启动时等待凭据写入完成）并注入 `createApplication`
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
 
 ### Prompt 构建封装
 
-- `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入 harness；`system`/`compact` 消息保留），通过 `reply-prompt.ts` 的 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentHarness`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先由 `deep-research.ts` 研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（append + prompt + reminder + 结果解析）
-- `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改 harness 状态
+- `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入会话；`system`/`compact` 消息保留），通过 `reply-prompt.ts` 的 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentSession`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先由 `deep-research.ts` 研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（`sessionManager.appendMessage` + `session.prompt` + reminder + 结果解析）
+- `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改会话状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
 - 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `desc-queue.ts`）
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
-- **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在 harness 中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
+- **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在会话中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
 - webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact
-- webui 的导入 API（`/api/group/{id}/import`）调用 `agent.importMessagesByDateRange(startTime, endTime)`，按本地时区当天起止时间戳查询消息导入 harness，忽略所有 compact 消息
+- webui 的导入 API（`/api/group/{id}/import`）调用 `agent.importMessagesByDateRange(startTime, endTime)`，按本地时区当天起止时间戳查询消息写入会话，忽略所有 compact 消息
 
 ### Agent Loop 与记忆机制
 
-- **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-agent-core` 的 `AgentHarness` 类
-- `AgentHarness` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
-- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `AgentTool`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
+- **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-coding-agent` 的 `AgentSession`（`createAgentSession()` 创建），会话历史由 `SessionManager` 管理
+- `AgentSession` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
+- **会话运行策略**：`SettingsManager.inMemory()` 关闭自动 retry 与自动 compact（`retry.enabled: false`、`compaction.enabled: false`）、缓存预热为 `cacheWarming: 'off'`；模型回退与 reminder 次数仍由 `promptWithReminders()` 控制，手动 compact 仍可用
+- **system prompt 与工具**：通过内联 extension 的 `before_agent_start` 返回 `buildSystemPrompt()` 生成的文本（`DefaultResourceLoader` 不加载项目 extensions/skills/prompt templates/themes/上下文文件）；`createAgentSession()` 使用 `noTools: 'builtin'` 仅保留自定义工具，`reply` 与 `search_memory` 以 `ToolDefinition` 传入 `customTools`；`session.prompt()` 使用 `expandPromptTemplates: false`
+- **assistant 结果采集**：`AgentSession.prompt()` 返回 `Promise<void>`，本轮最后一条 assistant 消息由 `message_end` 事件记录，`promptWithReminders()` 据此判断 `stopReason`、`errorMessage` 与 `usage`
+- **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `ToolDefinition`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - **JSON 输出修复**：graphiti 服务端在传输层补丁 `AsyncOpenAI.chat.completions.create`，用 jsonrepair（`graphiti/json_repair.js`，经 pythonmonkey 加载并用 `require` 解析 bot 的 `node_modules/jsonrepair`）修复模型返回的非法 JSON：markdown 围栏、被 max_tokens 截断、缺失括号等；jsonrepair 不接受根值之后的额外内容，此时按其 `JSONRepairError.position` 截断后重试。修复结果与原内容相同或修复失败时保持原样，交给 graphiti-core 自身的重试与报错路径
 - **不发送 response_format**：`ai.graphiti.llm.structured_output_mode` 为 `none` 时，graphiti 服务端在传输层从请求体中移除 `response_format`，同时把客户端按 json_object 模式构造，使 graphiti-core 把 pydantic schema 拼入 prompt 末尾
@@ -181,7 +185,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，`memory-context.ts` 每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
 - **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
 - **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
-- **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后通过 `tool_call` hook 阻止后续工具执行，并发送 reminder 提示词引导模型回复
+- **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后由内联 extension 的 `tool_call` 处理器返回 `{block: true}` 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
 - **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
 - **失败回退**：消息轮失败时 @触发返回 `@响应失败`（`prompts.atFailureFallback`），闲时/定时触发则静默失败；深度研究轮失败时，引用上一轮回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
@@ -200,10 +204,10 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 
 ### Compact 机制
 
-- `ReplyAgent.triggerCompact()` 委托给 `AgentHarness.compact()`，由 harness 内部管理会话上下文压缩
+- `ReplyAgent.triggerCompact()` 委托给 `AgentSession.compact()`，由会话内部管理上下文压缩
 - Compact 摘要以 `special_type='compact'` 的消息插入数据库，渲染为 `**前情提要**: (内容)`
 - 手动 compact 可通过 webui 的 `/api/compact` 触发
-- `kv_store` 表持久化 `lastTriggerId`（数据库自增 `id`）和 harness session 元数据，重启后不丢失上下文边界
+- 会话文件为 `data/harness/` 下的 version 3 JSONL（`SessionManager` 读写），`kv_store` 表持久化 `lastTriggerId`（数据库自增 `id`）和会话元数据，重启后不丢失上下文边界；旧版运行时写入的 `active_tools_change` 等条目仍可读取并在 Web 日志中展示，不进入模型上下文
 
 ### AI 配置架构
 
@@ -218,7 +222,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
-- `ai.assignments.agent_harness`：驱动 `AgentHarness` 的模型 assignment（`string | ScheduledModelAssignment`）
+- `ai.assignments.agent_harness`：驱动 `AgentSession` 的模型 assignment（`string | ScheduledModelAssignment`）
 - `ai.assignments.deep_research`：深度研究执行方式（`string | PiRpcConfig`）。字符串为 `ai.models` 中的模型 key，通过 LLM 兼容接口直接发起单次研究；对象为 pi rpc 配置，字段：`command`（pi CLI 命令，默认 `pi`）、`args`（追加在 `--mode rpc` 之后的参数，默认 `['--no-session']`）、`env`（子进程环境变量，覆盖 `process.env` 同名变量）、`cwd`（子进程工作目录，默认当前工作目录）、`timeout_ms`（单次研究超时时间，默认 1800000）
 - `ai.assignments.memory_keyword`：记忆关键词生成模型 assignment，启用后每次回复前自动搜索相关记忆注入上下文（`string | ScheduledModelAssignment`）
 - `ai.memoryKeyword`：记忆关键词生成模型的额外配置
@@ -227,8 +231,8 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
   - `response_format`：调用时是否请求 JSON 输出格式，默认 `true`；`openai-responses` 协议用 `text: {format: {type: 'json_object'}}`，其余协议用 `response_format: {type: 'json_object'}`。端点不支持时设为 `false`，返回内容由 jsonrepair 修复后再解析
   - `enable_entity_search`：是否启用实体搜索（`search_nodes`），默认 `false`；启用后「--- 记忆自动检索 ---」按「事实」与「相关实体」两节注入
 - `ai.assignments` 所有字段均支持 `ScheduledModelAssignment` 时段调度：配置 `slots`（含 `start`/`end`/`model`，支持跨日如 `18:00→09:00`）和 `default`，运行时按当前时间匹配第一个命中的 slot 模型，未命中则用 default；也可直接用字符串指定单一模型
-- `ai.assignments` 中模型字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。harness 回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）；深度研究为 `string | PiRpcConfig`，字符串形式是单个 `ai.models` key（不参与回退链），对象形式改由 pi rpc 执行
-- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入 harness；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
+- `ai.assignments` 中模型字段（含 `slot.model` 和 `default`）均支持配置为**元组回退链**（`string[]`，即 `ModelAssignmentKey`）：API 错误时按数组顺序依次回退到下一个模型。会话回复中回退不消耗 reminder 额度，回退链耗尽后才进入 reminder 重试；记忆关键词、图片描述同理按链回退（`resolveAssignmentModels()` 返回按回退顺序排列的 `ModelEntry[]`）；深度研究为 `string | PiRpcConfig`，字符串形式是单个 `ai.models` key（不参与回退链），对象形式改由 pi rpc 执行
+- `ai.graphiti`：可选 Graphiti 配置，启用后通过 stdio JSON-RPC 连接 Python Graphiti 服务，`search_memory` 工具会加入会话；记忆自动创建（触发回复时合并消息、bot 回复发送后、深度研究结果产生时）
 - `ai.graphiti.debug_dump_rpc`：是否 dump Graphiti JSON-RPC 报文到 `data/debug/`，默认 `false`
 - `ai.graphiti.llm.disable_thinking`：所用模型/端点默认开启深度思考时设为 `true`，server 侧给 AsyncOpenAI 客户端打补丁注入 `extra_body={"thinking": {"type": "disabled"}}`，默认 `false`
 - `ai.graphiti.llm.headers`：附加到 Graphiti LLM 请求的头部（`Record<string, string | null>`），值为 `null` 表示删除 SDK 默认头部（如 `X-Stainless-*`）；server 侧在构造 AsyncOpenAI 客户端时把 `null` 转换为 Python SDK 的 `omit` 哨兵后作为 `default_headers` 传入。该配置只作用于生成型 LLM，嵌入与重排由 graphiti-core 内部各自创建客户端，不受其影响
@@ -265,16 +269,16 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/util/reply-sender.ts` — 回复发送、落库、引用解析与 Graphiti episode 写入
 - `src/util/reply-prompt.ts` — 回复 system prompt 与 user message 构建
 - `src/util/reply-debug.ts` — 回复流程的 `data/debug/` 调试导出
-- `src/util/reply-agent.ts` — 回复Agent（基于 `AgentHarness` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
+- `src/util/reply-agent.ts` — 回复Agent（基于 `AgentSession` 的自动 tool loop，支持 Graphiti 记忆工具多轮调用）
 - `src/util/memory-context.ts` — 记忆关键词生成、Graphiti 检索与已注入记忆去重
 - `src/util/deep-research.ts` — 深度研究执行（模型路径 / pi rpc 路径）与开始/结果/结束系统消息写入
 - `src/util/pi-rpc-client.ts` — pi CLI rpc 模式子进程客户端（严格 JSONL 帧、prompt 提交、`agent_settled` 等待、最后一条 assistant 文本获取）
-- `src/util/harness-factory.ts` — AgentHarness `Session` 缓存与按群复用
-- `src/util/models-factory.ts` — 模型注册与 assignment 解析
-- `src/util/credential-store.ts` — pi-ai 凭据内存存储与初始化
-- `src/util/reply-tool.ts` — 回复工具（`reply`）
+- `src/util/harness-factory.ts` — `SessionManager` 缓存、按群会话打开/创建与统一释放
+- `src/util/models-factory.ts` — 自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析
+- `src/util/credential-store.ts` — SDK `InMemoryCredentialStore` 实例与启动时凭据写入
+- `src/util/reply-tool.ts` — 回复工具（`reply`，`ToolDefinition`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
-- `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `AgentTool`
+- `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `ToolDefinition`
 - `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）
 - `src/util/graphiti-episode.ts` — Graphiti episode 创建辅助（`addMessageEpisode`，群消息 / bot 回复 / 深度研究结果共用）
 - `src/util/mem0-tool.ts` — [已弃用] mem0 记忆工具
@@ -285,6 +289,12 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `lib/types/messages.ts` — OneBot 消息段类型
 - `test/integration/runner/scenario.ts` — 集成测试场景环境（假服务、应用子进程与数据库检查器）
 - `test/integration/scenarios/*.test.ts` — 调度回归场景
+
+## pi SDK
+
+回复会话使用 `@earendil-works/pi-coding-agent` 的 `AgentSession` / `SessionManager` / `ModelRuntime` / `SettingsManager` / `ResourceLoader`；图片描述使用 `@earendil-works/pi-agent-core` 的 `Agent`（显式传入 `streamFn`）；消息、工具与内容类型来自 `@earendil-works/pi-ai`。三个包版本保持一致，凭据使用 pi-ai 的 `InMemoryCredentialStore`。
+
+会话文件为 version 3 JSONL，旧版运行时写入的文件可直接打开；打开的会话会为缺少 `usage` 的历史 assistant 消息补零值（上游估算上下文时读取该字段），新写入的 bot 回复与导入的 assistant 消息同样带 `usage`。`active_tools_change`、`leaf` 等旧条目在模型上下文投影中不产生消息，Web 日志仍会分别渲染。
 
 ## 相关
 

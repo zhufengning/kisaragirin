@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import type { SessionTreeEntry } from '@earendil-works/pi-agent-core';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { GroupReplyManager } from '~/util/reply-manager';
 
 function getReplyManagers(): Map<number, GroupReplyManager> {
@@ -28,7 +28,7 @@ export const GET: APIRoute = async ({ url }) => {
             });
         }
 
-        const entries: SessionTreeEntry[] = await manager.getAgent().getBranch();
+        const entries: SessionEntry[] = manager.getAgent().getBranch();
 
         return new Response(JSON.stringify({ entries }), {
             status: 200,

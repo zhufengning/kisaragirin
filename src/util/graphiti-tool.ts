@@ -1,5 +1,5 @@
 import {Type} from '@earendil-works/pi-ai';
-import type {AgentTool} from '@earendil-works/pi-agent-core';
+import {defineTool, type ToolDefinition} from '@earendil-works/pi-coding-agent';
 import type {GraphitiClient} from './graphiti-client';
 import {Logger} from '@lib/util/logger';
 
@@ -7,11 +7,11 @@ const searchMemorySchema = Type.Object({
     query: Type.String({description: '用自然语言描述你想搜索的记忆，例如"小明之前说过喜欢什么运动？"或"与Deepseek相关的技术讨论"'})
 });
 
-export function createGraphitiTools (client: GraphitiClient, _logLevel: string, groupId: number): AgentTool[] {
+export function createGraphitiTools (client: GraphitiClient, _logLevel: string, groupId: number): ToolDefinition[] {
     const logger = new Logger();
     const groupName = `group-${groupId}`;
 
-    const searchMemoryTool: AgentTool<typeof searchMemorySchema> = {
+    const searchMemoryTool = defineTool({
         name: 'search_memory',
         label: '搜索记忆',
         description: '搜索与你相关的历史记忆。当你需要回忆用户的偏好、过去提到的事实、或之前对话中的关键信息时使用此工具。',
@@ -36,12 +36,12 @@ export function createGraphitiTools (client: GraphitiClient, _logLevel: string, 
                 logger.error('[Graphiti] search error:', e);
                 return {
                     content: [{type: 'text', text: `搜索记忆失败: ${e instanceof Error ? e.message : String(e)}`}],
-                    details: {},
+                    details: {count: 0},
                     isError: true
                 };
             }
         }
-    };
+    });
 
     return [searchMemoryTool];
 }
