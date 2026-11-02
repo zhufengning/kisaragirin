@@ -1,11 +1,13 @@
 import test, {after} from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
+import Database from 'better-sqlite3';
 import {ModelRuntime} from '@earendil-works/pi-coding-agent';
 import {eq} from 'drizzle-orm';
 import {createDb, closeDb, runMigrations, schema, type Db} from '../../../src/db';
 import {DescQueue} from '../../../src/util/desc-queue';
 import {downloadAndStoreImage} from '../../../src/util/image-store';
+import {prompts} from '../../../src/prompts';
 import {registerCustomProviders} from '../../../src/util/models-factory';
 import {ScenarioArtifacts} from '../runner/artifacts';
 import {FakeAssetServer} from '../fakes/asset-server';
@@ -101,6 +103,54 @@ async function descriptionOf (db: Db, sha256: string): Promise<string | undefine
     return rows[0]?.description ?? undefined;
 }
 
+async function imageIdOf (db: Db, sha256: string): Promise<number | undefined> {
+    const rows = await db.select()
+        .from(schema.images)
+        .where(eq(schema.images.sha256, sha256));
+    return rows[0]?.id;
+}
+
+function descriptionTexts (results: Array<{description?: string} | undefined>): Array<string | undefined> {
+    return results.map(result => result?.description);
+}
+
+test('旧版images表迁移后保留描述并补齐自增id', {timeout: 30000}, async () => {
+    const artifacts = new ScenarioArtifacts('desc-queue-migrate');
+    const dbPath = artifacts.path('messages.db');
+    const sqlite = new Database(dbPath);
+    sqlite.exec(`
+        CREATE TABLE images (
+            sha256 TEXT PRIMARY KEY NOT NULL,
+            description TEXT
+        );
+    `);
+    sqlite.prepare('INSERT INTO images (sha256, description) VALUES (?, ?)')
+        .run('sha-old', '旧描述');
+    sqlite.close();
+
+    const db = createDb(dbPath);
+    try {
+        await runMigrations(db);
+        const rows = await db.select()
+            .from(schema.images);
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].sha256, 'sha-old');
+        assert.equal(rows[0].description, '旧描述');
+        assert.equal(typeof rows[0].id, 'number');
+
+        await db.insert(schema.images)
+            .values({sha256: 'sha-new'})
+            .onConflictDoNothing();
+        const inserted = await db.select()
+            .from(schema.images)
+            .where(eq(schema.images.sha256, 'sha-new'));
+        assert.equal(inserted[0].id, rows[0].id + 1);
+    } finally {
+        closeDb(db);
+        artifacts.discard();
+    }
+});
+
 test('相同图片只产生一次描述请求，所有等待者获得同一结果', {timeout: 60000}, async () => {
     const env = await createQueueEnvironment('desc-queue-dedup', {
         vision: [{action: {type: 'text', text: '统一的图片描述'}}]
@@ -113,12 +163,17 @@ test('相同图片只产生一次描述请求，所有等待者获得同一结�
             env.queue.resolve(sha256)
         ]);
 
-        assert.deepEqual(results, ['统一的图片描述', '统一的图片描述', '统一的图片描述']);
+        assert.deepEqual(descriptionTexts(results), ['统一的图片描述', '统一的图片描述', '统一的图片描述']);
         assert.equal(env.openAI.requestCount(), 1);
         assert.equal(await descriptionOf(env.db, sha256), '统一的图片描述');
+        assert.deepEqual(
+            results.map(result => result?.id),
+            [1, 1, 1],
+            '同一图片应得到同一个图片 id');
 
         const again = await env.queue.resolve(sha256);
-        assert.equal(again, '统一的图片描述');
+        assert.equal(again?.description, '统一的图片描述');
+        assert.equal(again?.id, 1);
         assert.equal(env.openAI.requestCount(), 1, '已保存的描述不应再次请求模型');
     } finally {
         await env.close();
@@ -173,7 +228,7 @@ test('动图按vision_max_frames抽帧并交给模型', {timeout: 60000}, async 
     try {
         const sha256 = await downloadFixture(env, 'animated.gif');
         const result = await env.queue.resolve(sha256);
-        assert.equal(result, '动图描述');
+        assert.equal(result?.description, '动图描述');
         assert.equal(env.openAI.requestCount(), 1);
 
         const body = env.openAI.requests[0].body as {
@@ -189,6 +244,39 @@ test('动图按vision_max_frames抽帧并交给模型', {timeout: 60000}, async 
             .join('');
         assert.match(text, /动图/);
         assert.match(text, /共 5 帧/);
+    } finally {
+        await env.close();
+    }
+});
+
+test('追问图片使用独立的问答 prompt 且不覆盖已有描述', {timeout: 60000}, async () => {
+    const env = await createQueueEnvironment('desc-queue-ask', {
+        vision: [
+            {action: {type: 'text', text: '一张报错截图'}},
+            {action: {type: 'text', text: '报错信息是端口占用'}}
+        ]
+    });
+    try {
+        const sha256 = await downloadFixture(env, 'image-a.png');
+        const info = await env.queue.resolve(sha256);
+        assert.equal(info?.description, '一张报错截图');
+        assert.equal(info?.id, await imageIdOf(env.db, sha256));
+
+        const answer = await env.queue.ask(sha256, '截图里的报错文字是什么？');
+        assert.equal(answer, '报错信息是端口占用');
+        assert.equal(env.openAI.requestCount(), 2);
+        assert.equal(await descriptionOf(env.db, sha256), '一张报错截图',
+            '追问不应改写已保存的描述');
+
+        const body = env.openAI.requests[1].body as {
+            messages: Array<{role: string; content: unknown}>;
+        };
+        const systemMessage = body.messages.find(message => message.role === 'system');
+        assert.ok(systemMessage);
+        assert.equal(systemMessage.content, prompts.visionQuestionSystem);
+        const serialized = env.openAI.requests[1].serialized;
+        assert.match(serialized, /截图里的报错文字是什么？/);
+        assert.doesNotMatch(serialized, /请描述这张图片/);
     } finally {
         await env.close();
     }
@@ -212,7 +300,7 @@ test('超时中止后等待者收到结束通知，队列继续处理后续图�
         assert.equal(await descriptionOf(env.db, stuckSha), undefined);
 
         const nextResult = await env.queue.resolve(nextSha);
-        assert.equal(nextResult, '后续图片描述');
+        assert.equal(nextResult?.description, '后续图片描述');
         await waitFor(() => env.openAI.activeCount() === 0, {
             description: '中止后的请求应全部结束'
         });
@@ -231,7 +319,7 @@ test('首选视觉模型失败后按回退链切换模型', {timeout: 60000}, as
     try {
         const sha256 = await downloadFixture(env, 'image-a.png');
         const result = await env.queue.resolve(sha256);
-        assert.equal(result, '回退模型描述');
+        assert.equal(result?.description, '回退模型描述');
         assert.deepEqual(env.openAI.requests.map(request => request.model), ['vision-bad', 'vision']);
         assert.equal(await descriptionOf(env.db, sha256), '回退模型描述');
     } finally {

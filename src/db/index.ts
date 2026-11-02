@@ -172,10 +172,29 @@ export async function runMigrations (db: Db): Promise<void> {
         `);
     }
 
-    if (!tableNames.has('images')) {
+    if (tableNames.has('images')) {
+        const imageColumns = sqlite.prepare(
+            'PRAGMA table_info(images)'
+        ).all() as Array<{ name: string }>;
+        if (imageColumns.every(c => c.name !== 'id')) {
+            // 旧表以 sha256 为主键，改为自增 id 主键需要重建表
+            sqlite.exec(`
+                ALTER TABLE images RENAME TO images_old;
+                CREATE TABLE images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    sha256 TEXT NOT NULL UNIQUE,
+                    description TEXT
+                );
+                INSERT INTO images (sha256, description)
+                    SELECT sha256, description FROM images_old;
+                DROP TABLE images_old;
+            `);
+        }
+    } else {
         sqlite.exec(`
             CREATE TABLE images (
-                sha256 TEXT PRIMARY KEY NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                sha256 TEXT NOT NULL UNIQUE,
                 description TEXT
             );
         `);

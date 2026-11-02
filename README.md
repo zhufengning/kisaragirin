@@ -5,7 +5,7 @@
 ## 功能
 
 - 接收并存储群消息
-- 下载、去重并 AI 描述消息中的图片
+- 下载、去重并 AI 描述消息中的图片；消息文本以 `[image#12: 描述]` 形式展示图片，模型可用 `ask_image` 工具按图片 id 向视觉模型追问细节
 - 自动回复：@触发、闲时触发
 - 按群定时任务触发
 - 支持深度研究多轮回复（研究轮可链式再次请求研究，轮数上限可配置）
@@ -33,6 +33,7 @@ pnpm web:build && pnpm start
 - 采用回合链架构：消息轮即时回复，若模型要求则执行深度研究（按 `ai.assignments.deep_research` 的配置走模型或 pi rpc）并追加研究轮回复；研究轮中模型可再次请求深度研究（链式，上限由 `input.max_deep_research_rounds` 控制，默认 3）；模型也可返回空消息数组主动选择不回复
 - 新群的会话创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
+- 图片描述不足以判断图片内容时，模型可调用 `ask_image`（参数为图片 id 与具体问题）向 vision 模型追问，追问使用独立的问答 prompt，回答只作为工具结果返回，不改写已保存的图片描述
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
 - `ai.graphiti.llm.structured_output_mode` 指定 Graphiti 抽取等结构化输出的请求方式，默认 `json_schema`（`response_format` 携带 pydantic schema）。端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时设为 `json_object`：`response_format` 为 `json_object`，schema 拼入 prompt 末尾。端点完全不提供 `response_format` 时设为 `none`：请求不带该字段，schema 只拼入 prompt 末尾；返回内容由 jsonrepair 清洗后再解析
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息生成搜索关键词（自然语言查询 + 实体名称）检索 Graphiti，将相关记忆按「事实」与「相关实体」两节注入上下文；实体搜索由 `ai.memoryKeyword.enable_entity_search` 控制（默认关闭，关闭时仅注入事实列表）
@@ -174,9 +175,11 @@ input: {
 
 长边与总像素两项上限取其中缩得更多的那一个，用 `vision_initial_quality` 重新编码；超过字节上限的图片再走字节上限的压缩流程。
 
+图片描述与图片追问共用上述预处理参数与 vision 模型 assignment；追问任务插到描述队列队头，同样计入 `vision_concurrency` 的并发上限。
+
 ## 集成测试
 
-`test/integration/` 提供完整的消息回复调度集成测试，覆盖消息入库顺序、@合并窗口、闲时触发、定时任务、每群 FIFO 与跨群并行、水位线与乱序提示、工具循环、深度研究回合链、模型回退与 reminder、Graphiti 检索与 episode、图片描述队列以及进程重启恢复。
+`test/integration/` 提供完整的消息回复调度集成测试，覆盖消息入库顺序、@合并窗口、闲时触发、定时任务、每群 FIFO 与跨群并行、水位线与乱序提示、工具循环、图片追问、深度研究回合链、模型回退与 reminder、Graphiti 检索与 episode、图片描述队列以及进程重启恢复。
 
 ```bash
 pnpm run test:integration

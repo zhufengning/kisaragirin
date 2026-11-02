@@ -24,7 +24,11 @@ export const messages = sqliteTable('messages', {
 });
 
 export const images = sqliteTable('images', {
-    sha256: text('sha256').primaryKey(),
+    /** 自增 id，作为消息文本与工具调用中指代图片的短标识 */
+    id: integer('id').primaryKey({autoIncrement: true}),
+    /** 图片内容 sha256，与 data/images/${sha256}.${ext} 对应 */
+    sha256: text('sha256').notNull()
+        .unique(),
     description: text('description')
 });
 

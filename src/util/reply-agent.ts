@@ -23,6 +23,7 @@ import {getOrCreateGroupSession, registerAgentSession, emptyUsage} from './harne
 import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
+import {createImageTools} from './image-tool';
 import {addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
 import {buildSystemPrompt, buildUserPromptArray, formatToolsDescription, formatUsage} from './reply-prompt';
@@ -143,7 +144,8 @@ export class ReplyAgent {
         });
 
         const graphitiTools = graphiti ? createGraphitiTools(graphiti, config.log.level, groupId) : [];
-        const tools: ToolDefinition[] = [replyTool, ...graphitiTools];
+        const imageTools = createImageTools({db, descQueue});
+        const tools: ToolDefinition[] = [replyTool, ...imageTools, ...graphitiTools];
 
         const systemPromptText = buildSystemPrompt({
             botName: config.input.bot_name || '机器人',

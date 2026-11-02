@@ -3,10 +3,11 @@ import type {AssistantMessage, Models} from '@earendil-works/pi-ai';
 import type {AppConfig, ModelEntry} from '~/config';
 import {eq} from 'drizzle-orm';
 import {schema, type Db} from '~/db';
+import type {ImageInfo} from '~/message-format';
 import {findImagePath} from './image-store';
 import {prompts} from '~/prompts';
 import {withRetry} from './agent-retry';
-import {preprocessImage, type ImagePreprocessOptions} from './image-preprocess';
+import {preprocessImage, type ImagePreprocessOptions, type PreprocessResult} from './image-preprocess';
 import {Logger} from '@lib/util/logger';
 import {resolveAssignmentModels} from './models-factory';
 
@@ -14,6 +15,22 @@ import {resolveAssignmentModels} from './models-factory';
 const DEFAULT_DESCRIBE_TIMEOUT_MS = 6 * 60 * 1000;
 /** abort 后等待 Agent run 完全结束的默认宽限时间（毫秒） */
 const DEFAULT_ABORT_SETTLE_GRACE_MS = 5 * 1000;
+
+/** 生成图片描述 */
+interface DescribeTask {
+    kind: 'describe';
+    sha256: string;
+}
+
+/** 向视觉模型追问图片细节，回答通过 resolve 返回给调用方 */
+interface AskTask {
+    kind: 'ask';
+    sha256: string;
+    question: string;
+    resolve: (answer: string | undefined) => void;
+}
+
+type VisionTask = DescribeTask | AskTask;
 
 function withTimeout<T> (
     promise: Promise<T>,
@@ -51,7 +68,7 @@ export interface DescQueueOptions {
 }
 
 export class DescQueue {
-    private queue: string[] = [];
+    private queue: VisionTask[] = [];
     private processing = new Set<string>();
     private waiters = new Map<string, Array<(desc: string | undefined) => void>>();
     private db: Db;
@@ -87,14 +104,15 @@ export class DescQueue {
             maxTotalPixels: config.input.vision_max_total_pixels
         };
         this.modelEntries = resolveAssignmentModels(config, config.ai.assignments.vision);
-        this.agents = Array.from({length: this.concurrency}, () => this.createAgent(0));
+        this.agents = Array.from(
+            {length: this.concurrency}, () => this.createAgent(0, prompts.visionSystem));
     }
 
-    private createAgent (modelIndex: number): Agent {
+    private createAgent (modelIndex: number, systemPrompt: string): Agent {
         const modelEntry = this.modelEntries[modelIndex];
         return new Agent({
             initialState: {
-                systemPrompt: prompts.visionSystem,
+                systemPrompt: systemPrompt,
                 model: modelEntry.model,
                 thinkingLevel: this.thinkingLevel
             },
@@ -126,7 +144,11 @@ export class DescQueue {
         await Promise.allSettled(this.loops);
         this.loops = [];
         this.started = false;
+        const pendingAsks = this.queue.filter((task): task is AskTask => task.kind === 'ask');
         this.queue = [];
+        for (const task of pendingAsks) {
+            task.resolve(undefined);
+        }
         for (const sha256 of Array.from(this.waiters.keys())) {
             this.notify(sha256, undefined);
         }
@@ -139,49 +161,93 @@ export class DescQueue {
         }
     }
 
+    private hasDescribeTask (sha256: string): boolean {
+        return this.queue.some(task => task.kind === 'describe' && task.sha256 === sha256);
+    }
+
     enqueue (sha256: string, toFront = false) {
         if (this.processing.has(sha256)) return;
-        if (this.queue.includes(sha256)) return;
+        if (this.hasDescribeTask(sha256)) return;
+        const task: VisionTask = {kind: 'describe', sha256};
         if (toFront) {
-            this.queue.unshift(sha256);
+            this.queue.unshift(task);
         } else {
-            this.queue.push(sha256);
+            this.queue.push(task);
         }
     }
 
     enqueueMany (sha256s: string[], toFront = false) {
-        const filtered = sha256s.filter(s => !this.processing.has(s) && !this.queue.includes(s));
+        const filtered = sha256s.filter(s => !this.processing.has(s) && !this.hasDescribeTask(s));
+        const tasks: VisionTask[] = filtered.map(sha256 => ({kind: 'describe', sha256}));
         if (toFront) {
-            this.queue.unshift(...filtered);
+            this.queue.unshift(...tasks);
         } else {
-            this.queue.push(...filtered);
+            this.queue.push(...tasks);
         }
     }
 
-    /** 查询描述；未生成时插到队头并等待 */
-    async resolve (sha256: string): Promise<string | undefined> {
+    /** 查询图片信息；未生成描述时插到队头并等待 */
+    async resolve (sha256: string): Promise<ImageInfo | undefined> {
         const rows = await this.db
             .select()
             .from(schema.images)
             .where(eq(schema.images.sha256, sha256));
-        if (rows[0]?.description) return rows[0].description;
+        if (rows[0]?.description) {
+            return {id: rows[0].id, description: rows[0].description};
+        }
 
         this.enqueue(sha256, true);
-        return new Promise(resolve => {
+        await new Promise<string | undefined>(resolve => {
             const list = this.waiters.get(sha256) ?? [];
             list.push(resolve);
             this.waiters.set(sha256, list);
+        });
+
+        // worker 可能刚插入该行，重新查询取得 id 与描述
+        const after = await this.db
+            .select()
+            .from(schema.images)
+            .where(eq(schema.images.sha256, sha256));
+        const row = after[0];
+        if (!row) return undefined;
+        return {id: row.id, description: row.description ?? undefined};
+    }
+
+    /** 向视觉模型追问图片细节，任务插到队头，返回回答文本 */
+    async ask (sha256: string, question: string): Promise<string | undefined> {
+        if (!this.running) return undefined;
+        return new Promise<string | undefined>(resolve => {
+            this.queue.unshift({kind: 'ask', sha256, question, resolve});
         });
     }
 
     private async loop (workerId: number) {
         while (this.running) {
-            const sha256 = this.queue.shift();
-            if (!sha256) {
+            const task = this.queue.shift();
+            if (!task) {
                 await new Promise(r => setTimeout(r, 100));
                 continue;
             }
 
+            if (task.kind === 'ask') {
+                try {
+                    const path = findImagePath(task.sha256);
+                    if (!path) {
+                        this.logger.error(
+                            `[DescQueue] [w${workerId}] Image file not found: ${task.sha256}`);
+                        task.resolve(undefined);
+                        continue;
+                    }
+                    task.resolve(await this.askImage(path, task.question, workerId));
+                } catch (err) {
+                    this.logger.error(
+                        `[DescQueue] [w${workerId}] Failed to ask ${task.sha256}:`, err);
+                    task.resolve(undefined);
+                }
+                continue;
+            }
+
+            const sha256 = task.sha256;
             this.processing.add(sha256);
             try {
                 const existing = await this.db
@@ -226,20 +292,48 @@ export class DescQueue {
         }
     }
 
-    private async describe (path: string, workerId: number): Promise<string | undefined> {
+    private describe (path: string, workerId: number): Promise<string | undefined> {
+        return this.runVision(path, workerId, {
+            systemPrompt: prompts.visionSystem,
+            buildInputText: result => (result.isAnimation ?
+                prompts.visionAnimated(result.totalFrames, result.extractedFrames) :
+                prompts.visionUser),
+            label: 'describe'
+        });
+    }
+
+    private askImage (path: string, question: string, workerId: number): Promise<string | undefined> {
+        return this.runVision(path, workerId, {
+            systemPrompt: prompts.visionQuestionSystem,
+            buildInputText: result => (result.isAnimation ?
+                prompts.visionQuestionAnimated(question, result.totalFrames, result.extractedFrames) :
+                prompts.visionQuestionUser(question)),
+            label: 'ask'
+        });
+    }
+
+    /** 按回退链依次尝试视觉模型，返回 assistant 文本 */
+    private async runVision (
+        path: string,
+        workerId: number,
+        options: {
+            systemPrompt: string;
+            buildInputText: (result: PreprocessResult) => string;
+            label: string;
+        }
+    ): Promise<string | undefined> {
+        const {systemPrompt, buildInputText, label} = options;
         const result = await preprocessImage(path, this.imageOptions);
         this.logger.debug(
-            `[DescQueue] describe start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
+            `[DescQueue] ${label} start path=${path} frames=${result.frames.length} isAnimation=${result.isAnimation}`);
 
-        const inputText = result.isAnimation ?
-            prompts.visionAnimated(result.totalFrames, result.extractedFrames) :
-            prompts.visionUser;
+        const inputText = buildInputText(result);
 
         // 按回退链依次尝试：API 错误（或模型返回错误/空文本）时切换下一个模型
         for (let modelIndex = 0; modelIndex < this.modelEntries.length; modelIndex++) {
             if (this.closing) return;
             const modelEntry = this.modelEntries[modelIndex];
-            this.agents[workerId] = this.createAgent(modelIndex);
+            this.agents[workerId] = this.createAgent(modelIndex, systemPrompt);
             const agent = this.agents[workerId];
 
             try {
@@ -281,7 +375,7 @@ export class DescQueue {
                 );
             } catch (err) {
                 this.logger.error(
-                    `[DescQueue] describe failed (model=${modelEntry.model.id}):`, err);
+                    `[DescQueue] ${label} failed (model=${modelEntry.model.id}):`, err);
                 if (modelIndex < this.modelEntries.length - 1) {
                     this.logger.warn(
                         `[DescQueue] falling back to model ${this.modelEntries[modelIndex + 1].model.id}`);

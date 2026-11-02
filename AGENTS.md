@@ -5,6 +5,7 @@
 已实现的功能：
 - 群消息采集（按群串行入库：每群一条 promise 链，保证数据库自增 id 与消息真实到达顺序一致，避免图片下载等入库前 await 造成乱序）
 - 消息与图片浏览
+- 图片唯一标识与追问（消息文本以 `[image#ID: 描述]` 展示图片，模型可用 `ask_image` 工具按图片 id 向 vision 模型追问细节）
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
@@ -53,7 +54,7 @@ src/
         schema.ts           -- Drizzle SQLite 表定义（messages / images / kv_store）
         index.ts            -- Database 连接工厂 + KV Store 工具 + 迁移逻辑 + 消息批量删除 helper
   util/
-    desc-queue.ts       -- 图片描述后台队列（多 Worker 并发，默认可配置 5 个；配置与超时参数由构造函数注入）
+    desc-queue.ts       -- 图片描述与追问后台队列（多 Worker 并发，默认可配置 5 个；配置与超时参数由构造函数注入）
     image-store.ts      -- 图片下载 + 本地存储
     image-preprocess.ts -- 图片按大小上限压缩、长边与总像素按上限缩小、动图切帧，帧的mimeType按实际字节格式给出
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
@@ -61,6 +62,7 @@ src/
     models-factory.ts   -- 模型注册与 assignment 解析（不读取生产配置）
     harness-factory.ts  -- `SessionManager` 缓存与按群复用（`data/harness/group-{id}.jsonl`）
     reply-tool.ts       -- 回复工具（`reply`），由 AgentSession 调用
+    image-tool.ts       -- 图片追问工具（`ask_image`），按图片 id 向 vision 模型提问
     reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
     reply-prompt.ts     -- 回复 system prompt 与 user message 构建
     reply-debug.ts      -- 回复流程的 `data/debug/` 调试导出
@@ -137,7 +139,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
     database-inspector.ts -- better-sqlite3 只读数据库检查器
     messages.ts         -- OneBot 消息段构造与请求文本提取
   scenarios/            -- 调度场景（ingress-order / at-merge / silence / queue-fifo / watermark /
-                           scheduled / tools-research / failures / graphiti / desc-queue / restart）
+                           scheduled / tools-research / image-ask / failures / graphiti / desc-queue / restart）
 ```
 
 ### 关键组件关系
@@ -145,7 +147,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - **Bot 主进程** 持有唯一的 `better-sqlite3` 连接和 `DescQueue` 实例
 - `src/app.ts` 的 `createApplication(options)` 是唯一组合入口：接收 `AppConfig` 与 `ModelRuntime`，不读取生产配置；`src/index.ts` 只负责导入生产配置、启动并安装信号处理
 - `ready()` 在登录信息处理、白名单群 `ReplyManager` 预初始化与定时任务启动完成后返回；`stop()` 依次停止定时任务、等待回复会话与 Agent 结束（让进行中的回复先完成再关闭连接）、释放 OneBot 连接、停止 Web 面板与描述队列、关闭 session、关闭 Graphiti，最后关闭 SQLite 并清理 `globalThis` 上的应用引用
-- `DescQueue` 通过构造函数接收 `AppConfig`；使用 `Agent` 并显式传入 `streamFn`（`models.streamSimple`）；`describeTimeoutMs` / `abortSettleGraceMs` 可覆盖默认超时；`stop()` 会中止进行中的模型请求、等待 worker 退出并通知剩余等待者，`waitForIdle()` 等待队列全部处理完毕
+- `DescQueue` 通过构造函数接收 `AppConfig`；使用 `Agent` 并显式传入 `streamFn`（`models.streamSimple`）；`describeTimeoutMs` / `abortSettleGraceMs` 可覆盖默认超时；`stop()` 会中止进行中的模型请求、等待 worker 退出并通知剩余等待者，`waitForIdle()` 等待队列全部处理完毕；`resolve()` 返回图片 id 与描述，`ask()` 向队头插入追问任务并返回 vision 模型的回答
 - `GroupReplyManager.shutdown()` 清理合并窗口与沉默定时器、拒绝新任务，并等待队列与 Agent 空闲
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
@@ -162,7 +164,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改会话状态
 - `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
-- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `desc-queue.ts`）
+- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `image-tool.ts` / `desc-queue.ts`）
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在会话中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
@@ -178,6 +180,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - **system prompt 与工具**：通过内联 extension 的 `before_agent_start` 返回 `buildSystemPrompt()` 生成的文本（`DefaultResourceLoader` 不加载项目 extensions/skills/prompt templates/themes/上下文文件）；`createAgentSession()` 使用 `noTools: 'builtin'` 仅保留自定义工具，`reply` 与 `search_memory` 以 `ToolDefinition` 传入 `customTools`；`session.prompt()` 使用 `expandPromptTemplates: false`
 - **assistant 结果采集**：`AgentSession.prompt()` 返回 `Promise<void>`，本轮最后一条 assistant 消息由 `message_end` 事件记录，`promptWithReminders()` 据此判断 `stopReason`、`errorMessage` 与 `usage`
 - **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `ToolDefinition`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
+- **图片追问工具** (`image-tool.ts`) 注册为 `ToolDefinition`，仅包含 `ask_image`（参数为图片 id 与问题）；工具按 id 查出 `images.sha256` 后调用 `DescQueue.ask()`，回答只作为工具结果返回，不改写已保存的描述；追问使用 `prompts.visionQuestionSystem` / `visionQuestionUser` / `visionQuestionAnimated`，与图片描述的 prompt 分开；消息文本中的图片以 `[image#ID: 描述]` 渲染，`ID` 为 `images` 表自增 id
 - **记忆语言**：graphiti 服务端（`graphiti/server.py`）覆写 graphiti-core 官方语言扩展点 `get_extraction_language_instruction`（docstring 声明可 override；库默认文案 "Otherwise, output English." 是英文记忆的根因），统一注入简体中文指令，经 `generate_response` 覆盖全部生成型调用（事实/摘要/去重）；专有名词/昵称/引用原文保留不翻译
 - **JSON 输出修复**：graphiti 服务端在传输层补丁 `AsyncOpenAI.chat.completions.create`，用 jsonrepair（`graphiti/json_repair.js`，经 pythonmonkey 加载并用 `require` 解析 bot 的 `node_modules/jsonrepair`）修复模型返回的非法 JSON：markdown 围栏、被 max_tokens 截断、缺失括号等；jsonrepair 不接受根值之后的额外内容，此时按其 `JSONRepairError.position` 截断后重试。修复结果与原内容相同或修复失败时保持原样，交给 graphiti-core 自身的重试与报错路径
 - **不发送 response_format**：`ai.graphiti.llm.structured_output_mode` 为 `none` 时，graphiti 服务端在传输层从请求体中移除 `response_format`，同时把客户端按 json_object 模式构造，使 graphiti-core 把 pydantic schema 拼入 prompt 末尾
@@ -213,7 +216,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 
 配置统一放在根目录`config.ts`，`src/config.ts`为类型声明。每次添加新配置项，都需要更新config.example.ts。
 
-- `input.vision_concurrency`：图片描述并发 Worker 数，默认 5
+- `input.vision_concurrency`：图片描述与追问并发 Worker 数，默认 5
 - `input.vision_thinking_level`：图片描述 Agent 的思考级别（`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`），默认 `off`；端点不接受关闭思考（如 `openai-responses` 只接受 `minimal` 及以上）时设为 `minimal` 等级别
 - `input.vision_max_size_bytes` / `input.vision_max_frames` / `input.vision_initial_quality` / `input.vision_max_long_edge` / `input.vision_max_total_pixels`：发送给 vision 模型的图片预处理参数，分别为压缩后的字节上限（默认 6MB）、动图最多抽取的帧数（默认 5）、动图抽帧与尺寸缩放时使用的 jpeg 质量（默认 80）、长边像素上限与总像素上限（超过则按比例缩小，0（默认）表示不限制）
 - `input.silence_recent_window` / `input.silence_recent_bot_threshold` / `input.silence_recent_bot_multiplier`：闲时触发前检查最近 `silence_recent_window` 条消息，其中 bot 消息数达到 `silence_recent_bot_threshold` 时闲时等待时间按 `silence_recent_bot_multiplier` 倍延长（默认 1，不放大）；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示禁用该检查
@@ -261,7 +264,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/app.ts` — 应用组合入口（`createApplication` / `start` / `ready` / `stop`）
 - `src/message-format.ts` — 消息数据结构 + simple-id 序列化，`StoredMessage` 含内部自增 `id` 用于触发边界
 - `src/db/schema.ts` — Drizzle 表定义（messages / images / kv_store）
-- `src/util/desc-queue.ts` — 图片描述队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
+- `src/util/desc-queue.ts` — 图片描述与追问队列（使用 `@earendil-works/pi-agent-core` 的 `Agent` 调用 vision 模型）
 - `src/util/image-store.ts` — 图片下载存储
 - `src/util/image-preprocess.ts` — 发送给 LLM 前按上限压缩与缩小、动图切帧，帧的mimeType按实际字节格式给出
 - `src/util/reply-task.ts` — `ReplyTask` / `ScheduledReplyTask` 任务类型
@@ -277,6 +280,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/util/models-factory.ts` — 自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析
 - `src/util/credential-store.ts` — SDK `InMemoryCredentialStore` 实例与启动时凭据写入
 - `src/util/reply-tool.ts` — 回复工具（`reply`，`ToolDefinition`）
+- `src/util/image-tool.ts` — 图片追问工具（`ask_image`，`ToolDefinition`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
 - `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `ToolDefinition`
 - `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）

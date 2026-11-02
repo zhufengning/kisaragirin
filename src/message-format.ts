@@ -54,6 +54,13 @@ export interface StoredImageSegment {
     sha256: string;
 }
 
+/** 图片在消息文本中的展示信息 */
+export interface ImageInfo {
+    /** images 表自增 id，用于在消息文本与工具调用中指代图片 */
+    id: number;
+    description?: string;
+}
+
 export interface StoredFaceSegment {
     type: 'face';
     id: number | string;
@@ -168,8 +175,8 @@ interface RenderContext {
     replyDepth: number;
     /** 是否处于 forward 内部（用于重置 reply 层数） */
     inForward: boolean;
-    /** 单次渲染内的图片描述缓存 sha256 -> description */
-    descCache: Map<string, string | undefined>;
+    /** 单次渲染内的图片信息缓存 sha256 -> ImageInfo */
+    descCache: Map<string, ImageInfo | undefined>;
 }
 
 function indentStr (level: number): string {
@@ -220,8 +227,11 @@ function renderSegment (seg: StoredSegment, ctx: RenderContext): string {
         return seg.text;
     case 'at':
         return `@${seg.targetName || '未知用户'}`;
-    case 'image':
-        return `[image: ${ctx.descCache.get(seg.sha256) || '未知图片'}]`;
+    case 'image': {
+        const info = ctx.descCache.get(seg.sha256);
+        if (!info) return '[image: 未知图片]';
+        return `[image#${info.id}: ${info.description || '未知图片'}]`;
+    }
     case 'face':
         return `[face: ${seg.name || seg.id}]`;
     case 'record':
@@ -288,13 +298,13 @@ function renderForward (seg: StoredForwardSegment, ctx: RenderContext): string {
     return lines.join('');
 }
 
-/** 单次渲染内批量预取图片描述并缓存 */
+/** 单次渲染内批量预取图片信息并缓存 */
 async function preloadDescCache (
     segmentGroups: StoredSegment[][],
-    resolveDesc?: (sha256: string) => Promise<string | undefined>
-): Promise<Map<string, string | undefined>> {
-    const descCache = new Map<string, string | undefined>();
-    if (!resolveDesc) return descCache;
+    resolveImage?: (sha256: string) => Promise<ImageInfo | undefined>
+): Promise<Map<string, ImageInfo | undefined>> {
+    const descCache = new Map<string, ImageInfo | undefined>();
+    if (!resolveImage) return descCache;
 
     const shaSet = new Set<string>();
     for (const segments of segmentGroups) {
@@ -303,20 +313,20 @@ async function preloadDescCache (
         }
     }
     const entries = await Promise.all(
-        Array.from(shaSet, async sha => [sha, await resolveDesc(sha)] as const)
+        Array.from(shaSet, async sha => [sha, await resolveImage(sha)] as const)
     );
-    for (const [sha, desc] of entries) {
-        descCache.set(sha, desc);
+    for (const [sha, info] of entries) {
+        descCache.set(sha, info);
     }
     return descCache;
 }
 
-/** 单条消息 toString（异步，支持通过 resolveDesc 查询图片描述） */
+/** 单条消息 toString（异步，支持通过 resolveImage 查询图片信息） */
 export async function singleMessageToString (
     msg: StoredMessage,
-    resolveDesc?: (sha256: string) => Promise<string | undefined>
+    resolveImage?: (sha256: string) => Promise<ImageInfo | undefined>
 ): Promise<string> {
-    const descCache = await preloadDescCache([msg.segments], resolveDesc);
+    const descCache = await preloadDescCache([msg.segments], resolveImage);
 
     const atMark = msg.isAtBot ? '(有人@我)' : '';
     const idTag = typeof msg.id === 'number' ? `(#${msg.id})` : '';
@@ -327,14 +337,14 @@ export async function singleMessageToString (
     return `${atMark}${idTag}[${sender}]: ${body}`;
 }
 
-/** 消息数组 toString（异步，单次渲染内部缓存描述） */
+/** 消息数组 toString（异步，单次渲染内部缓存图片信息） */
 export async function messagesToString (
     messages: StoredMessage[],
-    resolveDesc?: (sha256: string) => Promise<string | undefined>
+    resolveImage?: (sha256: string) => Promise<ImageInfo | undefined>
 ): Promise<string> {
     if (messages.length === 0) return '';
 
-    const descCache = await preloadDescCache(messages.map(m => m.segments), resolveDesc);
+    const descCache = await preloadDescCache(messages.map(m => m.segments), resolveImage);
 
     const parts: string[] = ['---'];
     let lastTime: number | null = null;

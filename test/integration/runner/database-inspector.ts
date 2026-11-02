@@ -109,6 +109,12 @@ export class DatabaseInspector {
         return row?.description ?? undefined;
     }
 
+    imageId (sha256: string): number | undefined {
+        const row = this.db.prepare('SELECT id FROM images WHERE sha256 = ?').get(sha256) as
+            {id: number} | undefined;
+        return row?.id;
+    }
+
     imageCount (): number {
         const row = this.db.prepare('SELECT COUNT(*) AS count FROM images').get() as {count: number};
         return row.count;

@@ -6,6 +6,11 @@ export interface ReplyToolParameterDescriptions {
   deepResearchTopic: string;
 }
 
+export interface AskImageParameterDescriptions {
+  imageId: string;
+  question: string;
+}
+
 /**
  * 所有 LLM prompt 的统一入口。
  *
@@ -31,6 +36,17 @@ export class Prompts {
     visionSystem = '你是一个为盲人描述图片的助手。请先分辨图片类型、来源，然后用中文全面描述图片内容，不超过400字。篇幅允许的情况下包含完整的图片内文字内容。禁止根据外貌推断具体的人物、角色，这种推断从来没对过。输出格式："图片类型：...\n来源：...\n图片描述：...。"。图片类型包括：表情包（长宽差不多的一般都是表情包）、梗图（长宽差不多的也有可能是梗图，注意表情包侧重情绪，梗图侧重搞笑）、艺术作品（插画等，色图也算。如果细节很不丰富，那有可能是表情包而不是插画）、照片、社交媒体截图、...(还有其它情况的话可以自行发挥。禁止将动图作为图片类型，类型描述的是图片内容而不是格式)。图片类型首先通过平台水印判断，如果没有且是截图，则通过界面判断，无法判断就写"无"。';
 
     visionUser = '请描述这张图片';
+
+    /** 图片追问的 system prompt，与图片描述 prompt 分开 */
+    visionQuestionSystem = '你是一个图片问答助手。请只回答被问到的内容，直接给出结论，不要重复描述整张图片。回答使用中文，不超过300字。禁止根据外貌推断具体的人物、角色。如果图片中确实没有相关信息，直接说明没有。';
+
+    visionQuestionUser (question: string): string {
+        return `请回答关于这张图片的问题：${question}`;
+    }
+
+    visionQuestionAnimated (question: string, totalFrames: number, extractedFrames: number): string {
+        return `这是一张动图，共 ${totalFrames} 帧，以下展示其中 ${extractedFrames} 个关键帧。请回答关于这张动图的问题：${question}`;
+    }
 
     groupCustomPromptStart = '----- 本群专属提示 -----';
 
@@ -90,6 +106,25 @@ export class Prompts {
             requiresDeepResearch: '是否需要先进行深度研究再回复',
             deepResearchTopic: '深度研究的主题，requires_deep_research 为 true 时提供'
         };
+    }
+
+    askImageToolDescription (): string {
+        return '向视觉模型追问某张图片的细节。当消息文本中的图片描述不足以判断图片内容（例如需要确认图片内的文字、画面细节、图中物品）时使用。同一张图片可以多次追问。';
+    }
+
+    askImageToolParameterDescriptions (): AskImageParameterDescriptions {
+        return {
+            imageId: '图片ID，即消息文本中 [image#12: 描述] 里 # 后面的数字',
+            question: '要问视觉模型的具体问题，尽量具体'
+        };
+    }
+
+    askImageInvalidId (imageId: number): string {
+        return `图片ID ${imageId} 不存在，请使用消息文本中出现的图片ID。`;
+    }
+
+    askImageFailed (): string {
+        return '图片追问失败，未能获得回答。';
     }
 
     replyReminder (): string {

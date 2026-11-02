@@ -1,5 +1,5 @@
 import {Logger} from '@lib/util/logger';
-import {formatSender, messagesToString, type StoredMessage} from '~/message-format';
+import {formatSender, messagesToString, type ImageInfo, type StoredMessage} from '~/message-format';
 import type {GraphitiClient} from './graphiti-client';
 
 const logger = new Logger();
@@ -12,7 +12,7 @@ export function addMessageEpisode (
     graphiti: GraphitiClient,
     groupId: number,
     stored: StoredMessage,
-    resolveDesc: (sha256: string) => Promise<string | undefined>
+    resolveDesc: (sha256: string) => Promise<ImageInfo | undefined>
 ): void {
     void (async () => {
         const groupName = `group-${groupId}`;
