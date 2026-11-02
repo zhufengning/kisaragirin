@@ -2,7 +2,7 @@
 export function formatDateTime (iso: string | null | undefined): string {
     if (!iso) return '';
     try {
-        return new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+        return new Date(iso).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai'});
     } catch {
         return iso ?? '';
     }

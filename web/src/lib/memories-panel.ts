@@ -1,4 +1,4 @@
-import { formatDateTime } from './format-date';
+import {formatDateTime} from './format-date';
 
 export interface NodeFactItem {
     edgeId: string;

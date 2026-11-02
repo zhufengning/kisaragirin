@@ -78,6 +78,10 @@ export const config: AppConfig = {
         // vision_max_total_pixels: 4 * 1024 * 1024,
         /** 图片描述 Agent 的思考级别（off / minimal / low / medium / high / xhigh / max），默认 off；端点不接受关闭思考时设为 minimal 等级别 */
         // vision_thinking_level: 'minimal',
+        /** 每日04:00压缩群总体记忆；上下文占用达到该比例时也会压缩并更换会话，0表示禁用比例触发，默认0.8 */
+        // compact_context_ratio: 0.8,
+        /** 群总体记忆的最大字符数，超出后要求模型缩减，默认3000 */
+        // compact_max_chars: 3000,
         /** 每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究），默认 3 */
         // max_deep_research_rounds: 3,
         /**

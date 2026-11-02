@@ -1,6 +1,6 @@
 import cytoscape from 'cytoscape';
-import type { GraphitiNode, GraphitiSubgraph, GraphitiSubgraphEdge } from '~/util/graphiti-client';
-import { MemoriesPanel, type EdgePanelData, type NodeFactItem, type NodePanelData } from './memories-panel';
+import type {GraphitiNode, GraphitiSubgraph, GraphitiSubgraphEdge} from '~/util/graphiti-client';
+import {MemoriesPanel, type EdgePanelData, type NodeFactItem, type NodePanelData} from './memories-panel';
 
 const IDEAL_EDGE_LENGTH = 100;
 const DEGREE_SUM_CAP = 60;
@@ -12,15 +12,15 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
         selector: 'node',
         style: {
             'background-color': '#6c7ae0',
-            label: 'data(label)',
-            color: '#e8e8ef',
+            'label': 'data(label)',
+            'color': '#e8e8ef',
             'font-size': 11,
             'text-wrap': 'ellipsis',
             'text-max-width': '80',
             'text-valign': 'bottom',
             'text-margin-y': 4,
-            width: 20,
-            height: 20,
+            'width': 20,
+            'height': 20,
             'border-width': 1,
             'border-color': '#2a2a32'
         }
@@ -35,13 +35,13 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
     {
         selector: 'edge',
         style: {
-            width: 1.5,
+            'width': 1.5,
             'line-color': '#3d3d4d',
             'target-arrow-color': '#3d3d4d',
             'target-arrow-shape': 'triangle',
             'arrow-scale': 0.6,
             'curve-style': 'bezier',
-            color: '#9090a0',
+            'color': '#9090a0',
             'font-size': 8,
             'text-wrap': 'wrap',
             'text-max-width': '120',
@@ -52,7 +52,7 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
         selector: 'edge.stale',
         style: {
             'line-style': 'dashed',
-            opacity: 0.45
+            'opacity': 0.45
         }
     },
     {
@@ -69,7 +69,7 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
         style: {
             'line-color': '#8a96ec',
             'target-arrow-color': '#8a96ec',
-            width: 2
+            'width': 2
         }
     },
     {
@@ -78,9 +78,9 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
         style: {
             'line-color': '#b3bdf0',
             'target-arrow-color': '#b3bdf0',
-            width: 2.5,
-            label: 'data(fact)',
-            color: '#cdd3f2',
+            'width': 2.5,
+            'label': 'data(fact)',
+            'color': '#cdd3f2',
             'text-wrap': 'wrap',
             'text-max-width': '200',
             'z-index': 5
@@ -88,7 +88,7 @@ const GRAPH_STYLE: cytoscape.StylesheetJson = [
     },
     {
         selector: '.dimmed',
-        style: { opacity: 0.15 }
+        style: {opacity: 0.15}
     }
 ];
 
@@ -142,7 +142,7 @@ export class MemoriesGraphView {
             this.setStatus('加载图谱...');
             const res = await fetch(
                 `/api/memories/graph?group_id=${encodeURIComponent(this.groupId)}&limit=${this.edgeLimit}`,
-                { credentials: 'same-origin' });
+                {credentials: 'same-origin'});
             const payload = (await res.json()) as SubgraphPayload & { error?: string };
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
@@ -159,7 +159,7 @@ export class MemoriesGraphView {
                 wheelSensitivity: 0.45,
                 minZoom: 0.25,
                 // 真正的布局由 layoutElements() 去重后执行，这里先随机铺开
-                layout: { name: 'grid', padding: 30 },
+                layout: {name: 'grid', padding: 30},
                 style: GRAPH_STYLE
             });
 
@@ -180,9 +180,9 @@ export class MemoriesGraphView {
 
             this.bindEvents(graph);
 
-            const totalInfo = payload.total_edges && payload.total_edges > payload.edges.length
-                ? ` · 事实共 ${payload.total_edges} 条（仅展示最近 ${payload.edges.length} 条）`
-                : '';
+            const totalInfo = payload.total_edges && payload.total_edges > payload.edges.length ?
+                ` · 事实共 ${payload.total_edges} 条（仅展示最近 ${payload.edges.length} 条）` :
+                '';
             this.setStatus(`节点 ${graph.nodes().length} · 显示事实边 ${graph.edges().length}${totalInfo}`);
             setTimeout(() => graph.fit(undefined, 40), 50);
         } catch (err: unknown) {
@@ -208,9 +208,9 @@ export class MemoriesGraphView {
             const n = evt.target;
             const name = String(n.data('label') || n.id().slice(0, 8));
             const summary = n.data('summary') ? String(n.data('summary')) : '';
-            this.tooltip.textContent = summary
-                ? `${name}\n${summary.slice(0, 140)}${summary.length > 140 ? '…' : ''}`
-                : name;
+            this.tooltip.textContent = summary ?
+                `${name}\n${summary.slice(0, 140)}${summary.length > 140 ? '…' : ''}` :
+                name;
             const p = n.renderedPosition();
             this.moveTip(p.x, p.y);
         });
@@ -246,7 +246,7 @@ export class MemoriesGraphView {
             // 枢纽间的边目标更长：两端度数之和越高，边越长（最高 3 倍）
             idealEdgeLength: (edge: cytoscape.EdgeSingular) => {
                 const sum = Math.min(this.nodeDegree(edge.source()) + this.nodeDegree(edge.target()), DEGREE_SUM_CAP);
-                return IDEAL_EDGE_LENGTH * (1 + sum / DEGREE_SUM_CAP * 2);
+                return IDEAL_EDGE_LENGTH * (1 + ((sum / DEGREE_SUM_CAP) * 2));
             },
             // 斥力随度数增长：枢纽点互推更强，避免重叠成团
             nodeRepulsion: (node: cytoscape.NodeSingular) => 180_000 * Math.sqrt(1 + this.nodeDegree(node)),
@@ -289,8 +289,10 @@ export class MemoriesGraphView {
         // 邻接边只加 focus（提亮不显标签），标签留给单独选中的边
         this.cy.elements().addClass('dimmed');
         node.removeClass('dimmed').addClass('selected neighbor-highlight');
-        node.connectedEdges().removeClass('dimmed').addClass('focus');
-        node.neighborhood().removeClass('dimmed').addClass('neighbor-highlight');
+        node.connectedEdges().removeClass('dimmed')
+            .addClass('focus');
+        node.neighborhood().removeClass('dimmed')
+            .addClass('neighbor-highlight');
     }
 
     private isSelectedEdge (edgeId: string): boolean {
@@ -299,7 +301,7 @@ export class MemoriesGraphView {
 
     private selectNode (node: cytoscape.CollectionReturnValue): void {
         if (!this.cy) return;
-        this.selection = { kind: 'node', id: node.id() };
+        this.selection = {kind: 'node', id: node.id()};
         this.clearSelection();
         this.highlightNeighborhood(node);
         this.showNodePanel(node.id());
@@ -307,11 +309,12 @@ export class MemoriesGraphView {
 
     private selectEdge (edge: cytoscape.CollectionReturnValue): void {
         if (!this.cy) return;
-        this.selection = { kind: 'edge', id: edge.id() };
+        this.selection = {kind: 'edge', id: edge.id()};
         this.clearSelection();
         this.cy.elements().addClass('dimmed');
         edge.removeClass('dimmed').addClass('selected');
-        edge.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+        edge.connectedNodes().removeClass('dimmed')
+            .addClass('neighbor-highlight');
         this.showEdgePanel(edge.id());
     }
 
@@ -321,7 +324,8 @@ export class MemoriesGraphView {
         this.clearSelection();
         this.cy.elements().addClass('dimmed');
         edge.removeClass('dimmed').addClass('preview');
-        edge.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+        edge.connectedNodes().removeClass('dimmed')
+            .addClass('neighbor-highlight');
     }
 
     private restoreHighlight (): void {
@@ -337,7 +341,8 @@ export class MemoriesGraphView {
             this.highlightNeighborhood(el);
         } else {
             el.addClass('selected');
-            el.connectedNodes().removeClass('dimmed').addClass('neighbor-highlight');
+            el.connectedNodes().removeClass('dimmed')
+                .addClass('neighbor-highlight');
         }
     }
 
@@ -358,8 +363,8 @@ export class MemoriesGraphView {
         graph.batch(() => {
             graph.nodes().forEach(node => {
                 const deg = node.connectedEdges().length;
-                const size = Math.min(18 + deg * 2, 46);
-                node.style({ width: size, height: size });
+                const size = Math.min(18 + (deg * 2), 46);
+                node.style({width: size, height: size});
             });
         });
     }
@@ -411,9 +416,9 @@ export class MemoriesGraphView {
                 const id = String(el.data.id);
                 if (graph.getElementById(id).nonempty()) continue;
                 // 容忍悬空引用：端点尚未加入的边直接跳过
-                if (el.group === 'edges'
-                    && (!graph.getElementById(String(el.data.source)).nonempty()
-                        || !graph.getElementById(String(el.data.target)).nonempty())) {
+                if (el.group === 'edges' &&
+                    (!graph.getElementById(String(el.data.source)).nonempty() ||
+                        !graph.getElementById(String(el.data.target)).nonempty())) {
                     continue;
                 }
                 graph.add(el);
@@ -434,7 +439,7 @@ export class MemoriesGraphView {
 
         const facts: NodeFactItem[] = [];
         node.connectedEdges().forEach(edge => {
-            facts.push({ edgeId: edge.id(), fact: String(edge.data('fact')) });
+            facts.push({edgeId: edge.id(), fact: String(edge.data('fact'))});
         });
 
         const data: NodePanelData = {
@@ -472,7 +477,7 @@ export class MemoriesGraphView {
             const res = await fetch(
                 `/api/memories/graph/neighbors?uuid=${encodeURIComponent(nodeId)}` +
                 `&limit=${Math.min(this.edgeLimit, 100)}`,
-                { credentials: 'same-origin' });
+                {credentials: 'same-origin'});
             const payload = (await res.json()) as NeighborsPayload & { error?: string };
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
@@ -542,7 +547,7 @@ export class MemoriesGraphView {
     private deleteEdge (edgeId: string): void {
         if (!this.cy) return;
         if (!confirm('确定删除这条事实？相关节点和其余事实不受影响。')) return;
-        fetch(`/api/memories/${encodeURIComponent(edgeId)}`, { method: 'DELETE', credentials: 'same-origin' })
+        fetch(`/api/memories/${encodeURIComponent(edgeId)}`, {method: 'DELETE', credentials: 'same-origin'})
             .then(res => {
                 if (!res.ok) throw new Error();
                 this.cy?.getElementById(edgeId).remove();

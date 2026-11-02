@@ -31,9 +31,13 @@ export class ScheduledTaskManager {
             return;
         }
 
+        for (const groupId of this.config.input.group_whitelist) {
+            this.scheduleDailyCompaction(groupId);
+        }
+
         const tasksByGroup = this.config.input.scheduled_tasks;
         if (!tasksByGroup) {
-            this.logger.debug('[ScheduledTasks] no scheduled tasks configured');
+            this.logger.debug('[ScheduledTasks] no custom scheduled tasks configured');
             return;
         }
 
@@ -62,6 +66,32 @@ export class ScheduledTaskManager {
         }
         this.logger.info(`[ScheduledTasks] stopped ${this.jobs.length} job(s)`);
         this.jobs = [];
+    }
+
+    private scheduleDailyCompaction (groupId: number): void {
+        const taskName = 'daily-overall-memory';
+        const job = new Cron('0 4 * * *', {
+            name: `group-${groupId}-${taskName}`,
+            protect: () => {
+                this.logger.warn(
+                    `[ScheduledTasks] [${groupId}] daily compaction skipped: previous run still active`);
+            },
+            catch: err => {
+                this.logger.error(`[ScheduledTasks] [${groupId}] daily compaction failed:`, err);
+            }
+        }, async () => {
+            const manager = await this.getReplyManager(groupId);
+            if (!manager) {
+                this.logger.warn(
+                    `[ScheduledTasks] [${groupId}] daily compaction skipped: reply manager unavailable`);
+                return;
+            }
+            await manager.triggerCompact();
+        });
+        this.jobs.push({groupId, taskName, job});
+        this.logger.info(
+            `[ScheduledTasks] [${groupId}] daily compaction scheduled at 04:00, nextRun=` +
+            `${job.nextRun()?.toISOString() ?? 'none'}`);
     }
 
     private scheduleTask (groupId: number, task: ScheduledGroupTask, index: number): void {

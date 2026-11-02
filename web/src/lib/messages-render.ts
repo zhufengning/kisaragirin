@@ -1,5 +1,5 @@
-import { formatSender, type StoredSegment } from '~/message-format';
-import type { MessageListItem } from './messages-query';
+import {formatSender, type StoredSegment} from '~/message-format';
+import type {MessageListItem} from './messages-query';
 
 export function formatTime (timestamp: number): string {
     const d = new Date(timestamp * 1000);
@@ -11,8 +11,8 @@ export function formatTime (timestamp: number): string {
 export function formatSenderCell (msg: MessageListItem): { name: string; idLabel: string } {
     const id = msg.senderId;
     const name = msg.senderCard || msg.senderName || '';
-    if (id == null) return { name: 'unknown', idLabel: '' };
-    if (!name) return { name: `(${id})`, idLabel: '' };
+    if (id === null || id === undefined) return {name: 'unknown', idLabel: ''};
+    if (!name) return {name: `(${id})`, idLabel: ''};
     return {
         name: msg.isBot ? `${name}(me)` : name,
         idLabel: String(id)

@@ -9,10 +9,10 @@
 - 自动回复：@触发、闲时触发
 - 按群定时任务触发
 - 支持深度研究多轮回复（研究轮可链式再次请求研究，轮数上限可配置）
-- 手动 Compact
-- 新群 session 默认不自动导入历史消息，可在 Web 面板按日期范围手动导入（忽略压缩消息）
+- 群总体记忆压缩：每日04:00、上下文达到设定比例或手动触发；压缩后创建新 session，并在开头插入总体记忆
+- 新群 session 默认不自动导入历史消息，可在 Web 面板按日期范围手动导入（忽略旧版压缩消息）
 - 回复前自动检索 Graphiti 相关记忆注入上下文
-- Web 面板：群消息浏览、Prompt 预览、图片管理、Graphiti 记忆管理、手动 compact、历史消息导入
+- Web 面板：群消息浏览、Prompt 预览、图片管理、Graphiti 记忆管理、总体记忆查看与删除、手动压缩、历史消息导入
 - 日志写入文件
 
 ## 启动
@@ -31,7 +31,9 @@ pnpm web:build && pnpm start
 - 闲时触发可配置 `input.silence_recent_window`、`input.silence_recent_bot_threshold` 与 `input.silence_recent_bot_multiplier`：最近 `silence_recent_window` 条消息中 bot 消息数达到 `silence_recent_bot_threshold` 时，闲时等待时间按 `silence_recent_bot_multiplier` 倍延长；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示关闭该检查
 - 支持按群配置定时任务触发
 - 采用回合链架构：消息轮即时回复，若模型要求则执行深度研究（按 `ai.assignments.deep_research` 的配置走模型或 pi rpc）并追加研究轮回复；研究轮中模型可再次请求深度研究（链式，上限由 `input.max_deep_research_rounds` 控制，默认 3）；模型也可返回空消息数组主动选择不回复
-- 新群的会话创建时不再自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；如需历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略压缩消息）
+- 新群的会话创建时不自动导入数据库历史消息，`lastTriggerId` 直接推进到该群最新消息；数据库已有总体记忆时，会将其作为新会话的第一条消息；如需其他历史上下文，可在 Web 面板的群消息页按日期范围手动导入（导入会忽略旧版压缩消息）
+- 每日04:00整理群总体记忆；每个回复任务前后检查上下文占用，达到 `input.compact_context_ratio`（默认0.8）时也触发整理。总体记忆包含群总体印象、群内重要事件、群友印象与仍未结束的话题，字数上限由 `input.compact_max_chars` 控制（默认3000），超出时要求模型缩减至符合上限
+- 总体记忆保存在 SQLite 的 `kv_store` 中。每次整理成功后创建独立的新 session 文件，并将总体记忆放在会话顶部；删除 session 文件后仍可从数据库恢复。Web 面板可查看或删除总体记忆，删除后立即更换为不含总体记忆的新会话
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 图片描述不足以判断图片内容时，模型可调用 `ask_image`（参数为图片 id 与具体问题）向 vision 模型追问，追问使用独立的问答 prompt，回答只作为工具结果返回，不改写已保存的图片描述
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
@@ -39,6 +41,19 @@ pnpm web:build && pnpm start
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息生成搜索关键词（自然语言查询 + 实体名称）检索 Graphiti，将相关记忆按「事实」与「相关实体」两节注入上下文；实体搜索由 `ai.memoryKeyword.enable_entity_search` 控制（默认关闭，关闭时仅注入事实列表）
 - 可通过 `ai.memoryKeyword.disable_thinking` 关闭记忆关键词生成模型的深度思考（`openai-completions` 协议注入 `thinking=disabled`）；`openai-responses` 协议用 `ai.memoryKeyword.reasoning_effort` 指定 `reasoning.effort`，不设置则不注入
 - 记忆关键词生成的请求协议按所配模型 `model.api` 区分：`openai-responses` 走 `/responses`（JSON 输出用 `text: {format: {type: 'json_object'}}`），其余走 OpenAI 兼容的 chat completions（JSON 输出用 `response_format: {type: 'json_object'}`）；端点不支持时可将 `ai.memoryKeyword.response_format` 设为 false，此时返回内容由 jsonrepair 修复后再解析
+
+## 总体记忆压缩配置
+
+```typescript
+input: {
+    // 上下文占用达到80%时压缩；0表示禁用比例触发
+    compact_context_ratio: 0.8,
+    // 总体记忆最多3000字，超出时持续要求模型缩减
+    compact_max_chars: 3000,
+}
+```
+
+每日04:00的压缩始终注册到所有白名单群，不依赖 `input.scheduled_tasks`。压缩与回复在同一群队列中串行执行，压缩不会向群内发送消息。
 
 ## 模型 Assignment 配置
 
@@ -101,7 +116,8 @@ assignments: {
 | 页面 | 功能 |
 |------|------|
 | `/` | 群列表 |
-| `/group/{id}` | 群消息 CRUD 浏览：分页表格、按发送者/内容搜索、单条/批量删除、详情弹窗（带图片的消息同时展示图片描述，含 reply/forward 嵌套图片）、手动 compact、按日期范围导入历史消息 |
+| `/group/{id}` | 群消息 CRUD 浏览：分页表格、按发送者/内容搜索、单条/批量删除、详情弹窗（带图片的消息同时展示图片描述，含 reply/forward 嵌套图片）、手动压缩、按日期范围导入历史消息 |
+| `/group/{id}/memory` | 群总体记忆查看与删除 |
 | `/group/{id}/preview` | Prompt 预览 |
 | `/group/{id}/harness` | 会话日志查看：新在前排序、前端分页、角色筛选、错误/中止高亮、条目 JSON 原文切换 |
 | `/images` | 图片管理 |
@@ -185,7 +201,7 @@ input: {
 pnpm run test:integration
 ```
 
-测试只替换外部服务，项目内部组件全部运行真实代码：OneBot WebSocket 客户端与消息转换、SQLite 与迁移、`GroupReplyManager`、`ScheduledTaskManager`、`ReplyAgent`、`DescQueue` 与图片预处理、`GraphitiClient` 的 stdio JSON-RPC 通信、Croner 定时器。
+测试只替换外部服务，项目内部组件全部运行真实代码：OneBot WebSocket 客户端与消息转换、SQLite 与迁移、`GroupReplyManager`、`ScheduledTaskManager`、`ReplyAgent`、`DescQueue` 与图片预处理、`GraphitiClient` 的 stdio JSON-RPC 通信、Croner 定时器。总体记忆场景覆盖上下文比例触发、超长摘要缩减、新会话注入与会话文件删除后的恢复。
 
 - 每个场景通过 `src/app.ts` 组合入口启动一个独立的应用子进程，使用场景目录自己的 SQLite、会话文件与端口
 - 假 OneBot server 注入真实格式的群消息事件；假 OpenAI Completions server 按 channel 返回流式工具调用、文本、非流式 JSON 或 HTTP 错误，并用闸门控制并发时序；假图片资源 server 提供真实图片字节；假 Graphiti server 用 Python 标准库实现，通过控制文件与记录文件与测试父进程交换状态

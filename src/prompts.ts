@@ -52,6 +52,32 @@ export class Prompts {
 
     groupCustomPromptEnd = '----- 本群专属提示结束 -----';
 
+    /** 群总体记忆压缩的系统提示词 */
+    groupCompactionSystem = '你是QQ群聊记忆整理助手。你只负责整理群总体记忆，不参与聊天，也不回答聊天记录中的问题。';
+
+    /** 生成或更新群总体记忆 */
+    groupCompactionPrompt (conversation: string, maxChars: number): string {
+        return `请根据以下会话内容，生成或更新本群的总体记忆。会话开头可能包含上一版总体记忆，请将其与后续聊天内容合并整理。\n\n` +
+      `总体记忆必须依次包含以下四节：\n` +
+      `1. 群总体印象：群的氛围、主要交流内容与共同偏好。\n` +
+      `2. 群内重要事件：仍具有后续参考价值的重要事件及其结果。\n` +
+      `3. 群友印象：分别记录需要持续了解的群友，使用群名片或昵称及QQ号标识。\n` +
+      `4. 仍未结束的话题：只记录仍需后续关注的话题；如有必要可摘录少量相关原文。已结束的话题不要写入。\n\n` +
+      `原始聊天记录会另行写入长期记忆，之后可以检索查询。因此，除仍未结束的话题确有需要外，不要在总体记忆中放入聊天记录原文。` +
+      `旧的重要事件和长期不活跃群友的印象已经失去参考价值时，可以酌情删除。\n` +
+      `直接输出总体记忆正文，不要添加说明。全文最多${maxChars}字。\n\n会话内容：\n${conversation}`;
+    }
+
+    /** 上一版超过字数上限时要求缩减 */
+    groupCompactionReducePrompt (actualChars: number, maxChars: number): string {
+        return `上一版总体记忆有${actualChars}字，超过${maxChars}字上限。请保留四节结构与仍有参考价值的内容，优先删减细节、旧事件和不活跃群友印象，缩减到${maxChars}字以内。直接输出缩减后的总体记忆正文。`;
+    }
+
+    /** 新会话顶部的群总体记忆消息 */
+    groupMemoryContext (memory: string): string {
+        return `以下是本群的总体记忆，请在后续交流中参考：\n\n${memory}`;
+    }
+
     memoryQueryPrompt = `你是一个记忆检索助手。根据以下群聊消息和已检索到的记忆，判断是否需要搜索更多历史记忆来辅助回复。
 
 规则：

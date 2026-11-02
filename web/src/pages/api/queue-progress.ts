@@ -1,5 +1,5 @@
-import type { APIRoute } from 'astro';
-import { getQueue } from '@lib/queue';
+import type {APIRoute} from 'astro';
+import {getQueue} from '@lib/queue';
 
 export const GET: APIRoute = async () => {
     const queue = getQueue();
@@ -7,7 +7,7 @@ export const GET: APIRoute = async () => {
     let interval: ReturnType<typeof setInterval>;
 
     const stream = new ReadableStream({
-        start(controller) {
+        start (controller) {
             const send = () => {
                 try {
                     const status = queue.getStatus();
@@ -21,16 +21,16 @@ export const GET: APIRoute = async () => {
             send();
             interval = setInterval(send, 600);
         },
-        cancel() {
+        cancel () {
             clearInterval(interval);
-        },
+        }
     });
 
     return new Response(stream, {
         headers: {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-        },
+            'Connection': 'keep-alive'
+        }
     });
 };

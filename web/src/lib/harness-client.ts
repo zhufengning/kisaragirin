@@ -1,5 +1,5 @@
-import { createEntryElement, matchesFilter } from './harness-entry';
-import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import {createEntryElement, matchesFilter} from './harness-entry';
+import type {SessionEntry} from '@earendil-works/pi-coding-agent';
 
 const PAGE_SIZE = 50;
 
@@ -78,9 +78,9 @@ export function initHarnessPage (): void {
         container.innerHTML = '';
 
         const filtered = entries.filter(e => matchesFilter(e, currentFilter));
-        entryCountEl.textContent = filtered.length === entries.length
-            ? `${entries.length} 条`
-            : `${filtered.length} / ${entries.length} 条`;
+        entryCountEl.textContent = filtered.length === entries.length ?
+            `${entries.length} 条` :
+            `${filtered.length} / ${entries.length} 条`;
 
         const sorted = filtered.slice().reverse();
         const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
@@ -123,7 +123,7 @@ export function initHarnessPage (): void {
             }
             renderEntries(data.entries as SessionEntry[]);
         } catch (err) {
-            errorEl.textContent = '加载失败：' + (err as Error).message;
+            errorEl.textContent = `加载失败：${(err as Error).message}`;
             errorEl.style.display = 'block';
         } finally {
             loading.style.display = 'none';

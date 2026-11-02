@@ -1,0 +1,82 @@
+---
+import Layout from '@layouts/Layout.astro';
+import {db} from '@lib/db';
+import {getGroupOverallMemoryRecord} from '~/db';
+import {formatDateTime} from '@lib/format-date';
+
+const groupId = Number(Astro.params.id);
+if (!groupId || isNaN(groupId)) {
+    return new Response('Invalid group ID', {status: 400});
+}
+
+const memory = await getGroupOverallMemoryRecord(db, groupId);
+---
+
+<Layout title={`群 ${groupId} 总体记忆`}>
+    <div class="memory-page" data-group-id={groupId}>
+        <h1>
+            <a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} 总体记忆
+        </h1>
+        {memory ? (
+            <section class="memory-card">
+                <div class="memory-meta">
+                    更新于 {formatDateTime(memory.updatedAt?.toISOString())}
+                </div>
+                <pre class="memory-content">{memory.content}</pre>
+                <button id="delete-memory-btn" class="btn btn-danger" type="button">删除总体记忆</button>
+            </section>
+        ) : (
+            <p class="empty">暂无总体记忆。每日04:00、上下文达到设定比例或手动压缩时生成。</p>
+        )}
+    </div>
+</Layout>
+
+<style>
+    .memory-card {
+        padding: 20px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    .memory-meta {
+        margin-bottom: 16px;
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+    .memory-content {
+        margin-bottom: 20px;
+        font-family: inherit;
+        line-height: 1.8;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+    .empty {
+        padding: 40px;
+        color: var(--text-secondary);
+        text-align: center;
+    }
+</style>
+
+<script>
+    const root = document.querySelector<HTMLElement>('.memory-page');
+    const deleteButton = document.querySelector<HTMLButtonElement>('#delete-memory-btn');
+    deleteButton?.addEventListener('click', async () => {
+        const groupId = Number(root?.dataset.groupId);
+        if (!groupId) throw new Error('group id not found');
+        if (!confirm('确定删除该群的总体记忆吗？当前会话将更换为不含总体记忆的新会话。')) return;
+        deleteButton.disabled = true;
+        deleteButton.textContent = '删除中...';
+        try {
+            const response = await fetch(`/api/group/${groupId}/memory`, {method: 'DELETE'});
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || '未知错误');
+            }
+            location.reload();
+        } catch (error) {
+            alert(`删除失败：${error instanceof Error ? error.message : String(error)}`);
+            deleteButton.disabled = false;
+            deleteButton.textContent = '删除总体记忆';
+        }
+    });
+</script>

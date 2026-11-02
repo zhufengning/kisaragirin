@@ -10,17 +10,17 @@ export async function deleteMessageIds (ids: number[]): Promise<void> {
     try {
         const res = await fetch('/api/messages/delete', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids})
         });
         const data = await res.json();
         if (data.success) {
             location.reload();
         } else {
-            alert('删除失败：' + (data.error || '未知错误'));
+            alert(`删除失败：${data.error || '未知错误'}`);
         }
     } catch (err) {
-        alert('删除失败：' + (err as Error).message);
+        alert(`删除失败：${(err as Error).message}`);
     }
 }
 
@@ -50,23 +50,23 @@ export function initImportControls (groupId: number): void {
             alert('开始日期不能晚于结束日期');
             return;
         }
-        if (!confirm(`确定导入 ${start} 至 ${end} 的历史消息到会话吗？（忽略压缩消息）`)) return;
+        if (!confirm(`确定导入 ${start} 至 ${end} 的历史消息到当前会话吗？`)) return;
         importBtn.disabled = true;
         importBtn.textContent = '导入中...';
         try {
             const res = await fetch(`/api/group/${groupId}/import`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ startDate: start, endDate: end })
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({startDate: start, endDate: end})
             });
             const data = await res.json();
             if (data.success) {
                 alert(`已导入 ${data.imported} 条消息`);
             } else {
-                alert('导入失败：' + (data.error || '未知错误'));
+                alert(`导入失败：${data.error || '未知错误'}`);
             }
         } catch (err) {
-            alert('导入失败：' + (err as Error).message);
+            alert(`导入失败：${(err as Error).message}`);
         } finally {
             importBtn.disabled = false;
             importBtn.textContent = '导入历史';
@@ -79,23 +79,23 @@ export function initCompactButton (groupId: number): void {
     if (!compactBtn) return;
 
     compactBtn.addEventListener('click', async () => {
-        if (!confirm('确定要手动触发 compact 吗？这将把旧消息摘要成一条「前情提要」消息。')) return;
+        if (!confirm('确定要现在更新群总体记忆吗？完成后将创建一个新会话。')) return;
         compactBtn.disabled = true;
-        compactBtn.textContent = 'Compacting...';
+        compactBtn.textContent = '压缩中...';
         try {
-            const res = await fetch(`/api/compact?groupId=${groupId}`, { method: 'POST' });
+            const res = await fetch(`/api/compact?groupId=${groupId}`, {method: 'POST'});
             const data = await res.json();
             if (data.success) {
-                alert(data.compacted ? 'Compact 成功！' : '无需 compact');
+                alert(data.compacted ? '群总体记忆已更新' : '当前会话没有可压缩的聊天记录');
                 location.reload();
             } else {
-                alert('Compact 失败：' + (data.error || '未知错误'));
+                alert(`压缩失败：${data.error || '未知错误'}`);
             }
         } catch (err) {
-            alert('Compact 失败：' + (err as Error).message);
+            alert(`压缩失败：${(err as Error).message}`);
         } finally {
             compactBtn.disabled = false;
-            compactBtn.textContent = '手动 Compact';
+            compactBtn.textContent = '手动压缩';
         }
     });
 }
@@ -109,16 +109,16 @@ export function initClearButton (groupId: number): void {
         clearBtn.disabled = true;
         clearBtn.textContent = '清空中...';
         try {
-            const res = await fetch(`/api/group/${groupId}/clear`, { method: 'POST' });
+            const res = await fetch(`/api/group/${groupId}/clear`, {method: 'POST'});
             const data = await res.json();
             if (data.success) {
                 alert('已清空所有消息');
                 location.reload();
             } else {
-                alert('清空失败：' + (data.error || '未知错误'));
+                alert(`清空失败：${data.error || '未知错误'}`);
             }
         } catch (err) {
-            alert('清空失败：' + (err as Error).message);
+            alert(`清空失败：${(err as Error).message}`);
         } finally {
             clearBtn.disabled = false;
             clearBtn.textContent = '清空全部';
@@ -142,7 +142,9 @@ export function initBatchDelete (): void {
     if (selectAll) {
         selectAll.addEventListener('change', () => {
             const checked = selectAll.checked;
-            rowCheckboxes.forEach(cb => { cb.checked = checked; });
+            rowCheckboxes.forEach(cb => {
+                cb.checked = checked;
+            });
             updateBatchButton();
         });
     }

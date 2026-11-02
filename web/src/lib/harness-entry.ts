@@ -1,6 +1,6 @@
-import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { ImageContent, TextContent, ThinkingContent, ToolCall } from '@earendil-works/pi-ai';
-import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import type {AgentMessage} from '@earendil-works/pi-agent-core';
+import type {ImageContent, TextContent, ThinkingContent, ToolCall} from '@earendil-works/pi-ai';
+import type {SessionEntry} from '@earendil-works/pi-coding-agent';
 
 const COLLAPSE_CHARS = 800;
 
@@ -35,7 +35,7 @@ export function formatTimestamp (iso: string): string {
 }
 
 function textLength (value: unknown): number {
-    if (value == null) return 0;
+    if (value === null || value === undefined) return 0;
     if (typeof value === 'string') return value.length;
     try {
         return JSON.stringify(value).length;
@@ -61,16 +61,16 @@ function makeCollapsible (contentEl: Node, charCount: number): Node {
     toggle.textContent = `展开全部（约 ${charCount.toLocaleString()} 字符）`;
     toggle.addEventListener('click', () => {
         const collapsed = wrap.classList.toggle('collapsed');
-        toggle.textContent = collapsed
-            ? `展开全部（约 ${charCount.toLocaleString()} 字符）`
-            : '收起';
+        toggle.textContent = collapsed ?
+            `展开全部（约 ${charCount.toLocaleString()} 字符）` :
+            '收起';
     });
     wrap.appendChild(toggle);
     return wrap;
 }
 
 function appendText (parent: HTMLElement, text: unknown): void {
-    if (text == null || text === '') return;
+    if (text === null || text === undefined || text === '') return;
     const span = document.createElement('div');
     span.className = 'block-text';
     span.textContent = String(text);
@@ -121,7 +121,7 @@ function renderContentBlock (parent: HTMLElement, block: ContentBlock): void {
         header.className = 'tool-call-header';
         header.innerHTML = `<span class="tool-call-icon">⚙</span><span>tool-call</span><code>${escapeHtml(block.name || 'unknown')}</code>`;
         callWrap.appendChild(header);
-        appendCodeBlock(callWrap, 'arguments', block.arguments || {}, { variant: 'nested' });
+        appendCodeBlock(callWrap, 'arguments', block.arguments || {}, {variant: 'nested'});
         parent.appendChild(callWrap);
         break;
     }
@@ -133,7 +133,7 @@ function renderContentBlock (parent: HTMLElement, block: ContentBlock): void {
         break;
     }
     case 'thinking':
-        appendCodeBlock(parent, 'thinking', block.thinking || '', { variant: 'thinking' });
+        appendCodeBlock(parent, 'thinking', block.thinking || '', {variant: 'thinking'});
         break;
     default:
         appendCodeBlock(parent, (block as { type: string }).type, block);
@@ -149,7 +149,7 @@ function renderMessageBody (parent: HTMLElement, message: AgentMessage): void {
         for (const block of content) {
             renderContentBlock(parent, block as ContentBlock);
         }
-    } else if (content != null) {
+    } else if (content !== null && content !== undefined) {
         appendCodeBlock(parent, 'content', content);
     }
 }
@@ -213,7 +213,7 @@ export function createEntryElement (sessionEntry: SessionEntry, index: number): 
             errWrap.appendChild(errPre);
             body.appendChild(errWrap);
             if (msg.diagnostics && msg.diagnostics.length > 0) {
-                appendCodeBlock(body, 'diagnostics', msg.diagnostics, { variant: 'error' });
+                appendCodeBlock(body, 'diagnostics', msg.diagnostics, {variant: 'error'});
             }
         }
     } else if (entry.type === 'compaction') {

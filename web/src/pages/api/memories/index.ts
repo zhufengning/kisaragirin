@@ -1,12 +1,12 @@
-import type { APIRoute } from 'astro';
+import type {APIRoute} from 'astro';
 
-function getGraphiti() {
+function getGraphiti () {
     const g = globalThis.__graphiti__;
     if (!g || !g.isReady) throw new Error('Graphiti not initialized');
     return g;
 }
 
-export const GET: APIRoute = async ({ url }) => {
+export const GET: APIRoute = async ({url}) => {
     try {
         const graphiti = getGraphiti();
         const page = parseInt(url.searchParams.get('page') || '1', 10);
@@ -17,32 +17,32 @@ export const GET: APIRoute = async ({ url }) => {
         const result = await graphiti.getEdges(groupId, pageSize, offset);
         return new Response(JSON.stringify(result), {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     } catch (err: unknown) {
         console.error('[Graphiti API] GET /api/memories error:', err);
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
+        return new Response(JSON.stringify({error: err instanceof Error ? err.message : String(err)}), {
             status: 500,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     }
 };
 
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({request}) => {
     try {
         const graphiti = getGraphiti();
         const body = await request.json();
 
-        const { content, group_id } = body;
+        const {content, group_id: requestedGroupId} = body;
 
         if (!content || typeof content !== 'string') {
-            return new Response(JSON.stringify({ error: 'content is required' }), {
+            return new Response(JSON.stringify({error: 'content is required'}), {
                 status: 400,
-                headers: { 'Content-Type': 'application/json' },
+                headers: {'Content-Type': 'application/json'}
             });
         }
 
-        const groupId = group_id || 'default';
+        const groupId = requestedGroupId || 'default';
         const now = new Date().toISOString();
 
         const result = await graphiti.addEpisode(groupId, {
@@ -54,13 +54,13 @@ export const POST: APIRoute = async ({ request }) => {
 
         return new Response(JSON.stringify(result), {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     } catch (err: unknown) {
         console.error('[Graphiti API] POST /api/memories error:', err);
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
+        return new Response(JSON.stringify({error: err instanceof Error ? err.message : String(err)}), {
             status: 500,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     }
 };

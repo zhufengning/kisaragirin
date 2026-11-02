@@ -1,10 +1,10 @@
 /* eslint-disable no-var */
-import type { Db } from '~/db';
-import type { DescQueue } from '~/util/desc-queue';
-import type { GroupReplyManager } from '~/util/reply-manager';
-import type { GraphitiClient } from '~/util/graphiti-client';
-import type { AppConfig } from '~/config';
-import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type {Db} from '~/db';
+import type {DescQueue} from '~/util/desc-queue';
+import type {GroupReplyManager} from '~/util/reply-manager';
+import type {GraphitiClient} from '~/util/graphiti-client';
+import type {AppConfig} from '~/config';
+import type {ModelRuntime} from '@earendil-works/pi-coding-agent';
 
 declare global {
     var __db__: Db | undefined;

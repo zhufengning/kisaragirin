@@ -4,14 +4,24 @@ import {
     DefaultResourceLoader,
     getAgentDir,
     SettingsManager,
+    convertToLlm,
+    serializeConversation,
     type InlineExtension,
     type ModelRuntime,
     type SessionEntry,
     type SessionManager,
     type ToolDefinition
 } from '@earendil-works/pi-coding-agent';
-import type {AssistantMessage, Message, Models} from '@earendil-works/pi-ai';
-import {schema, type Db, rowToStoredMessage, setGroupLastTriggerId} from '~/db';
+import type {AssistantMessage, Context, Message} from '@earendil-works/pi-ai';
+import {
+    schema,
+    type Db,
+    deleteGroupOverallMemory,
+    getGroupOverallMemory,
+    rowToStoredMessage,
+    setGroupLastTriggerId,
+    setGroupOverallMemory
+} from '~/db';
 import type {AppConfig, ModelEntry} from '~/config';
 import {eq, asc, and, or, gt, gte, lte, ne, desc} from 'drizzle-orm';
 import type {DescQueue} from './desc-queue';
@@ -19,7 +29,14 @@ import type {ReplyTask} from './reply-task';
 import {messagesToString, type StoredMessage} from '~/message-format';
 import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
-import {getOrCreateGroupSession, registerAgentSession, emptyUsage} from './harness-factory';
+import {
+    activateGroupSession,
+    createGroupSession,
+    disposeAgentSession,
+    getOrCreateGroupSession,
+    registerAgentSession,
+    emptyUsage
+} from './harness-factory';
 import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
@@ -50,11 +67,88 @@ export interface TurnOutcome {
     processedUpToId?: number;
 }
 
+interface CreateReplySessionOptions {
+    config: AppConfig;
+    models: ModelRuntime;
+    sessionManager: SessionManager;
+    tools: ToolDefinition[];
+    systemPromptText: string;
+    onToolCall: (toolName: string) => void;
+}
+
+async function createReplyAgentSession (options: CreateReplySessionOptions): Promise<AgentSession> {
+    const runtimeExtension: InlineExtension = pi => {
+        pi.on('before_agent_start', () => ({systemPrompt: options.systemPromptText}));
+        pi.on('tool_call', event => options.onToolCall(event.toolName));
+    };
+
+    const settingsManager = SettingsManager.inMemory({
+        retry: {enabled: false},
+        compaction: {enabled: false},
+        cacheWarming: 'off'
+    });
+
+    const cwd = process.cwd();
+    const agentDir = getAgentDir();
+    const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        settingsManager,
+        extensionFactories: [runtimeExtension],
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        systemPrompt: options.systemPromptText,
+        appendSystemPrompt: [],
+        systemPromptOverride: () => options.systemPromptText,
+        appendSystemPromptOverride: () => []
+    });
+    await resourceLoader.reload();
+
+    const harnessEntry = resolveAssignmentModels(
+        options.config, options.config.ai.assignments.agent_harness)[0];
+    const {session} = await createAgentSession({
+        cwd,
+        agentDir,
+        modelRuntime: options.models,
+        model: harnessEntry.model,
+        thinkingLevel: 'high',
+        noTools: 'builtin',
+        customTools: options.tools,
+        sessionManager: options.sessionManager,
+        settingsManager,
+        resourceLoader
+    });
+    await session.bindExtensions({});
+    registerAgentSession(session);
+    return session;
+}
+
+function buildGroupMemoryMessage (memory: string): Message {
+    return {
+        role: 'user',
+        content: [{type: 'text', text: prompts.groupMemoryContext(memory)}],
+        timestamp: Date.now()
+    } as Message;
+}
+
+function assistantText (message: AssistantMessage): string {
+    return message.content
+        .filter((block): block is Extract<typeof block, {type: 'text'}> => block.type === 'text')
+        .map(block => block.text)
+        .join('')
+        .trim();
+}
+
 export class ReplyAgent {
     private db: Db;
     private descQueue: DescQueue;
     private config: AppConfig;
     private groupId: number;
+    private models: ModelRuntime;
+    private tools: ToolDefinition[];
     private sessionManager: SessionManager;
     private session: AgentSession;
     private logger: Logger;
@@ -75,17 +169,20 @@ export class ReplyAgent {
         descQueue: DescQueue;
         config: AppConfig;
         groupId: number;
+        models: ModelRuntime;
+        tools: ToolDefinition[];
         sessionManager: SessionManager;
         session: AgentSession;
         systemPromptText: string;
         graphiti: GraphitiClient | null;
         lastBotReplyId: number;
-        models: Models;
     }) {
         this.db = options.db;
         this.descQueue = options.descQueue;
         this.config = options.config;
         this.groupId = options.groupId;
+        this.models = options.models;
+        this.tools = options.tools;
         this.sessionManager = options.sessionManager;
         this.session = options.session;
         this.systemPromptText = options.systemPromptText;
@@ -131,9 +228,13 @@ export class ReplyAgent {
         const {groupId, db, descQueue, config, models, graphiti} = options;
 
         const logger = new Logger();
-        const {sessionManager, isNew} = await getOrCreateGroupSession(groupId, config, db);
-
-        const harnessEntry = resolveAssignmentModels(config, config.ai.assignments.agent_harness)[0];
+        const {sessionManager, isNew} = await getOrCreateGroupSession(groupId, db);
+        if (isNew) {
+            const memory = await getGroupOverallMemory(db, groupId);
+            if (memory) {
+                sessionManager.appendMessage(buildGroupMemoryMessage(memory));
+            }
+        }
 
         const agentRef: {current: ReplyAgent | null} = {current: null};
 
@@ -154,50 +255,14 @@ export class ReplyAgent {
             groupCustomPrompt: config.input.group_custom_prompts?.[groupId]
         });
 
-        const runtimeExtension: InlineExtension = pi => {
-            pi.on('before_agent_start', () => ({systemPrompt: systemPromptText}));
-            pi.on('tool_call', event => agentRef.current?.checkToolCall(event.toolName));
-        };
-
-        const settingsManager = SettingsManager.inMemory({
-            retry: {enabled: false},
-            compaction: {enabled: false},
-            cacheWarming: 'off'
-        });
-
-        const cwd = process.cwd();
-        const agentDir = getAgentDir();
-        const resourceLoader = new DefaultResourceLoader({
-            cwd,
-            agentDir,
-            settingsManager,
-            extensionFactories: [runtimeExtension],
-            noExtensions: true,
-            noSkills: true,
-            noPromptTemplates: true,
-            noThemes: true,
-            noContextFiles: true,
-            systemPrompt: systemPromptText,
-            appendSystemPrompt: [],
-            systemPromptOverride: () => systemPromptText,
-            appendSystemPromptOverride: () => []
-        });
-        await resourceLoader.reload();
-
-        const {session} = await createAgentSession({
-            cwd,
-            agentDir,
-            modelRuntime: models,
-            model: harnessEntry.model,
-            thinkingLevel: 'high',
-            noTools: 'builtin',
-            customTools: tools,
+        const session = await createReplyAgentSession({
+            config,
+            models,
             sessionManager,
-            settingsManager,
-            resourceLoader
+            tools,
+            systemPromptText,
+            onToolCall: toolName => agentRef.current?.checkToolCall(toolName)
         });
-        await session.bindExtensions({});
-        registerAgentSession(session);
 
         const lastBotReplyId = await ReplyAgent.restoreLastBotReplyId(db, groupId);
 
@@ -206,12 +271,13 @@ export class ReplyAgent {
             descQueue,
             config,
             groupId,
+            models,
+            tools,
             sessionManager,
             session,
             systemPromptText,
             graphiti: graphiti ?? null,
-            lastBotReplyId,
-            models
+            lastBotReplyId
         });
 
         agentRef.current = agent;
@@ -663,10 +729,148 @@ export class ReplyAgent {
         };
     }
 
-    async triggerCompact (_groupId?: number, _force = false): Promise<void> {
+    /** 上下文占用达到配置比例时更新总体记忆并更换会话 */
+    async compactIfContextNeeded (): Promise<boolean> {
+        const ratio = this.config.input.compact_context_ratio;
+        if (ratio <= 0) return false;
+        const usage = this.session.getContextUsage();
+        if (usage?.percent === null || usage?.percent === undefined) return false;
+        if (usage.percent < ratio * 100) return false;
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] context usage ${usage.percent.toFixed(2)}% ` +
+            `reached compact ratio ${ratio * 100}%`);
+        return this.triggerCompact();
+    }
+
+    /** 生成群总体记忆，保存到数据库后以它为第一条消息创建新会话 */
+    async triggerCompact (): Promise<boolean> {
         await this.waitForIdle();
-        await this.session.compact();
+        const contextMessages = this.sessionManager.buildSessionContext().messages;
+        const memory = await getGroupOverallMemory(this.db, this.groupId);
+        const chatMessages = memory && contextMessages[0]?.role === 'user' ?
+            contextMessages.slice(1) :
+            contextMessages;
+        if (!serializeConversation(convertToLlm(chatMessages)).trim()) {
+            this.logger.info(`[ReplyAgent] [${this.groupId}] no chat messages to compact`);
+            return false;
+        }
+
+        const conversation = serializeConversation(convertToLlm(contextMessages));
+        const summary = await this.generateOverallMemory(conversation);
+        await setGroupOverallMemory(this.db, this.groupId, summary);
+        await this.replaceSession(summary);
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] overall memory updated, ` +
+            `chars=${Array.from(summary).length}`);
+        return true;
+    }
+
+    /** 删除总体记忆并更换为空会话，使当前上下文立即停止使用该记忆 */
+    async clearOverallMemory (): Promise<void> {
         await this.waitForIdle();
+        await deleteGroupOverallMemory(this.db, this.groupId);
+        await this.replaceSession(null);
+        this.logger.info(`[ReplyAgent] [${this.groupId}] overall memory deleted`);
+    }
+
+    private async generateOverallMemory (conversation: string): Promise<string> {
+        const entries = resolveAssignmentModels(this.config, this.config.ai.assignments.agent_harness);
+        for (const [index, entry] of entries.entries()) {
+            try {
+                return await this.generateOverallMemoryWithModel(entry, conversation);
+            } catch (err) {
+                this.logger.error(
+                    `[ReplyAgent] [${this.groupId}] overall memory generation failed ` +
+                    `(model=${entry.model.id}):`, err);
+                if (index === entries.length - 1) throw err;
+            }
+        }
+        throw new Error('overall memory generation has no available model');
+    }
+
+    private async generateOverallMemoryWithModel (
+        entry: ModelEntry, conversation: string
+    ): Promise<string> {
+        const maxChars = this.config.input.compact_max_chars;
+        if (!Number.isInteger(maxChars) || maxChars <= 0) {
+            throw new Error(`compact_max_chars must be a positive integer, got ${maxChars}`);
+        }
+
+        const messages: Message[] = [{
+            role: 'user',
+            content: prompts.groupCompactionPrompt(conversation, maxChars),
+            timestamp: Date.now()
+        } as Message];
+
+        for (;;) {
+            const context: Context = {
+                systemPrompt: prompts.groupCompactionSystem,
+                messages
+            };
+            const response = await this.models.completeSimple(entry.model, context, {
+                apiKey: entry.apiKey
+            });
+            if (response.stopReason === 'error' || response.stopReason === 'aborted') {
+                throw new Error(response.errorMessage || `Compaction stopped: ${response.stopReason}`);
+            }
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] compaction usage: ${formatUsage(response.usage)}`);
+            const text = assistantText(response);
+            if (!text) throw new Error('compaction model returned empty text');
+            const actualChars = Array.from(text).length;
+            if (actualChars <= maxChars) return text;
+
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] overall memory too long ` +
+                `(${actualChars}/${maxChars}), requesting reduction`);
+            messages.push(response, {
+                role: 'user',
+                content: prompts.groupCompactionReducePrompt(actualChars, maxChars),
+                timestamp: Date.now()
+            } as Message);
+        }
+    }
+
+    private async replaceSession (memory: string | null): Promise<void> {
+        const created = createGroupSession(this.groupId);
+        if (memory) {
+            created.sessionManager.appendMessage(buildGroupMemoryMessage(memory));
+        }
+        const session = await createReplyAgentSession({
+            config: this.config,
+            models: this.models,
+            sessionManager: created.sessionManager,
+            tools: this.tools,
+            systemPromptText: this.systemPromptText,
+            onToolCall: toolName => this.checkToolCall(toolName)
+        });
+        try {
+            await activateGroupSession(this.db, this.groupId, created);
+        } catch (err) {
+            disposeAgentSession(session);
+            throw err;
+        }
+
+        const previous = this.session;
+        this.session = session;
+        this.sessionManager = created.sessionManager;
+        this.lastAssistantMessage = undefined;
+        this.session.subscribe(event => {
+            if (event.type === 'message_end' && event.message.role === 'assistant') {
+                this.lastAssistantMessage = event.message;
+            }
+        });
+        this.memoryContext = new MemoryContextBuilder({
+            config: this.config,
+            groupId: this.groupId,
+            logger: this.logger,
+            graphiti: this.graphiti,
+            sessionManager: this.sessionManager,
+            debug: this.debug
+        });
+        disposeAgentSession(previous);
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] active session replaced with ${created.metadata.id}`);
     }
 
     async waitForIdle (): Promise<void> {

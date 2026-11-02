@@ -1,6 +1,6 @@
-import { db, schema } from '@lib/db';
-import { eq, and, or, like, sql } from 'drizzle-orm';
-import { collectImageSha256FromSegment, type StoredSegment } from '~/message-format';
+import {db, schema} from '@lib/db';
+import {eq, and, or, like, sql} from 'drizzle-orm';
+import {collectImageSha256FromSegment, type StoredSegment} from '~/message-format';
 
 export const MESSAGES_PAGE_SIZE = 50;
 
@@ -43,7 +43,7 @@ function collectImages (
         if (seg.type === 'image') {
             if (!seen.has(seg.sha256)) {
                 seen.add(seg.sha256);
-                images.push({ sha256: seg.sha256, description: imageDescriptions.get(seg.sha256) ?? null });
+                images.push({sha256: seg.sha256, description: imageDescriptions.get(seg.sha256) ?? null});
             }
         } else if (seg.type === 'reply' && seg.message) {
             collectImages(seg.message.segments, images, seen, imageDescriptions);
@@ -57,7 +57,7 @@ export async function loadMessagesPageData (url: URL, groupId: number): Promise<
     const currentPage = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
     const searchQuery = url.searchParams.get('search')?.trim() || '';
     const sortDirParam = url.searchParams.get('sort')?.toLowerCase();
-    const sortDesc = sortDirParam === 'asc' ? false : true; // 默认新在前（降序）
+    const sortDesc = sortDirParam !== 'asc'; // 默认新在前（降序）
 
     // 搜索条件：发送者名称/名片、原始消息文本、segments JSON
     const baseCondition = eq(schema.messages.groupId, groupId);
@@ -78,7 +78,7 @@ export async function loadMessagesPageData (url: URL, groupId: number): Promise<
 
     // 总消息数
     const countResult = await db
-        .select({ count: sql<number>`count(*)` })
+        .select({count: sql<number>`count(*)`})
         .from(schema.messages)
         .where(whereClause);
     const totalCount = countResult[0]?.count || 0;
@@ -115,16 +115,17 @@ export async function loadMessagesPageData (url: URL, groupId: number): Promise<
         for (const seg of msg.segments) collectImageSha256FromSegment(seg, pageShaSet);
     }
     const pageShaList = Array.from(pageShaSet);
-    const imageDescRows = pageShaList.length > 0
-        ? await db.select().from(schema.images).where(sql`${schema.images.sha256} IN ${pageShaList}`)
-        : [];
+    const imageDescRows = pageShaList.length > 0 ?
+        await db.select().from(schema.images)
+            .where(sql`${schema.images.sha256} IN ${pageShaList}`) :
+        [];
     const imageDescMap = new Map(imageDescRows.map(r => [r.sha256, r.description]));
 
     for (const msg of messages) {
         collectImages(msg.segments, msg.images, new Set(), imageDescMap);
     }
 
-    return { messages, totalCount, totalPages, validPage, searchQuery, sortDesc };
+    return {messages, totalCount, totalPages, validPage, searchQuery, sortDesc};
 }
 
 export function buildSortUrl (url: URL, sortDesc: boolean): string {

@@ -18,6 +18,20 @@ import {ReplySender, type TurnLocation} from './reply-sender';
 import type {GraphitiClient} from './graphiti-client';
 import {Logger} from '@lib/util/logger';
 
+interface CompactOperation {
+    type: 'compact';
+    resolve: (compacted: boolean) => void;
+    reject: (error: unknown) => void;
+}
+
+interface ClearOverallMemoryOperation {
+    type: 'clear-overall-memory';
+    resolve: () => void;
+    reject: (error: unknown) => void;
+}
+
+type QueueItem = ReplyTask | CompactOperation | ClearOverallMemoryOperation;
+
 interface GroupReplyManagerOptions {
     groupId: number;
     bot: Bot;
@@ -49,7 +63,7 @@ export class GroupReplyManager {
     private pendingAtRowId: number | null = null;
     private silenceTimeout: NodeJS.Timeout | null = null;
     private isReplying: boolean = false;
-    private replyQueue: ReplyTask[] = [];
+    private replyQueue: QueueItem[] = [];
     private processingQueue: boolean = false;
     private stopped: boolean = false;
     private queueIdleWaiters: Array<() => void> = [];
@@ -119,6 +133,22 @@ export class GroupReplyManager {
 
     getAgent (): ReplyAgent {
         return this.agent;
+    }
+
+    /** 手动或定时压缩进入单群队列，等待之前的回复任务完成 */
+    async triggerCompact (): Promise<boolean> {
+        if (this.stopped) throw new Error('reply manager is stopped');
+        return new Promise<boolean>((resolve, reject) => {
+            this.enqueueMemoryOperation({type: 'compact', resolve, reject});
+        });
+    }
+
+    /** 删除总体记忆同样进入单群队列，避免与正在生成的回复同时使用会话 */
+    async clearOverallMemory (): Promise<void> {
+        if (this.stopped) throw new Error('reply manager is stopped');
+        return new Promise<void>((resolve, reject) => {
+            this.enqueueMemoryOperation({type: 'clear-overall-memory', resolve, reject});
+        });
     }
 
     /** 停止接收新任务、清理定时器，并等待进行中的回复任务与 Agent 结束 */
@@ -338,6 +368,13 @@ export class GroupReplyManager {
         });
     }
 
+    private enqueueMemoryOperation (operation: CompactOperation | ClearOverallMemoryOperation): void {
+        this.replyQueue.push(operation);
+        if (!this.processingQueue) {
+            void this.processQueue();
+        }
+    }
+
     private enqueueTask (task: ReplyTask): void {
         if (this.stopped) {
             this.logger.debug(
@@ -349,7 +386,7 @@ export class GroupReplyManager {
             `msg=${task.triggerMessageId} queueLen=${this.replyQueue.length + 1}`);
         this.replyQueue.push(task);
         if (!this.processingQueue) {
-            this.processQueue();
+            void this.processQueue();
         }
     }
 
@@ -361,11 +398,30 @@ export class GroupReplyManager {
             `[ReplyManager] [${this.groupId}] processQueue start tasks=${this.replyQueue.length}`);
 
         while (this.replyQueue.length > 0) {
-            const task = this.replyQueue.shift()!;
+            const item = this.replyQueue.shift()!;
+            if (item.type === 'compact' || item.type === 'clear-overall-memory') {
+                try {
+                    if (item.type === 'compact') {
+                        item.resolve(await this.agent.triggerCompact());
+                    } else {
+                        await this.agent.clearOverallMemory();
+                        item.resolve();
+                    }
+                } catch (err) {
+                    item.reject(err);
+                    this.logger.error(
+                        `[ReplyManager] memory operation failed for group ${this.groupId}:`, err);
+                }
+                continue;
+            }
+
+            const task = item;
             this.logger.debug(
                 `[ReplyManager] [${this.groupId}] executeTask type=${task.type} msg=${task.triggerMessageId}`);
             try {
+                await this.agent.compactIfContextNeeded();
                 await this.executeTask(task);
+                await this.agent.compactIfContextNeeded();
             } catch (err) {
                 this.logger.error(`[ReplyManager] Task failed for group ${this.groupId}:`, err);
             }

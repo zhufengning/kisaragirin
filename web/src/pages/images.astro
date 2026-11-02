@@ -1,20 +1,20 @@
 ---
 import Layout from '@layouts/Layout.astro';
-import { db, schema } from '@lib/db';
-import { readdirSync } from 'node:fs';
+import {db, schema} from '@lib/db';
+import {readdirSync} from 'node:fs';
 
-import { like, sql } from 'drizzle-orm';
+import {like, sql} from 'drizzle-orm';
 
 const IMAGE_DIR = './data/images';
 const PAGE_SIZE = 24;
 
-function listImages() {
+function listImages () {
     try {
         const files = readdirSync(IMAGE_DIR);
         return files.map(name => {
             const dot = name.lastIndexOf('.');
             const sha256 = dot > 0 ? name.slice(0, dot) : name;
-            return { name, sha256, ext: dot > 0 ? name.slice(dot) : '' };
+            return {name, sha256, ext: dot > 0 ? name.slice(dot) : ''};
         });
     } catch {
         return [];
@@ -36,7 +36,7 @@ if (searchQuery) {
     // 1. 按描述搜索
     const searchPattern = `%${searchQuery}%`;
     const matchingRows = await db
-        .select({ sha256: schema.images.sha256 })
+        .select({sha256: schema.images.sha256})
         .from(schema.images)
         .where(like(schema.images.description, searchPattern));
     for (const r of matchingRows) matchingSet.add(r.sha256);
@@ -61,13 +61,14 @@ const pageFiles = filteredFiles.slice(startIndex, startIndex + PAGE_SIZE);
 
 // 查询当前页图片的描述
 const sha256List = pageFiles.map(f => f.sha256);
-const descRows = sha256List.length > 0
-    ? await db.select().from(schema.images).where(sql`${schema.images.sha256} IN ${sha256List}`)
-    : [];
+const descRows = sha256List.length > 0 ?
+    await db.select().from(schema.images)
+        .where(sql`${schema.images.sha256} IN ${sha256List}`) :
+    [];
 const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
 
 // 构建分页URL
-function pageUrl(page: number) {
+function pageUrl (page: number) {
     const url = new URL(Astro.url);
     url.searchParams.set('page', String(page));
     return url.pathname + url.search;

@@ -1,6 +1,6 @@
 ---
 import Layout from '@layouts/Layout.astro';
-import { formatSender } from '~/message-format';
+import {formatSender} from '~/message-format';
 import {
     buildPageUrl,
     buildSearchUrl,
@@ -18,21 +18,21 @@ import '../../styles/messages.css';
 
 const groupId = Number(Astro.params.id);
 if (!groupId || isNaN(groupId)) {
-    return new Response('Invalid group ID', { status: 400 });
+    return new Response('Invalid group ID', {status: 400});
 }
 
-const { messages, totalCount, totalPages, validPage, searchQuery, sortDesc } =
+const {messages, totalCount, totalPages, validPage, searchQuery, sortDesc} =
     await loadMessagesPageData(Astro.url, groupId);
 
-function sortUrl(): string {
+function sortUrl (): string {
     return buildSortUrl(Astro.url, sortDesc);
 }
 
-function pageUrl(page: number): string {
+function pageUrl (page: number): string {
     return buildPageUrl(Astro.url, page);
 }
 
-function searchUrl(search: string): string {
+function searchUrl (search: string): string {
     return buildSearchUrl(Astro.url, search);
 }
 
@@ -45,6 +45,7 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
         <a href="/">← 群列表</a> · 群 {groupId}
         <span class="meta">({totalCount} 条消息{searchQuery ? ` · 搜索: "${searchQuery}"` : ''})</span>
         · <a href={`/group/${groupId}/preview`} class="preview-link">预览 Prompt →</a>
+        · <a href={`/group/${groupId}/memory`} class="preview-link">总体记忆 →</a>
         · <a href={`/group/${groupId}/harness`} class="preview-link">Harness 日志 →</a>
     </h1>
 
@@ -70,7 +71,7 @@ const sortTitle = sortDesc ? '当前：新消息在前，点击改为旧消息�
                 <input type="date" id="import-end" class="date-input" title="结束日期" />
                 <button id="import-btn" class="btn btn-secondary btn-sm">导入历史</button>
             </div>
-            <button id="compact-btn" class="btn btn-secondary btn-sm">手动 Compact</button>
+            <button id="compact-btn" class="btn btn-secondary btn-sm">手动压缩</button>
             <button id="clear-btn" class="btn btn-danger btn-sm">清空全部</button>
             <button id="batch-delete-btn" class="btn btn-danger btn-sm" disabled>批量删除</button>
         </div>

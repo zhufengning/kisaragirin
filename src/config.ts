@@ -26,6 +26,10 @@ export class InputConfig {
     /** bot 消息占比超阈值时闲时等待时间的放大倍数，默认 1（不放大） */
     silence_recent_bot_multiplier = 1;
     max_tool_call_rounds = 5;
+    /** 上下文占用达到该比例时压缩并更换会话，0 表示禁用比例触发 */
+    compact_context_ratio = 0.8;
+    /** 群总体记忆的最大字符数 */
+    compact_max_chars = 3000;
     /** 每个任务内允许的最大深度研究次数（深度研究轮可链式再次请求研究，达到上限后忽略），默认 3 */
     max_deep_research_rounds = 3;
     vision_concurrency = 5;

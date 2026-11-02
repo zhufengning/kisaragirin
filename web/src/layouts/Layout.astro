@@ -2,15 +2,15 @@
 interface Props {
     title: string;
 }
-const { title } = Astro.props;
+const {title} = Astro.props;
 ---
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <style is:global>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title}</title>
+        <style is:global>
         :root {
             --bg: #0f0f12;
             --surface: #18181c;
@@ -73,18 +73,18 @@ const { title } = Astro.props;
         .btn-danger { background: var(--danger); color: #fff; }
         .btn-sm { padding: 6px 12px; font-size: 13px; }
         .toolbar { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
-    </style>
-</head>
-<body>
-    <nav>
-        <ul>
-            <li><a href="/" aria-current={Astro.url.pathname === '/' ? 'page' : undefined}>群消息</a></li>
-            <li><a href="/images" aria-current={Astro.url.pathname === '/images' ? 'page' : undefined}>图片管理</a></li>
-            <li><a href="/memories" aria-current={Astro.url.pathname === '/memories' ? 'page' : undefined}>记忆管理</a></li>
-        </ul>
-    </nav>
-    <main>
-        <slot />
-    </main>
-</body>
+        </style>
+    </head>
+    <body>
+        <nav>
+            <ul>
+                <li><a href="/" aria-current={Astro.url.pathname === '/' ? 'page' : undefined}>群消息</a></li>
+                <li><a href="/images" aria-current={Astro.url.pathname === '/images' ? 'page' : undefined}>图片管理</a></li>
+                <li><a href="/memories" aria-current={Astro.url.pathname === '/memories' ? 'page' : undefined}>记忆管理</a></li>
+            </ul>
+        </nav>
+        <main>
+            <slot />
+        </main>
+    </body>
 </html>

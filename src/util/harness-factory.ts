@@ -1,28 +1,26 @@
-import {mkdirSync, existsSync, renameSync, writeFileSync} from 'node:fs';
-import {resolve, dirname} from 'node:path';
+import {existsSync, mkdirSync, renameSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {resolve} from 'node:path';
 import {Logger} from '@lib/util/logger';
 import {SessionManager, type AgentSession, type SessionHeader} from '@earendil-works/pi-coding-agent';
 import type {Usage} from '@earendil-works/pi-ai';
-import {setHarnessMetadata, type JsonlSessionMetadata, type Db} from '~/db';
-import type {AppConfig} from '~/config';
+import {
+    getHarnessMetadata,
+    setHarnessMetadata,
+    type JsonlSessionMetadata,
+    type Db
+} from '~/db';
 
 const logger = new Logger();
-const sessionCache = new Map<number, SessionManager>();
+const sessionCache = new Map<number, GroupSessionResult>();
 const agentSessions = new Set<AgentSession>();
 
-function fixedSessionPath (groupId: number): string {
-    return resolve(process.cwd(), 'data/harness', `group-${groupId}.jsonl`);
+function sessionDirectory (): string {
+    return resolve(process.cwd(), 'data/harness');
 }
 
-function buildHeader (groupId: number): string {
-    const header = {
-        type: 'session',
-        version: 3,
-        id: `group-${groupId}`,
-        timestamp: new Date().toISOString(),
-        cwd: process.cwd()
-    };
-    return `${JSON.stringify(header)}\n`;
+function legacySessionPath (groupId: number): string {
+    return resolve(sessionDirectory(), `group-${groupId}.jsonl`);
 }
 
 function metadataFromHeader (header: SessionHeader, path: string): JsonlSessionMetadata {
@@ -62,66 +60,90 @@ export interface GroupSessionResult {
     isNew: boolean;
 }
 
+function metadataForSession (sessionManager: SessionManager): JsonlSessionMetadata {
+    const header = sessionManager.getHeader();
+    const path = sessionManager.getSessionFile();
+    if (!header || !path) {
+        throw new Error('persistent session must have a header and file path');
+    }
+    return metadataFromHeader(header, path);
+}
+
+/** 创建独立的新会话文件，但暂不替换该群正在使用的会话 */
+export function createGroupSession (groupId: number): GroupSessionResult {
+    mkdirSync(sessionDirectory(), {recursive: true});
+    const sessionManager = SessionManager.create(process.cwd(), sessionDirectory(), {
+        id: `group-${groupId}-${randomUUID()}`
+    });
+    return {sessionManager, metadata: metadataForSession(sessionManager), isNew: true};
+}
+
+/** 将给定会话记录为该群的活动会话 */
+export async function activateGroupSession (
+    db: Db, groupId: number, result: GroupSessionResult
+): Promise<void> {
+    await setHarnessMetadata(db, groupId, result.metadata);
+    sessionCache.set(groupId, {...result, isNew: false});
+}
+
 /**
- * 获取该群的持久化会话管理器。
- * 会话文件固定在 data/harness/group-{id}.jsonl，旧版本写入的同一格式文件可直接打开；
- * KV Store 中的元数据仅用于记录会话身份，实际内容以 JSONL 文件为准。
+ * 打开数据库元数据指向的活动会话；元数据不存在时兼容旧版固定路径。
+ * 文件已被删除或无法打开时创建新会话，由调用方从数据库恢复群总体记忆。
  */
 export async function getOrCreateGroupSession (
     groupId: number,
-    _config: AppConfig,
     db: Db
 ): Promise<GroupSessionResult> {
     const cached = sessionCache.get(groupId);
     if (cached) {
-        const header = cached.getHeader();
-        if (!header) {
-            throw new Error(`session for group ${groupId} has no header`);
-        }
-        logger.debug(`[HarnessFactory] [${groupId}] using cached session ${header.id}`);
-        return {sessionManager: cached, metadata: metadataFromHeader(header, fixedSessionPath(groupId)), isNew: false};
+        logger.debug(`[HarnessFactory] [${groupId}] using cached session ${cached.metadata.id}`);
+        return {...cached, isNew: false};
     }
 
-    const fixedPath = fixedSessionPath(groupId);
-    mkdirSync(dirname(fixedPath), {recursive: true});
+    mkdirSync(sessionDirectory(), {recursive: true});
+    const savedMetadata = await getHarnessMetadata(db, groupId);
+    const candidates = savedMetadata ? [savedMetadata.path] : [legacySessionPath(groupId)];
 
-    if (existsSync(fixedPath)) {
+    for (const path of candidates) {
+        if (!existsSync(path)) continue;
         let opened: SessionManager | undefined;
         try {
-            opened = SessionManager.open(fixedPath);
+            opened = SessionManager.open(path);
         } catch (err) {
             logger.warn(
-                `[HarnessFactory] [${groupId}] invalid session file at ${fixedPath}, backing up:`,
+                `[HarnessFactory] [${groupId}] invalid session file at ${path}, backing up:`,
                 err instanceof Error ? err.message : err);
         }
         const header = opened?.getHeader();
         if (opened && header) {
             normalizeAssistantUsage(opened);
-            const metadata = metadataFromHeader(header, fixedPath);
-            await setHarnessMetadata(db, groupId, metadata);
-            sessionCache.set(groupId, opened);
-            logger.info(`[HarnessFactory] [${groupId}] opened existing session ${metadata.id}`);
-            return {sessionManager: opened, metadata, isNew: false};
+            const result: GroupSessionResult = {
+                sessionManager: opened,
+                metadata: metadataFromHeader(header, path),
+                isNew: false
+            };
+            await activateGroupSession(db, groupId, result);
+            logger.info(`[HarnessFactory] [${groupId}] opened existing session ${result.metadata.id}`);
+            return result;
         }
-        renameSync(fixedPath, `${fixedPath}.bak.${Date.now()}`);
+        renameSync(path, `${path}.bak.${Date.now()}`);
     }
 
-    writeFileSync(fixedPath, buildHeader(groupId), 'utf-8');
-    const sessionManager = SessionManager.open(fixedPath);
-    const header = sessionManager.getHeader();
-    if (!header) {
-        throw new Error(`failed to initialize session file at ${fixedPath}`);
-    }
-    const metadata = metadataFromHeader(header, fixedPath);
-    await setHarnessMetadata(db, groupId, metadata);
-    sessionCache.set(groupId, sessionManager);
-    logger.info(`[HarnessFactory] [${groupId}] created new session ${metadata.id}`);
-    return {sessionManager, metadata, isNew: true};
+    const result = createGroupSession(groupId);
+    await activateGroupSession(db, groupId, result);
+    logger.info(`[HarnessFactory] [${groupId}] created new session ${result.metadata.id}`);
+    return result;
 }
 
 /** 登记由会话管理器创建的 AgentSession，供关闭时统一释放 */
 export function registerAgentSession (session: AgentSession): void {
     agentSessions.add(session);
+}
+
+/** 立即释放已被替换的 AgentSession */
+export function disposeAgentSession (session: AgentSession): void {
+    session.dispose();
+    agentSessions.delete(session);
 }
 
 export async function closeAllSessions (): Promise<void> {

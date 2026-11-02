@@ -5,9 +5,9 @@ import {
     initCompactButton,
     initImportControls
 } from './messages-actions';
-import { initDetailModal, openDetailModal } from './messages-detail-modal';
+import {initDetailModal, openDetailModal} from './messages-detail-modal';
 
-/** 群消息页客户端入口：导入、compact、清空、批量删除与详情弹窗 */
+/** 群消息页客户端入口：导入、压缩、清空、批量删除与详情弹窗 */
 export function initMessagesPage (): void {
     const groupId = readGroupId();
 

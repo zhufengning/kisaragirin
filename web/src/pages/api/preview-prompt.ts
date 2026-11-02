@@ -1,34 +1,34 @@
-import type { APIRoute } from 'astro';
-import { db, schema, rowToStoredMessage } from '@lib/db';
-import { eq, desc } from 'drizzle-orm';
-import type { StoredMessage } from '~/message-format';
-import type { ReplyTask } from '~/util/reply-task';
-import type { GroupReplyManager } from '~/util/reply-manager';
+import type {APIRoute} from 'astro';
+import {db, schema, rowToStoredMessage} from '@lib/db';
+import {eq, desc} from 'drizzle-orm';
+import type {StoredMessage} from '~/message-format';
+import type {ReplyTask} from '~/util/reply-task';
+import type {GroupReplyManager} from '~/util/reply-manager';
 
-function getReplyManagers(): Map<number, GroupReplyManager> {
+function getReplyManagers (): Map<number, GroupReplyManager> {
     const m = globalThis.__replyManagers__;
     if (!m) throw new Error('ReplyManagers not initialized');
     return m;
 }
 
-export const GET: APIRoute = async ({ url }) => {
+export const GET: APIRoute = async ({url}) => {
     try {
         const groupId = parseInt(url.searchParams.get('groupId') || '', 10);
         const type = url.searchParams.get('type') || 'silence';
 
         if (!groupId || isNaN(groupId)) {
-            return new Response(JSON.stringify({ error: 'groupId is required' }), {
+            return new Response(JSON.stringify({error: 'groupId is required'}), {
                 status: 400,
-                headers: { 'Content-Type': 'application/json' },
+                headers: {'Content-Type': 'application/json'}
             });
         }
 
         const replyManagers = getReplyManagers();
         const manager = replyManagers.get(groupId);
         if (!manager) {
-            return new Response(JSON.stringify({ error: 'Group not found or not whitelisted' }), {
+            return new Response(JSON.stringify({error: 'Group not found or not whitelisted'}), {
                 status: 404,
-                headers: { 'Content-Type': 'application/json' },
+                headers: {'Content-Type': 'application/json'}
             });
         }
 
@@ -40,9 +40,9 @@ export const GET: APIRoute = async ({ url }) => {
             .limit(1);
 
         if (latestRows.length === 0) {
-            return new Response(JSON.stringify({ error: 'No messages in this group' }), {
+            return new Response(JSON.stringify({error: 'No messages in this group'}), {
                 status: 404,
-                headers: { 'Content-Type': 'application/json' },
+                headers: {'Content-Type': 'application/json'}
             });
         }
 
@@ -54,7 +54,7 @@ export const GET: APIRoute = async ({ url }) => {
             triggerDbId: row.id,
             triggerMessageId: row.messageId,
             triggerMessage,
-            lastTriggerId: manager.getLastTriggerId(),
+            lastTriggerId: manager.getLastTriggerId()
         };
 
         const agent = manager.getAgent();
@@ -62,13 +62,13 @@ export const GET: APIRoute = async ({ url }) => {
 
         return new Response(JSON.stringify({systemPrompt, userMessages}), {
             status: 200,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     } catch (err: unknown) {
         console.error('[Preview API] GET /api/preview-prompt error:', err);
-        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
+        return new Response(JSON.stringify({error: err instanceof Error ? err.message : String(err)}), {
             status: 500,
-            headers: { 'Content-Type': 'application/json' },
+            headers: {'Content-Type': 'application/json'}
         });
     }
 };

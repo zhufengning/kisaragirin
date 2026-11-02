@@ -11,7 +11,7 @@
 - 按群定时任务触发（crontab-like，支持触发前预研究）
 - 多轮回复（回合链：消息轮 + 可链式的深度研究轮，轮数上限可配置；模型可返回空消息数组主动选择不回复）
 - AgentSession tool loop（`reply` 工具结束对话，支持消息数组与可选引用，`search_memory` 可在 loop 中多次调用）
-- 手动 Compact（通过 `AgentSession.compact()` 触发会话压缩）
+- 群总体记忆压缩（每日04:00、上下文比例或手动触发；更新数据库后更换 session 并在顶部插入总体记忆）
 - 特殊消息类型（前情提要、系统消息）
 - KV Store（持久化群元数据）
 - 按群专属提示词（在 system prompt 人设之后注入群专属指令）
@@ -60,7 +60,7 @@ src/
     agent-retry.ts      -- Agent 调用通用指数退避重试封装
     credential-store.ts -- SDK `InMemoryCredentialStore` 实例与凭据初始化
     models-factory.ts   -- 模型注册与 assignment 解析（不读取生产配置）
-    harness-factory.ts  -- `SessionManager` 缓存与按群复用（`data/harness/group-{id}.jsonl`）
+    harness-factory.ts  -- `SessionManager` 缓存、活动会话元数据与独立会话文件创建（`data/harness/`）
     reply-tool.ts       -- 回复工具（`reply`），由 AgentSession 调用
     image-tool.ts       -- 图片追问工具（`ask_image`），按图片 id 向 vision 模型提问
     reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
@@ -90,7 +90,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       format-date.ts       -- 统一的时间展示格式
       messages-query.ts    -- 群消息页服务端数据加载与 URL 构建
       messages-render.ts   -- 群消息页渲染辅助（预览文本、发送者单元格、类型徽标）
-      messages-actions.ts  -- 群消息页操作（导入、compact、清空、单条/批量删除）
+      messages-actions.ts  -- 群消息页操作（导入、总体记忆压缩、清空、单条/批量删除）
       messages-detail-modal.ts -- 群消息详情弹窗
       messages-client.ts   -- 群消息页客户端入口
       memories-query.ts    -- 记忆管理页服务端数据加载与 URL 构建
@@ -109,6 +109,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       index.astro     -- 群列表
       group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗[带图片的消息同时展示图片描述，含 reply/forward 嵌套图片] + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
+      group/[id]/memory.astro  -- 群总体记忆查看与删除
       group/[id]/harness.astro -- AgentSession 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
       memories.astro         -- Graphiti 记忆管理（浏览 + 语义搜索 + 删除 + 实体图谱可视化：?view=graph 用 cytoscape.js 渲染实体事实网络，节点点击查看详情并可展开 1-hop 邻居，边点击查看事实并删除）
@@ -117,7 +118,8 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         memories/...         -- Graphiti REST API 封装（search / get_edges / get_edge / delete_edge / graph 子图 / graph 邻居）
         messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
-        compact.ts           -- 手动触发群消息 compact API
+        compact.ts           -- 手动触发群总体记忆压缩 API（通过 GroupReplyManager 进入群队列）
+        group/[id]/memory.ts -- 删除群总体记忆并更换会话 API
         harness.ts           -- AgentSession 会话条目 API（调用 agent.getBranch）
         group/[id]/import.ts -- 按日期范围导入历史消息 API（调用 agent.importMessagesByDateRange）
 
@@ -152,7 +154,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentSession`
-- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 获取/创建持久化 `SessionManager`（固定文件 `data/harness/group-{id}.jsonl`，可直接打开旧版运行时写入的 version 3 会话文件）；新 session 不再自动从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息），历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
+- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 按数据库元数据获取/创建持久化 `SessionManager`；活动文件位于 `data/harness/`，每次压缩使用独立文件，旧版固定路径 `group-{id}.jsonl` 可直接打开。全新 session 不从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息）；若数据库已有总体记忆，则先将会话顶部插入总体记忆，再推进边界。其他历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
 - `models-factory.ts` 负责自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析；`config.ts` 创建唯一的 `ModelRuntime` 单例（`modelsPath: null`、`refreshOnCreate: false`，启动时等待凭据写入完成）并注入 `createApplication`
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
@@ -162,21 +164,21 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 
 - `ReplyAgent.runMessageTurn(task)`（每个任务的第一个回合）触发回复时，以 `task.lastTriggerId` 为界从数据库读取该群所有新消息（排除 bot 普通聊天消息——它们已通过 `appendBotMessage` 注入会话；`system`/`compact` 消息保留），通过 `reply-prompt.ts` 的 `buildUserPromptArray` 打包为单条 user message 发送给 `AgentSession`；后续深度研究轮由 `ReplyAgent.runResearchTurn(task, topic, boundary)` 执行（先由 `deep-research.ts` 研究并写系统消息，再读入期间新消息，以 `prompts.deepResearchTurnGuidance` 引导语 prompt），两个回合共用 `promptAndCollect`（`sessionManager.appendMessage` + `session.prompt` + reminder + 结果解析）
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改会话状态
-- `ReplyAgent.triggerCompact()` 提供手动 compact 入口，bot 和 webui 共用
+- `ReplyAgent.triggerCompact()` 整理并保存群总体记忆，随后创建新会话；`GroupReplyManager.triggerCompact()` 将定时与手动操作纳入单群队列
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
 - 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `image-tool.ts` / `desc-queue.ts`）
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在会话中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
 - webui 的 Prompt 预览页面（`/group/{id}/preview`）通过 API 调用 `agent.buildPreviewPrompt()`，结果与 bot 实际发送给模型的 user messages 一致
-- webui 的 compact API（`/api/compact`）调用 `agent.triggerCompact()` 强制 compact
+- webui 的 compact API（`/api/compact`）调用 `manager.triggerCompact()`；总体记忆 API（`/api/group/{id}/memory`）支持删除并立即更换为不含总体记忆的新会话
 - webui 的导入 API（`/api/group/{id}/import`）调用 `agent.importMessagesByDateRange(startTime, endTime)`，按本地时区当天起止时间戳查询消息写入会话，忽略所有 compact 消息
 
 ### Agent Loop 与记忆机制
 
 - **回复 Agent** (`reply-agent.ts`) 使用 `@earendil-works/pi-coding-agent` 的 `AgentSession`（`createAgentSession()` 创建），会话历史由 `SessionManager` 管理
 - `AgentSession` 自动处理 tool loop：LLM 调用工具 → 执行 → 结果回传 → 继续对话，支持多轮工具调用
-- **会话运行策略**：`SettingsManager.inMemory()` 关闭自动 retry 与自动 compact（`retry.enabled: false`、`compaction.enabled: false`）、缓存预热为 `cacheWarming: 'off'`；模型回退与 reminder 次数仍由 `promptWithReminders()` 控制，手动 compact 仍可用
+- **会话运行策略**：`SettingsManager.inMemory()` 关闭自动 retry 与 SDK 自动 compact（`retry.enabled: false`、`compaction.enabled: false`）、缓存预热为 `cacheWarming: 'off'`；模型回退与 reminder 次数仍由 `promptWithReminders()` 控制，总体记忆压缩由 `ReplyAgent` 自行执行
 - **system prompt 与工具**：通过内联 extension 的 `before_agent_start` 返回 `buildSystemPrompt()` 生成的文本（`DefaultResourceLoader` 不加载项目 extensions/skills/prompt templates/themes/上下文文件）；`createAgentSession()` 使用 `noTools: 'builtin'` 仅保留自定义工具，`reply` 与 `search_memory` 以 `ToolDefinition` 传入 `customTools`；`session.prompt()` 使用 `expandPromptTemplates: false`
 - **assistant 结果采集**：`AgentSession.prompt()` 返回 `Promise<void>`，本轮最后一条 assistant 消息由 `message_end` 事件记录，`promptWithReminders()` 据此判断 `stopReason`、`errorMessage` 与 `usage`
 - **Graphiti 工具** (`graphiti-tool.ts`) 注册为 `ToolDefinition`，仅包含 `search_memory`（agent 不主动添加记忆；episode 由 `graphiti-episode.ts` 的 `addMessageEpisode` 和 `addMergedMessagesEpisode` 自动创建：触发回复时（合并消息，内容与模型看到的 user message 一致）、bot 回复发送后、深度研究结果产生时）
@@ -205,12 +207,14 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - 若任务配置 `deep_research_topic`，队列执行时会通过 `ReplyTask.preResearchTopic` 传递给 `ReplyAgent.runMessageTurn`，将预研究开始/结束写入系统消息；随后继续走普通消息轮回复和可能的后续深度研究轮流程
 - 定时任务不会自动添加 reply segment，失败回退行为与闲时触发一致，静默失败
 
-### Compact 机制
+### 总体记忆压缩机制
 
-- `ReplyAgent.triggerCompact()` 委托给 `AgentSession.compact()`，由会话内部管理上下文压缩
-- Compact 摘要以 `special_type='compact'` 的消息插入数据库，渲染为 `**前情提要**: (内容)`
-- 手动 compact 可通过 webui 的 `/api/compact` 触发
-- 会话文件为 `data/harness/` 下的 version 3 JSONL（`SessionManager` 读写），`kv_store` 表持久化 `lastTriggerId`（数据库自增 `id`）和会话元数据，重启后不丢失上下文边界；旧版运行时写入的 `active_tools_change` 等条目仍可读取并在 Web 日志中展示，不进入模型上下文
+- 每日04:00由 `ScheduledTaskManager` 为每个白名单群注册压缩任务；`GroupReplyManager` 在每个回复任务前后调用 `compactIfContextNeeded()`，`session.getContextUsage().percent` 达到 `input.compact_context_ratio`（默认0.8，0表示禁用）时触发。手动与定时压缩、删除总体记忆均进入单群 FIFO 队列
+- `ReplyAgent.triggerCompact()` 将当前完整会话序列化后交给 `agent_harness` 模型；提示词要求输出群总体印象、群内重要事件、每个需要持续了解的群友的印象、仍未结束的话题。原始聊天记录由长期记忆供查询，除未结束话题确有需要外不摘录原文；旧重要事件与不活跃群友印象可酌情删除
+- `input.compact_max_chars` 设置字符上限（默认3000）。超出时将上一版结果与缩减提示追加到压缩对话，持续请求模型缩减至满足上限；API 错误按模型回退链处理
+- 总体记忆保存在 `kv_store` 的 `group:{groupId}:overallMemory` 项。生成成功后通过 `replaceSession()` 创建独立会话文件，以 `prompts.groupMemoryContext()` 包装总体记忆并作为第一条 user 消息；旧会话文件保留。活动会话路径与 id 写入元数据，文件被删除后重启会根据数据库总体记忆创建并初始化新会话
+- 手动压缩可通过 webui 的 `/api/compact` 触发；`/group/{id}/memory` 查看总体记忆，删除操作清理数据库并立即更换为空会话
+- 会话文件为 version 3 JSONL（`SessionManager` 读写），`kv_store` 表还持久化 `lastTriggerId`（数据库自增消息 `id`）和会话元数据，重启后不丢失上下文边界；旧版运行时写入的 `active_tools_change` 等条目仍可读取并在 Web 日志中展示，不进入模型上下文
 
 ### AI 配置架构
 
@@ -221,6 +225,8 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `input.vision_max_size_bytes` / `input.vision_max_frames` / `input.vision_initial_quality` / `input.vision_max_long_edge` / `input.vision_max_total_pixels`：发送给 vision 模型的图片预处理参数，分别为压缩后的字节上限（默认 6MB）、动图最多抽取的帧数（默认 5）、动图抽帧与尺寸缩放时使用的 jpeg 质量（默认 80）、长边像素上限与总像素上限（超过则按比例缩小，0（默认）表示不限制）
 - `input.silence_recent_window` / `input.silence_recent_bot_threshold` / `input.silence_recent_bot_multiplier`：闲时触发前检查最近 `silence_recent_window` 条消息，其中 bot 消息数达到 `silence_recent_bot_threshold` 时闲时等待时间按 `silence_recent_bot_multiplier` 倍延长（默认 1，不放大）；每次有新消息都会重新计算等待时间；window 或 threshold 为 0（默认）表示禁用该检查
 - `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
+- `input.compact_context_ratio`：上下文占用比例触发总体记忆压缩，默认 0.8，0 表示禁用比例触发；每日04:00压缩不受其影响
+- `input.compact_max_chars`：群总体记忆最大字符数，默认 3000，超出时持续要求模型缩减
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用
@@ -276,7 +282,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/util/memory-context.ts` — 记忆关键词生成、Graphiti 检索与已注入记忆去重
 - `src/util/deep-research.ts` — 深度研究执行（模型路径 / pi rpc 路径）与开始/结果/结束系统消息写入
 - `src/util/pi-rpc-client.ts` — pi CLI rpc 模式子进程客户端（严格 JSONL 帧、prompt 提交、`agent_settled` 等待、最后一条 assistant 文本获取）
-- `src/util/harness-factory.ts` — `SessionManager` 缓存、按群会话打开/创建与统一释放
+- `src/util/harness-factory.ts` — `SessionManager` 缓存、活动会话打开、独立会话创建/切换与统一释放
 - `src/util/models-factory.ts` — 自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析
 - `src/util/credential-store.ts` — SDK `InMemoryCredentialStore` 实例与启动时凭据写入
 - `src/util/reply-tool.ts` — 回复工具（`reply`，`ToolDefinition`）

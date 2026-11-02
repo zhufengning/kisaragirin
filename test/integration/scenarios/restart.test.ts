@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {join} from 'node:path';
 import {runScenario} from '../runner/scenario-runner';
 import {atSegment, lastUserText, nowSeconds, textSegment} from '../runner/messages';
 import {sleep} from '../runner/wait-for';
@@ -35,7 +34,6 @@ test('进程重启后恢复会话与触发边界，不重复回复旧消息', {t
 
         const metadataBefore = env.db.harnessMetadata(1001);
         assert.ok(metadataBefore);
-        assert.equal(metadataBefore.id, 'group-1001');
 
         await env.stopApp();
         const requestCountAfterStop = env.openAI.requestCount();
@@ -69,8 +67,7 @@ test('进程重启后恢复会话与触发边界，不重复回复旧消息', {t
         assert.doesNotMatch(lastText, /第一次消息/);
         assert.match(secondRequest.serialized, /第一次回复/);
 
-        const sessionPath = join(env.dir, 'data', 'harness', 'group-1001.jsonl');
-        const sessionContent = readFileSync(sessionPath, 'utf-8');
+        const sessionContent = readFileSync(metadataAfter.path, 'utf-8');
         assert.match(sessionContent, /第一次回复/);
         assert.match(sessionContent, /第二次回复/);
 

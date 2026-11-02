@@ -1,6 +1,6 @@
 ---
 import Layout from '@layouts/Layout.astro';
-import { formatDateTime } from '@lib/format-date';
+import {formatDateTime} from '@lib/format-date';
 import {
     buildMemoriesPageUrl,
     buildMemoriesViewSwitchUrl,
@@ -8,11 +8,11 @@ import {
     parseMemoriesParams,
     resolveMemoriesPostRedirect
 } from '@lib/memories-query';
-import type { GraphitiEdge } from '~/util/graphiti-client';
+import type {GraphitiEdge} from '~/util/graphiti-client';
 import '../styles/memories.css';
 
 const params = parseMemoriesParams(Astro.url);
-const { allGroups, groupId, searchQuery, mode, view, graphEdgeLimit, currentPage } = params;
+const {allGroups, groupId, searchQuery, mode, view, graphEdgeLimit, currentPage} = params;
 
 // POST 处理（搜索或列出）
 if (Astro.request.method === 'POST') {
@@ -33,11 +33,11 @@ if (view !== 'graph') {
     error = loaded.error;
 }
 
-function pageUrl(page: number): string {
+function pageUrl (page: number): string {
     return buildMemoriesPageUrl(Astro.url, page);
 }
 
-function viewSwitchUrl(targetView: 'list' | 'graph'): string {
+function viewSwitchUrl (targetView: 'list' | 'graph'): string {
     return buildMemoriesViewSwitchUrl(Astro.url, targetView);
 }
 ---

@@ -18,6 +18,9 @@ export interface TestConfigOverrides {
     silenceRecentBotMultiplier?: number;
     maxToolCallRounds?: number;
     maxDeepResearchRounds?: number;
+    compactContextRatio?: number;
+    compactMaxChars?: number;
+    contextWindow?: number;
     visionConcurrency?: number;
     visionMaxFrames?: number;
     visionThinkingLevel?: ThinkingLevel;
@@ -40,7 +43,7 @@ export interface TestConfigInput extends TestConfigOverrides {
     logFile: string;
 }
 
-function testModel (id: string, baseUrl: string): Model<'openai-completions'> {
+function testModel (id: string, baseUrl: string, contextWindow: number): Model<'openai-completions'> {
     return {
         id,
         name: id,
@@ -50,7 +53,7 @@ function testModel (id: string, baseUrl: string): Model<'openai-completions'> {
         reasoning: false,
         input: ['text', 'image'],
         cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
-        contextWindow: 200000,
+        contextWindow,
         maxTokens: 8192
     };
 }
@@ -72,7 +75,10 @@ export function createTestConfig (input: TestConfigInput): AppConfig {
 
     const models: Record<string, ModelEntry> = {};
     for (const [key, id] of Object.entries(modelKeyToId)) {
-        models[key] = {model: testModel(id, input.openAiBaseUrl), apiKey: 'test-api-key'};
+        models[key] = {
+            model: testModel(id, input.openAiBaseUrl, input.contextWindow ?? 200000),
+            apiKey: 'test-api-key'
+        };
     }
 
     const groupCustomPrompts: Record<number, string> = {};
@@ -92,6 +98,8 @@ export function createTestConfig (input: TestConfigInput): AppConfig {
         silence_recent_bot_multiplier: input.silenceRecentBotMultiplier ?? 1,
         max_tool_call_rounds: input.maxToolCallRounds ?? 5,
         max_deep_research_rounds: input.maxDeepResearchRounds ?? 3,
+        compact_context_ratio: input.compactContextRatio ?? 0.8,
+        compact_max_chars: input.compactMaxChars ?? 3000,
         vision_concurrency: input.visionConcurrency ?? 2,
         vision_max_frames: input.visionMaxFrames ?? 5,
         vision_thinking_level: input.visionThinkingLevel ?? 'off',

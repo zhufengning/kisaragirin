@@ -98,6 +98,10 @@ export class DatabaseInspector {
         return raw === undefined ? undefined : parseInt(raw, 10);
     }
 
+    overallMemory (groupId: number): string | undefined {
+        return this.kvValue(`group:${groupId}:overallMemory`);
+    }
+
     harnessMetadata (groupId: number): {id: string; path: string} | undefined {
         const raw = this.kvValue(`harness:group:${groupId}:metadata`);
         return raw === undefined ? undefined : JSON.parse(raw) as {id: string; path: string};

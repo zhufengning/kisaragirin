@@ -62,6 +62,43 @@ export async function setGroupLastTriggerId (db: Db, groupId: number, value: num
     await kvSet(db, lastTriggerKey(groupId), String(value));
 }
 
+export interface GroupOverallMemoryRecord {
+    content: string;
+    updatedAt: Date | null;
+}
+
+function groupOverallMemoryKey (groupId: number): string {
+    return `group:${groupId}:overallMemory`;
+}
+
+export async function getGroupOverallMemoryRecord (
+    db: Db, groupId: number
+): Promise<GroupOverallMemoryRecord | null> {
+    const rows = await db.select({
+        content: schema.kvStore.value,
+        updatedAt: schema.kvStore.updatedAt
+    })
+        .from(schema.kvStore)
+        .where(eq(schema.kvStore.key, groupOverallMemoryKey(groupId)))
+        .limit(1);
+    return rows[0] ?? null;
+}
+
+export async function getGroupOverallMemory (db: Db, groupId: number): Promise<string | null> {
+    const record = await getGroupOverallMemoryRecord(db, groupId);
+    return record?.content ?? null;
+}
+
+export async function setGroupOverallMemory (
+    db: Db, groupId: number, content: string
+): Promise<void> {
+    await kvSet(db, groupOverallMemoryKey(groupId), content);
+}
+
+export async function deleteGroupOverallMemory (db: Db, groupId: number): Promise<void> {
+    await kvDelete(db, groupOverallMemoryKey(groupId));
+}
+
 export async function getHarnessMetadata (
     db: Db, groupId: number
 ): Promise<JsonlSessionMetadata | null> {

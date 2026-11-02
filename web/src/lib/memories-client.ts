@@ -1,4 +1,4 @@
-import { MemoriesGraphView } from './memories-graph';
+import {MemoriesGraphView} from './memories-graph';
 
 /** 记忆管理页客户端入口：列表视图删除、图谱视图启动与群组/边数切换 */
 export function initMemoriesPage (): void {
@@ -17,7 +17,7 @@ function initDeleteAction (): void {
         if (!uuid) return;
         if (!confirm('确定删除这条记忆？')) return;
 
-        fetch(`/api/memories/${uuid}`, { method: 'DELETE', credentials: 'same-origin' })
+        fetch(`/api/memories/${uuid}`, {method: 'DELETE', credentials: 'same-origin'})
             .then(res => {
                 if (!res.ok) throw new Error();
                 alert('删除成功！');
@@ -51,6 +51,6 @@ function initGraphView (): void {
             `&limit=${encodeURIComponent(limitSelect.value)}`;
     });
 
-    const view = new MemoriesGraphView({ canvas, groupId, edgeLimit, statusEl, panelEl });
+    const view = new MemoriesGraphView({canvas, groupId, edgeLimit, statusEl, panelEl});
     void view.load();
 }

@@ -5,6 +5,42 @@ module.exports = {
     env: {
         node: true
     },
+    overrides: [
+        {
+            files: ['web/src/**/*.ts'],
+            env: {browser: true},
+            rules: {
+                'no-alert': 0
+            }
+        },
+        {
+            files: ['**/*.astro'],
+            parser: 'astro-eslint-parser',
+            plugins: ['astro'],
+            env: {
+                node: true,
+                browser: true,
+                'astro/astro': true,
+                es2020: true
+            },
+            parserOptions: {
+                parser: '@typescript-eslint/parser',
+                extraFileExtensions: ['.astro'],
+                sourceType: 'module'
+            },
+            rules: {
+                'no-alert': 0,
+                'astro/no-conflict-set-directives': 2,
+                'astro/no-unused-define-vars-in-style': 2
+            }
+        },
+        {
+            files: ['**/*.astro/*.js', '**/*.astro/*.ts'],
+            env: {browser: true, es2020: true},
+            parserOptions: {sourceType: 'module'},
+            rules: {'no-alert': 0}
+        }
+    ],
     rules: {
         // Best practices
         'array-callback-return': [2],

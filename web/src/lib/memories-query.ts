@@ -1,5 +1,5 @@
-import { config } from '@/config';
-import type { GraphitiEdge } from '~/util/graphiti-client';
+import {config} from '@/config';
+import type {GraphitiEdge} from '~/util/graphiti-client';
 
 export const MEMORIES_PAGE_SIZE = 20;
 export const GRAPH_EDGE_LIMIT_DEFAULT = 200;
@@ -41,7 +41,7 @@ export function parseMemoriesParams (url: URL): MemoriesPageParams {
         mode = 'list';
     }
 
-    return { allGroups, defaultGroupId, groupId, searchQuery, mode, view, graphEdgeLimit, currentPage };
+    return {allGroups, defaultGroupId, groupId, searchQuery, mode, view, graphEdgeLimit, currentPage};
 }
 
 /**
@@ -88,7 +88,7 @@ export async function loadMemoriesEdges (
     groupId: string,
     currentPage: number,
 ): Promise<MemoriesEdgesResult> {
-    const result: MemoriesEdgesResult = { edges: [], totalCount: 0, totalPages: 1, error: '' };
+    const result: MemoriesEdgesResult = {edges: [], totalCount: 0, totalPages: 1, error: ''};
     if (mode === 'idle') return result;
 
     try {

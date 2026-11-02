@@ -1,8 +1,8 @@
-import { defineMiddleware } from 'astro:middleware';
+import {defineMiddleware} from 'astro:middleware';
 
 const USERNAME = process.env.WEB_USERNAME ?? '';
 const PASSWORD = process.env.WEB_PASSWORD ?? '';
-const EXPECTED = 'Basic ' + Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
+const EXPECTED = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64')}`;
 
 export const onRequest = defineMiddleware(async (context, next) => {
     const url = new URL(context.request.url);
@@ -13,7 +13,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
     if (auth !== EXPECTED) {
         return new Response('Unauthorized', {
             status: 401,
-            headers: { 'WWW-Authenticate': 'Basic realm="Web Panel"' },
+            headers: {'WWW-Authenticate': 'Basic realm="Web Panel"'}
         });
     }
     return next();
