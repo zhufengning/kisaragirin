@@ -36,7 +36,7 @@ function withTimeout<T> (
     promise: Promise<T>,
     ms: number,
     onTimeout: () => void | Promise<void>,
-    message: string,
+    message: string
 ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -356,10 +356,10 @@ export class DescQueue {
                                     agent.waitForIdle(),
                                     this.abortSettleGraceMs,
                                     () => {},
-                                    `describe abort settle timed out after ${this.abortSettleGraceMs}ms`,
+                                    `describe abort settle timed out after ${this.abortSettleGraceMs}ms`
                                 );
                             },
-                            `describe timed out after ${this.describeTimeoutMs}ms`,
+                            `describe timed out after ${this.describeTimeoutMs}ms`
                         );
                         this.logger.debug(`[DescQueue] agent idle`);
                     },
@@ -368,10 +368,10 @@ export class DescQueue {
                         onRetry: (attempt, maxRetries, delayMs, err) => {
                             this.logger.warn(
                                 `[DescQueue] Retry ${attempt}/${maxRetries} after ${delayMs}ms:`,
-                                err instanceof Error ? err.message : err,
+                                err instanceof Error ? err.message : err
                             );
                         }
-                    },
+                    }
                 );
             } catch (err) {
                 this.logger.error(
@@ -391,7 +391,7 @@ export class DescQueue {
                 `stopReason=${lastAssistant?.stopReason}`);
             if (lastAssistant && lastAssistant.stopReason !== 'error') {
                 const text = lastAssistant.content
-                    .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
+                    .filter((c): c is {type: 'text'; text: string} => c.type === 'text')
                     .map(c => c.text)
                     .join('')
                     .trim();

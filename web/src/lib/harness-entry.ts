@@ -81,7 +81,7 @@ function appendCodeBlock (
     parent: HTMLElement,
     label: string,
     value: unknown,
-    opts: { variant?: string } = {}
+    opts: {variant?: string} = {}
 ): void {
     const wrap = document.createElement('div');
     wrap.className = 'code-block';
@@ -111,38 +111,38 @@ function escapeHtml (s: unknown): string {
 
 function renderContentBlock (parent: HTMLElement, block: ContentBlock): void {
     switch (block.type) {
-    case 'text':
-        appendText(parent, block.text);
-        break;
-    case 'toolCall': {
-        const callWrap = document.createElement('div');
-        callWrap.className = 'tool-call';
-        const header = document.createElement('div');
-        header.className = 'tool-call-header';
-        header.innerHTML = `<span class="tool-call-icon">⚙</span><span>tool-call</span><code>${escapeHtml(block.name || 'unknown')}</code>`;
-        callWrap.appendChild(header);
-        appendCodeBlock(callWrap, 'arguments', block.arguments || {}, {variant: 'nested'});
-        parent.appendChild(callWrap);
-        break;
-    }
-    case 'image': {
-        const img = document.createElement('div');
-        img.className = 'block-meta';
-        img.textContent = `[image: ${block.mimeType || 'unknown'}]`;
-        parent.appendChild(img);
-        break;
-    }
-    case 'thinking':
-        appendCodeBlock(parent, 'thinking', block.thinking || '', {variant: 'thinking'});
-        break;
-    default:
-        appendCodeBlock(parent, (block as { type: string }).type, block);
-        break;
+        case 'text':
+            appendText(parent, block.text);
+            break;
+        case 'toolCall': {
+            const callWrap = document.createElement('div');
+            callWrap.className = 'tool-call';
+            const header = document.createElement('div');
+            header.className = 'tool-call-header';
+            header.innerHTML = `<span class="tool-call-icon">⚙</span><span>tool-call</span><code>${escapeHtml(block.name || 'unknown')}</code>`;
+            callWrap.appendChild(header);
+            appendCodeBlock(callWrap, 'arguments', block.arguments || {}, {variant: 'nested'});
+            parent.appendChild(callWrap);
+            break;
+        }
+        case 'image': {
+            const img = document.createElement('div');
+            img.className = 'block-meta';
+            img.textContent = `[image: ${block.mimeType || 'unknown'}]`;
+            parent.appendChild(img);
+            break;
+        }
+        case 'thinking':
+            appendCodeBlock(parent, 'thinking', block.thinking || '', {variant: 'thinking'});
+            break;
+        default:
+            appendCodeBlock(parent, (block as {type: string}).type, block);
+            break;
     }
 }
 
 function renderMessageBody (parent: HTMLElement, message: AgentMessage): void {
-    const content: unknown = (message as { content?: unknown }).content;
+    const content: unknown = (message as {content?: unknown}).content;
     if (typeof content === 'string') {
         appendText(parent, content);
     } else if (Array.isArray(content)) {
@@ -270,7 +270,7 @@ export function createEntryElement (sessionEntry: SessionEntry, index: number): 
         appendText(body, `target: ${entry.targetId || 'null'}`);
     } else {
         el.classList.add('entry--meta');
-        meta.appendChild(createBadge((entry as { type: string }).type || 'unknown', 'default'));
+        meta.appendChild(createBadge((entry as {type: string}).type || 'unknown', 'default'));
         appendCodeBlock(body, 'entry', entry);
     }
     const idSpan = document.createElement('span');

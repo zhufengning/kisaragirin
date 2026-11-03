@@ -18,7 +18,7 @@ export class ScheduledTaskManager {
 
     constructor (
         config: AppConfig,
-        getReplyManager: (groupId: number) => Promise<GroupReplyManager | undefined>,
+        getReplyManager: (groupId: number) => Promise<GroupReplyManager | undefined>
     ) {
         this.config = config;
         this.getReplyManager = getReplyManager;

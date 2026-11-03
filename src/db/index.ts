@@ -148,7 +148,7 @@ export async function insertSystemMessage (
     db: Db,
     groupId: number,
     text: string,
-    time?: number,
+    time?: number
 ): Promise<number> {
     const segments: StoredSegment[] = [{type: 'system', text}];
     const rows = await db.insert(schema.messages).values({
@@ -174,13 +174,13 @@ export async function runMigrations (db: Db): Promise<void> {
 
     const tables = sqlite.prepare(
         "SELECT name FROM sqlite_master WHERE type='table'"
-    ).all() as Array<{ name: string }>;
+    ).all() as Array<{name: string}>;
     const tableNames = new Set(tables.map(t => t.name));
 
     if (tableNames.has('messages')) {
         const messagesColumns = sqlite.prepare(
             'PRAGMA table_info(messages)'
-        ).all() as Array<{ name: string }>;
+        ).all() as Array<{name: string}>;
         const hasSpecialType = messagesColumns.some(c => c.name === 'special_type');
         if (!hasSpecialType) {
             sqlite.exec(`
@@ -212,7 +212,7 @@ export async function runMigrations (db: Db): Promise<void> {
     if (tableNames.has('images')) {
         const imageColumns = sqlite.prepare(
             'PRAGMA table_info(images)'
-        ).all() as Array<{ name: string }>;
+        ).all() as Array<{name: string}>;
         if (imageColumns.every(c => c.name !== 'id')) {
             // 旧表以 sha256 为主键，改为自增 id 主键需要重建表
             sqlite.exec(`

@@ -271,58 +271,58 @@ export class FakeOneBotServer {
         }
 
         switch (request.action) {
-        case 'get_login_info':
-            this.respond(ws, request.echo, {user_id: this.selfId, nickname: this.botNickname});
-            return;
-        case 'get_group_member_info':
-            this.respond(ws, request.echo, {
-                group_id: request.params.group_id,
-                user_id: request.params.user_id,
-                nickname: this.botNickname,
-                card: this.botCard,
-                sex: 'unknown',
-                age: 0,
-                area: '',
-                join_time: 0,
-                last_sent_time: 0,
-                level: '1',
-                role: 'member',
-                unfriendly: false,
-                title: '',
-                title_expire_time: 0,
-                card_changeable: false
-            });
-            return;
-        case 'get_group_member_list':
-            this.respond(ws, request.echo, this.groupMembers.map(member => ({
-                group_id: request.params.group_id,
-                user_id: member.userId,
-                nickname: member.nickname,
-                card: member.card ?? '',
-                sex: 'unknown',
-                age: 0,
-                area: '',
-                join_time: 0,
-                last_sent_time: 0,
-                level: '1',
-                role: 'member',
-                unfriendly: false,
-                title: '',
-                title_expire_time: 0,
-                card_changeable: false
-            })));
-            return;
-        case 'send_group_msg':
-            await this.handleSendGroupMsg(ws, request.echo, request.params);
-            return;
-        case 'get_msg':
-            await this.handleGetMsg(ws, request.echo, request.params);
-            return;
-        case 'get_forward_msg':
-            await this.handleGetForwardMsg(ws, request.echo, request.params);
-            return;
-        default:
-            this.respond(ws, request.echo, {});
+            case 'get_login_info':
+                this.respond(ws, request.echo, {user_id: this.selfId, nickname: this.botNickname});
+                return;
+            case 'get_group_member_info':
+                this.respond(ws, request.echo, {
+                    group_id: request.params.group_id,
+                    user_id: request.params.user_id,
+                    nickname: this.botNickname,
+                    card: this.botCard,
+                    sex: 'unknown',
+                    age: 0,
+                    area: '',
+                    join_time: 0,
+                    last_sent_time: 0,
+                    level: '1',
+                    role: 'member',
+                    unfriendly: false,
+                    title: '',
+                    title_expire_time: 0,
+                    card_changeable: false
+                });
+                return;
+            case 'get_group_member_list':
+                this.respond(ws, request.echo, this.groupMembers.map(member => ({
+                    group_id: request.params.group_id,
+                    user_id: member.userId,
+                    nickname: member.nickname,
+                    card: member.card ?? '',
+                    sex: 'unknown',
+                    age: 0,
+                    area: '',
+                    join_time: 0,
+                    last_sent_time: 0,
+                    level: '1',
+                    role: 'member',
+                    unfriendly: false,
+                    title: '',
+                    title_expire_time: 0,
+                    card_changeable: false
+                })));
+                return;
+            case 'send_group_msg':
+                await this.handleSendGroupMsg(ws, request.echo, request.params);
+                return;
+            case 'get_msg':
+                await this.handleGetMsg(ws, request.echo, request.params);
+                return;
+            case 'get_forward_msg':
+                await this.handleGetForwardMsg(ws, request.echo, request.params);
+                return;
+            default:
+                this.respond(ws, request.echo, {});
         }
     }
 
@@ -434,16 +434,16 @@ export class FakeOneBotServer {
 function rawMessageFromSegments (segments: Message[]): string {
     return segments.map(segment => {
         switch (segment.type) {
-        case 'text':
-            return segment.data.text;
-        case 'at':
-            return `[CQ:at,qq=${segment.data.qq}]`;
-        case 'image':
-            return `[CQ:image,file=${segment.data.file}]`;
-        case 'reply':
-            return `[CQ:reply,id=${segment.data.id}]`;
-        default:
-            return `[CQ:${segment.type}]`;
+            case 'text':
+                return segment.data.text;
+            case 'at':
+                return `[CQ:at,qq=${segment.data.qq}]`;
+            case 'image':
+                return `[CQ:image,file=${segment.data.file}]`;
+            case 'reply':
+                return `[CQ:reply,id=${segment.data.id}]`;
+            default:
+                return `[CQ:${segment.type}]`;
         }
     }).join('');
 }

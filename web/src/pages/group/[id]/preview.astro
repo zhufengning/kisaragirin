@@ -30,7 +30,7 @@ if (!groupId || isNaN(groupId)) {
         const errorEl = document.getElementById('error');
         const output = document.getElementById('prompt-output');
 
-        async function loadPrompt() {
+        async function loadPrompt () {
             loading.style.display = 'block';
             errorEl.style.display = 'none';
             output.textContent = '';
@@ -42,9 +42,9 @@ if (!groupId || isNaN(groupId)) {
                 if (!res.ok) {
                     throw new Error(data.error || `HTTP ${res.status}`);
                 }
-                output.textContent = data.systemPrompt + '\n\n' + data.userMessages.join('\n\n');
+                output.textContent = `${data.systemPrompt}\n\n${data.userMessages.join('\n\n')}`;
             } catch (err) {
-                errorEl.textContent = '加载失败：' + err.message;
+                errorEl.textContent = `加载失败：${err.message}`;
                 errorEl.style.display = 'block';
             } finally {
                 loading.style.display = 'none';

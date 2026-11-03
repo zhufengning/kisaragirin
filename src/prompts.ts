@@ -1,14 +1,14 @@
 export interface ReplyToolParameterDescriptions {
-  messages: string;
-  messageRef: string;
-  messageText: string;
-  requiresDeepResearch: string;
-  deepResearchTopic: string;
+    messages: string;
+    messageRef: string;
+    messageText: string;
+    requiresDeepResearch: string;
+    deepResearchTopic: string;
 }
 
 export interface AskImageParameterDescriptions {
-  imageId: string;
-  question: string;
+    imageId: string;
+    question: string;
 }
 
 /**

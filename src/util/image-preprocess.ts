@@ -136,7 +136,7 @@ function pickFrameIndices (total: number, max: number): number[] {
         return Array.from({length: total}, (_, i) => i);
     }
     return Array.from({length: max}, (_, i) =>
-        Math.round(i * (total - 1) / (max - 1)),
+        Math.round(i * (total - 1) / (max - 1))
     );
 }
 

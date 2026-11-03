@@ -10,7 +10,7 @@ export function createCredentialStore (): InMemoryCredentialStore {
 
 export async function populateCredentialStore (
     store: CredentialStore,
-    models: Record<string, ModelEntry>,
+    models: Record<string, ModelEntry>
 ): Promise<void> {
     for (const entry of Object.values(models)) {
         const providerId = entry.model.provider;

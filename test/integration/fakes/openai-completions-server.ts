@@ -10,14 +10,14 @@ export interface ReplyToolParams {
 }
 
 export type ModelAction =
-    | {type: 'replyTool'; params: ReplyToolParams}
-    | {type: 'toolCall'; name: string; arguments: unknown}
-    | {type: 'rawToolCall'; name: string; argumentsText: string}
-    | {type: 'text'; text: string}
-    | {type: 'json'; value: unknown}
-    | {type: 'httpError'; status: number; body: unknown}
-    | {type: 'streamError'; message: string}
-    | {type: 'hang'};
+    | {type: 'replyTool'; params: ReplyToolParams} |
+    {type: 'toolCall'; name: string; arguments: unknown} |
+    {type: 'rawToolCall'; name: string; argumentsText: string} |
+    {type: 'text'; text: string} |
+    {type: 'json'; value: unknown} |
+    {type: 'httpError'; status: number; body: unknown} |
+    {type: 'streamError'; message: string} |
+    {type: 'hang'};
 
 export interface ModelResponseRule {
     match?: {
@@ -315,55 +315,55 @@ export class FakeOpenAIServer {
         record: RecordedModelRequest
     ): Promise<void> {
         switch (action.type) {
-        case 'hang':
-            this.openResponses.add(res);
-            record.outcome = 'hanging';
-            await new Promise<void>(resolve => {
-                res.on('close', () => resolve());
-            });
-            this.openResponses.delete(res);
-            return;
-        case 'httpError':
-            res.writeHead(action.status, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify(action.body));
-            return;
-        case 'json':
-            res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({
-                id: `chatcmpl-${record.index}`,
-                object: 'chat.completion',
-                created: Math.floor(Date.now() / 1000),
-                model: body.model,
-                choices: [{
-                    index: 0,
-                    message: {role: 'assistant', content: JSON.stringify(action.value)},
-                    finish_reason: 'stop'
-                }],
-                usage: {prompt_tokens: 10, completion_tokens: 10, total_tokens: 20}
-            }));
-            return;
-        case 'text':
-            this.writeStream(res, record, body.model, [
-                {delta: {role: 'assistant', content: action.text}, finishReason: null},
-                {delta: {}, finishReason: 'stop'}
-            ]);
-            return;
-        case 'streamError':
-            this.writeStream(res, record, body.model, [
-                {delta: {}, finishReason: action.message}
-            ]);
-            return;
-        case 'toolCall':
-            this.writeToolCallStream(res, record, body.model, action.name, JSON.stringify(action.arguments));
-            return;
-        case 'rawToolCall':
-            this.writeToolCallStream(res, record, body.model, action.name, action.argumentsText);
-            return;
-        case 'replyTool':
-            this.writeToolCallStream(res, record, body.model, 'reply', JSON.stringify(action.params));
-            return;
-        default:
-            throw new Error('unsupported model action');
+            case 'hang':
+                this.openResponses.add(res);
+                record.outcome = 'hanging';
+                await new Promise<void>(resolve => {
+                    res.on('close', () => resolve());
+                });
+                this.openResponses.delete(res);
+                return;
+            case 'httpError':
+                res.writeHead(action.status, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify(action.body));
+                return;
+            case 'json':
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({
+                    id: `chatcmpl-${record.index}`,
+                    object: 'chat.completion',
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [{
+                        index: 0,
+                        message: {role: 'assistant', content: JSON.stringify(action.value)},
+                        finish_reason: 'stop'
+                    }],
+                    usage: {prompt_tokens: 10, completion_tokens: 10, total_tokens: 20}
+                }));
+                return;
+            case 'text':
+                this.writeStream(res, record, body.model, [
+                    {delta: {role: 'assistant', content: action.text}, finishReason: null},
+                    {delta: {}, finishReason: 'stop'}
+                ]);
+                return;
+            case 'streamError':
+                this.writeStream(res, record, body.model, [
+                    {delta: {}, finishReason: action.message}
+                ]);
+                return;
+            case 'toolCall':
+                this.writeToolCallStream(res, record, body.model, action.name, JSON.stringify(action.arguments));
+                return;
+            case 'rawToolCall':
+                this.writeToolCallStream(res, record, body.model, action.name, action.argumentsText);
+                return;
+            case 'replyTool':
+                this.writeToolCallStream(res, record, body.model, 'reply', JSON.stringify(action.params));
+                return;
+            default:
+                throw new Error('unsupported model action');
         }
     }
 

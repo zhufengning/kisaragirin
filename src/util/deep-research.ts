@@ -17,7 +17,7 @@ const MODEL_DEEP_RESEARCH_TIMEOUT_MS = 1_800_000;
 
 function extractText (response: AssistantMessage): string {
     return response.content
-        .filter((c): c is Extract<typeof c, { type: 'text' }> => c.type === 'text')
+        .filter((c): c is Extract<typeof c, {type: 'text'}> => c.type === 'text')
         .map(c => c.text)
         .join('')
         .trim();

@@ -1,4 +1,4 @@
-import {Type} from '@earendil-works/pi-ai';
+import {Type} from 'typebox';
 import {defineTool, type ToolDefinition} from '@earendil-works/pi-coding-agent';
 import type {GraphitiClient} from './graphiti-client';
 import {Logger} from '@lib/util/logger';

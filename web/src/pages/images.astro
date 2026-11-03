@@ -181,7 +181,7 @@ function pageUrl (page: number) {
     if (!progressEl || !remainingEl) throw new Error('Elements not found');
 
     const evtSource = new EventSource('/api/queue-progress');
-    evtSource.onmessage = (e) => {
+    evtSource.onmessage = e => {
         const data = JSON.parse(e.data);
         const remaining = data.pending + data.processing;
 
@@ -202,7 +202,7 @@ function pageUrl (page: number) {
         const grid = document.querySelector('.grid');
         if (!grid) return;
 
-        grid.addEventListener('click', (e) => {
+        grid.addEventListener('click', e => {
             const target = e.target as HTMLElement;
             const editBtn = target.closest('.edit-desc') as HTMLButtonElement | null;
             if (editBtn) {
@@ -229,7 +229,7 @@ function pageUrl (page: number) {
             editBtn: HTMLButtonElement;
         }
 
-        function findEditElements(btn: HTMLButtonElement): EditElements | null {
+        function findEditElements (btn: HTMLButtonElement): EditElements | null {
             const card = btn.closest('.card') as HTMLElement | null;
             if (!card) return null;
             const wrap = card.querySelector('.desc-wrap') as HTMLElement | null;
@@ -239,13 +239,13 @@ function pageUrl (page: number) {
             const actions = wrap.querySelector('.desc-actions') as HTMLElement | null;
             const editBtn = card.querySelector('.edit-desc') as HTMLButtonElement | null;
             if (!view || !input || !actions || !editBtn) return null;
-            return { card, wrap, view, input, actions, editBtn };
+            return {card, wrap, view, input, actions, editBtn};
         }
 
-        function enterEdit(btn: HTMLButtonElement) {
+        function enterEdit (btn: HTMLButtonElement) {
             const els = findEditElements(btn);
             if (!els) return;
-            const { view, input, actions, editBtn, wrap } = els;
+            const {view, input, actions, editBtn, wrap} = els;
             input.value = wrap.dataset.desc ?? '';
             view.classList.add('hidden');
             editBtn.classList.add('hidden');
@@ -254,7 +254,7 @@ function pageUrl (page: number) {
             input.focus();
             input.select();
 
-            input.onkeydown = (event) => {
+            input.onkeydown = event => {
                 if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                     const save = actions.querySelector('.save-desc') as HTMLButtonElement | null;
                     if (save) void saveEdit(save);
@@ -265,10 +265,10 @@ function pageUrl (page: number) {
             };
         }
 
-        function cancelEdit(btn: HTMLButtonElement) {
+        function cancelEdit (btn: HTMLButtonElement) {
             const els = findEditElements(btn);
             if (!els) return;
-            const { view, input, actions, editBtn } = els;
+            const {view, input, actions, editBtn} = els;
             input.value = '';
             input.onkeydown = null;
             view.classList.remove('hidden');
@@ -277,10 +277,10 @@ function pageUrl (page: number) {
             actions.classList.add('hidden');
         }
 
-        async function saveEdit(btn: HTMLButtonElement) {
+        async function saveEdit (btn: HTMLButtonElement) {
             const els = findEditElements(btn);
             if (!els) return;
-            const { card, input, actions } = els;
+            const {card, input, actions} = els;
             const sha256 = card.dataset.sha256;
             if (!sha256) return;
 
@@ -299,12 +299,12 @@ function pageUrl (page: number) {
                 const res = await fetch('/api/images/update-description', {
                     method: 'POST',
                     body: form,
-                    credentials: 'same-origin',
+                    credentials: 'same-origin'
                 });
                 if (!res.ok) throw new Error(await res.text());
-                window.location.href = '/images' + window.location.search;
+                window.location.href = `/images${window.location.search}`;
             } catch (err) {
-                alert('保存失败: ' + (err as Error).message);
+                alert(`保存失败: ${(err as Error).message}`);
                 if (saveBtn) {
                     saveBtn.disabled = false;
                     saveBtn.textContent = '保存';

@@ -51,7 +51,7 @@ export function parseMemoriesParams (url: URL): MemoriesPageParams {
 export async function resolveMemoriesPostRedirect (
     url: URL,
     request: Request,
-    currentGroupId: string,
+    currentGroupId: string
 ): Promise<string | null> {
     let formData: FormData;
     try {
@@ -86,7 +86,7 @@ export async function loadMemoriesEdges (
     mode: 'idle' | 'search' | 'list',
     searchQuery: string,
     groupId: string,
-    currentPage: number,
+    currentPage: number
 ): Promise<MemoriesEdgesResult> {
     const result: MemoriesEdgesResult = {edges: [], totalCount: 0, totalPages: 1, error: ''};
     if (mode === 'idle') return result;

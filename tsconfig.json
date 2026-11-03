@@ -22,7 +22,8 @@
                 "./lib/*"
             ]
         },
-        "strict": true
+        "strict": true,
+        "types": ["node"]
     },
     "exclude": [
         "web/",

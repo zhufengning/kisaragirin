@@ -46,7 +46,7 @@ function sleep (ms: number, signal?: AbortSignal): Promise<void> {
 export async function withRetry<T> (
     fn: (abortSignal: AbortSignal) => Promise<T>,
     options: RetryOptions = {},
-    signal?: AbortSignal,
+    signal?: AbortSignal
 ): Promise<T> {
     const maxRetries = options.maxRetries ?? 3;
     const baseDelayMs = options.baseDelayMs ?? 2000;

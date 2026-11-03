@@ -21,6 +21,13 @@
 
 pnpm
 
+## 工具链
+
+- ESLint 10 使用 flat 配置（根目录 `eslint.config.mjs`），格式规则在 `@stylistic/eslint-plugin`，`lint` 与 `web:lint` 不再使用 `--ext`
+- TypeScript 双安装：`tsc` 为 TypeScript 7（`@typescript/native` 别名），`typescript` 依赖经别名指向 `@typescript/typescript6`，供 typescript-eslint 与 `@astrojs/check` 使用
+- Astro 7 的 `compressHTML` 显式设为 `true`，保持 Astro 6 的 HTML 空白处理行为
+- 工具参数 schema 使用 `typebox`（与 `@earendil-works/pi-coding-agent` 内置版本一致），`pi-ai` 根入口不再导出 TypeBox
+
 ## 约束
 
 - 遵循指令，而不是越俎代庖。对非{代码、文档}的文件的修改必须提前请示。git等会对文件产生影响的程序、命令必须提前请示。
@@ -76,7 +83,6 @@ src/
     graphiti-tool.ts    -- Graphiti 记忆工具（仅 search_memory），注册为 ToolDefinition 供 reply-agent 调用
     graphiti-client.ts  -- Graphiti Node.js 客户端（通过 stdio JSON-RPC 与 Python 服务通信）
     graphiti-episode.ts -- Graphiti episode 创建辅助（群消息 / bot 回复 / 深度研究结果共用）
-    mem0-tool.ts        -- [已弃用] mem0 记忆工具
   prompts.ts            -- `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可被 `input.prompts` 覆盖）
   web/
     server.ts           -- Node.js HTTP server，加载 Astro handler
@@ -141,7 +147,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
     database-inspector.ts -- better-sqlite3 只读数据库检查器
     messages.ts         -- OneBot 消息段构造与请求文本提取
   scenarios/            -- 调度场景（ingress-order / at-merge / silence / queue-fifo / watermark /
-                           scheduled / tools-research / image-ask / failures / graphiti / desc-queue / restart）
+                           scheduled / scheduled-tasks / tools-research / image-ask / failures / graphiti / desc-queue / restart）
 ```
 
 ### 关键组件关系
@@ -291,7 +297,6 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `ToolDefinition`
 - `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）
 - `src/util/graphiti-episode.ts` — Graphiti episode 创建辅助（`addMessageEpisode`，群消息 / bot 回复 / 深度研究结果共用）
-- `src/util/mem0-tool.ts` — [已弃用] mem0 记忆工具
 - `src/prompts.ts` — `Prompts` 类：所有 LLM prompt 的统一入口（默认值，可通过 `input.prompts` 覆盖）
 - `src/web/server.ts` — Web 面板 Node adapter
 - `web/src/lib/messages-*.ts` / `memories-*.ts` / `harness-*.ts` — Web 页面的服务端数据加载、渲染辅助与客户端脚本

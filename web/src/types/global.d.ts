@@ -1,4 +1,3 @@
-/* eslint-disable no-var */
 import type {Db} from '~/db';
 import type {DescQueue} from '~/util/desc-queue';
 import type {GroupReplyManager} from '~/util/reply-manager';

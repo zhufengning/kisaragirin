@@ -3,6 +3,7 @@ import node from '@astrojs/node';
 
 export default defineConfig({
     output: 'server',
+    compressHTML: true,
     adapter: node({ mode: 'middleware' }),
     server: {
         host: '0.0.0.0',

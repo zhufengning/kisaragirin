@@ -12,7 +12,7 @@ export async function runScenario (
         bodyError = err;
     }
 
-    let closeErrors: Error[] = [];
+    let closeErrors: Error[];
     try {
         closeErrors = await env.close();
     } catch (err) {

@@ -81,7 +81,7 @@ export class GroupReplyManager {
     private constructor (
         options: GroupReplyManagerOptions,
         agent: ReplyAgent,
-        lastTriggerId: number,
+        lastTriggerId: number
     ) {
         this.groupId = options.groupId;
         this.bot = options.bot;

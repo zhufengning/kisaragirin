@@ -35,7 +35,7 @@ export function registerCustomProviders (modelsInstance: ModelRuntime, config: A
                 },
                 models: [entry.model],
                 api: apiStreamsFor(entry.model.api)
-            }),
+            })
         );
     }
 }

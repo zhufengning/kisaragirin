@@ -4,7 +4,7 @@ import {deleteMessagesByIds} from '~/db';
 
 export const POST: APIRoute = async ({request}) => {
     try {
-        const body = await request.json() as { ids?: unknown };
+        const body = await request.json() as {ids?: unknown};
         const ids = Array.isArray(body.ids) ?
             body.ids.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && id > 0) :
             [];

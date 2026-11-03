@@ -105,8 +105,8 @@ interface GraphViewOptions {
     panelEl: HTMLElement;
 }
 
-type SubgraphPayload = GraphitiSubgraph & { total_edges?: number };
-type NeighborsPayload = GraphitiSubgraph & { node: GraphitiNode | null };
+type SubgraphPayload = GraphitiSubgraph & {total_edges?: number};
+type NeighborsPayload = GraphitiSubgraph & {node: GraphitiNode | null};
 
 /** 记忆实体事实网络视图：布局、选中高亮、悬浮提示、详情面板与邻居展开 */
 export class MemoriesGraphView {
@@ -143,7 +143,7 @@ export class MemoriesGraphView {
             const res = await fetch(
                 `/api/memories/graph?group_id=${encodeURIComponent(this.groupId)}&limit=${this.edgeLimit}`,
                 {credentials: 'same-origin'});
-            const payload = (await res.json()) as SubgraphPayload & { error?: string };
+            const payload = (await res.json()) as SubgraphPayload & {error?: string};
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
             if (payload.nodes.length === 0) {
@@ -478,7 +478,7 @@ export class MemoriesGraphView {
                 `/api/memories/graph/neighbors?uuid=${encodeURIComponent(nodeId)}` +
                 `&limit=${Math.min(this.edgeLimit, 100)}`,
                 {credentials: 'same-origin'});
-            const payload = (await res.json()) as NeighborsPayload & { error?: string };
+            const payload = (await res.json()) as NeighborsPayload & {error?: string};
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
             const added = this.mergeSubgraph(payload.nodes, payload.edges);

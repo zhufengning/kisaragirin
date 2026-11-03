@@ -784,14 +784,14 @@ wheels = [
 
 [[package]]
 name = "neo4j"
-version = "6.2.0"
+version = "6.3.0"
 source = { registry = "https://mirrors.hust.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "pytz" },
 ]
-sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz", hash = "sha256:e1e246b65b572bd8ea97f9e0e721b7d40a5ce53e53d0007c29aef63e4f9124d9" }
+sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/9d/57/f939c3b9b28e5851095eafb823b5a996eea3f21a14be513bcf9b355f97da/neo4j-6.3.0.tar.gz", hash = "sha256:d0d3986c37ad174a549a39dfec6d22a00a061ebcb0267f1a5caf856589838e73" }
 wheels = [
-    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/e6/cf/1c3795866cefaac6e648d4e98c373cafd97810f6e317c307371007ab4abb/neo4j-6.2.0-py3-none-any.whl", hash = "sha256:b87abdd13a5cc2e3bd51026926c2f20ac38fa3febe98c340520dce19e97388d0" },
+    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/47/47/d29d93455fe2959e5b8383e52f68b3633d729f39e87fef94743f9f2240ae/neo4j-6.3.0-py3-none-any.whl", hash = "sha256:d243f9c8adf882ae7205a76eb2419b0a632d5f3c89383d4a0044d737a2223991" },
 ]
 
 [[package]]
@@ -954,7 +954,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "3.3.1"
+version = "3.5.0"
 source = { registry = "https://mirrors.hust.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "anyio" },
@@ -964,9 +964,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/7d/9c/ba0c292b4032ede74c249ca314ad64eb1bb5a03a843f6e01facb02f80cd8/openai-3.3.1.tar.gz", hash = "sha256:6f22807de1a976c932cecda620e8172a8c3fdbaeed29c7f21564e0c2410edf56" }
+sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/3e/d3/50ffb9a7bce5097ffeb476905c0661f4468a3ca7bb489b152542f14fdd8e/openai-3.5.0.tar.gz", hash = "sha256:743738bb458a586d0d02d173bf398d29d7d7a80d182d167aa74f1c08814ecc78" }
 wheels = [
-    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/6a/db/2b7a1b3de659bb82aef979116c74e809982b13e42c057759767552b5155f/openai-3.3.1-py3-none-any.whl", hash = "sha256:9652df7fdf8ee6f5bd58e0a12f2b1d414a18e0f06bb7a9a57c8643a5f5469bd3" },
+    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/9d/9f/03bba05ade050f306c9b9e8b99e3681791dbb30148cd76a793c277fed494/openai-3.5.0-py3-none-any.whl", hash = "sha256:7c0873d379655f65fa515c5692c8620e73bf6a6dce3e63f37589bc99bda3fdfd" },
 ]
 
 [[package]]
@@ -977,7 +977,7 @@ sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/15/fb/ea010a1fa57
 
 [[package]]
 name = "posthog"
-version = "7.43.0"
+version = "7.44.2"
 source = { registry = "https://mirrors.hust.edu.cn/pypi/web/simple" }
 dependencies = [
     { name = "backoff" },
@@ -985,9 +985,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/04/7d/6769ca2903c780b32177975592cd06614b2928b29e4d759c877f1652979c/posthog-7.43.0.tar.gz", hash = "sha256:872294f986e399976f84b57c19fd4e61269e2468a3fdd3ea494552394343c508" }
+sdist = { url = "https://mirrors.hust.edu.cn/pypi/web/packages/e4/04/7aef5b358b5627086ba9643b32f7616aab8c07d6be829a1dcfc4424d317a/posthog-7.44.2.tar.gz", hash = "sha256:e375172bfaad5c7cfa25c027bc3b9db2794cd94f3845d13b0b51108bdfe80a3b" }
 wheels = [
-    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/4a/d9/15f9488311cf41f3e5e117230a10f31839a1ea31e5af7dcf29754311f70d/posthog-7.43.0-py3-none-any.whl", hash = "sha256:29d35fdae68ddc9b257e0d44715b6105a465974361a29844cbe21abcb58e37df" },
+    { url = "https://mirrors.hust.edu.cn/pypi/web/packages/7b/ce/17f7050afd08facdede145321be581425999b1e067c3cde7147fb7a8b89c/posthog-7.44.2-py3-none-any.whl", hash = "sha256:4a3d4b7c994d0b2d43a05b03293ce9a652900a5143d79fbeedb2f2fa78048ad3" },
 ]
 
 [[package]]

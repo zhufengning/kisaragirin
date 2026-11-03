@@ -41,7 +41,7 @@ export function openDetailModal (row: HTMLElement | null): void {
     const imagesField = document.getElementById('modal-images-field');
     const imagesContainer = document.getElementById('modal-images');
     if (imagesField && imagesContainer) {
-        let images: Array<{ sha256: string; description: string | null }> = [];
+        let images: Array<{sha256: string; description: string | null}>;
         try {
             images = JSON.parse(row.dataset.images || '[]');
         } catch {

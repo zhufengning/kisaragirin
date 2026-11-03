@@ -37,7 +37,7 @@ function collectImages (
     segments: StoredSegment[],
     images: MessageImageInfo[],
     seen: Set<string>,
-    imageDescriptions: Map<string, string | null>,
+    imageDescriptions: Map<string, string | null>
 ): void {
     for (const seg of segments) {
         if (seg.type === 'image') {

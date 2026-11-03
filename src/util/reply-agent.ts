@@ -713,7 +713,7 @@ export class ReplyAgent {
         this.appendSessionMessage(this.buildAssistantMessage(text, storedMessage.time * 1000));
     }
 
-    async buildPreviewPrompt (task: ReplyTask): Promise<{ systemPrompt: string; userMessages: string[] }> {
+    async buildPreviewPrompt (task: ReplyTask): Promise<{systemPrompt: string; userMessages: string[]}> {
         const latestMessages = await this.fetchMessagesSince(task.lastTriggerId ?? 0);
         const userMessages = await buildUserPromptArray(latestMessages, this.descQueue);
         // 与实际回复逻辑保持一致：乱序时预览也带时序提示

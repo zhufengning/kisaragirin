@@ -30,7 +30,7 @@ export const POST: APIRoute = async ({request, params}) => {
             });
         }
 
-        const body = await request.json().catch(() => null) as { startDate?: string; endDate?: string } | null;
+        const body = await request.json().catch(() => null) as {startDate?: string; endDate?: string} | null;
         const startDate = body?.startDate;
         const endDate = body?.endDate;
         if (!startDate || !endDate) {
