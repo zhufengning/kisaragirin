@@ -15,6 +15,13 @@ import {type AssistantMessage, type Context, type Models} from '@earendil-works/
 /** 模型路径（LLM 兼容接口）单次研究的超时时间（毫秒） */
 const MODEL_DEEP_RESEARCH_TIMEOUT_MS = 1_800_000;
 
+/** 系统消息中展示的研究主题最大字符数 */
+const TOPIC_DISPLAY_MAX_CHARS = 20;
+
+function formatTopicForMessage (topic: string): string {
+    return topic.length > TOPIC_DISPLAY_MAX_CHARS ? `${topic.slice(0, TOPIC_DISPLAY_MAX_CHARS)}…` : topic;
+}
+
 function extractText (response: AssistantMessage): string {
     return response.content
         .filter((c): c is Extract<typeof c, {type: 'text'}> => c.type === 'text')
@@ -60,7 +67,7 @@ export class DeepResearchRunner {
     async runWithSystemMessages (topic: string): Promise<{result: string; success: boolean}> {
         const researchTopic = topic.trim();
         const startTime = Math.floor(Date.now() / 1000);
-        const startText = `开始深度研究：${researchTopic}`;
+        const startText = `开始深度研究：${formatTopicForMessage(researchTopic)}`;
         const startId = await insertSystemMessage(this.db, this.groupId, startText, startTime);
         this.logger.info(
             `[ReplyAgent] [${this.groupId}] system message inserted, id=${startId}, ` +
@@ -172,7 +179,7 @@ export class DeepResearchRunner {
 
     private async insertResultMessage (topic: string, result: string): Promise<void> {
         const resultTime = Math.floor(Date.now() / 1000);
-        const resultText = `深度研究结果：${topic}\n\n${result}`;
+        const resultText = `深度研究结果：${formatTopicForMessage(topic)}\n\n${result}`;
         const resultId = await insertSystemMessage(this.db, this.groupId, resultText, resultTime);
         this.logger.info(
             `[ReplyAgent] [${this.groupId}] deep research result message inserted, id=${resultId}, ` +
@@ -201,13 +208,14 @@ export class DeepResearchRunner {
         researchResult: string | undefined
     ): Promise<void> {
         const endTime = Math.floor(Date.now() / 1000);
+        const displayTopic = formatTopicForMessage(topic);
         let endMsg: string;
         if (researchError) {
-            endMsg = `深度研究结束：${topic}状态：错误\n\n${researchError}`;
+            endMsg = `深度研究结束：${displayTopic}状态：错误\n\n${researchError}`;
         } else if (researchResult) {
-            endMsg = `深度研究结束：${topic}状态：成功\n\n`;
+            endMsg = `深度研究结束：${displayTopic}状态：成功\n\n`;
         } else {
-            endMsg = `深度研究结束：${topic}状态：未出错但无结果\n\n`;
+            endMsg = `深度研究结束：${displayTopic}状态：未出错但无结果\n\n`;
         }
         const endId = await insertSystemMessage(this.db, this.groupId, endMsg, endTime);
         this.logger.info(
