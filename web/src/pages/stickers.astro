@@ -1,0 +1,201 @@
+---
+import Layout from '@layouts/Layout.astro';
+import {db, schema} from '@lib/db';
+import {getStickers, type StickerRecord} from '~/util/sticker-store';
+import {inArray} from 'drizzle-orm';
+
+const stickers: StickerRecord[] = await getStickers(db);
+
+// 按图片 id 查出 sha256 与描述用于展示
+const imageIds = stickers.map(s => s.imageId);
+const imageRows = imageIds.length > 0 ?
+    await db.select().from(schema.images)
+        .where(inArray(schema.images.id, imageIds)) :
+    [];
+const imageMap = new Map(imageRows.map(r => [r.id, r]));
+
+---
+
+<Layout title="表情包管理">
+    <h1>表情包管理 <span class="meta">({stickers.length} 张)</span></h1>
+
+    <!-- 添加收藏 -->
+    <form class="add-bar" method="POST" action="/api/stickers/add">
+        <input type="number" name="imageId" placeholder="图片 ID" required class="input input-id" min="1" />
+        <input type="text" name="category" placeholder="分类（可留空）" class="input" />
+        <input type="text" name="note" placeholder="备注（可留空）" class="input" />
+        <button type="submit" class="btn">➕ 添加收藏</button>
+    </form>
+
+    {stickers.length === 0 ? (
+        <p class="empty">暂无收藏的表情包</p>
+    ) : (
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>图片</th>
+                    <th>ID</th>
+                    <th>分类</th>
+                    <th>备注</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {stickers.map(s => {
+                    const img = imageMap.get(s.imageId);
+                    return (
+                        <tr data-image-id={s.imageId}>
+                            <td>
+                                {img ? (
+                                    <img
+                                        class="thumb"
+                                        src={`/api/images/file/${img.sha256}`}
+                                        alt={img.description ?? String(s.imageId)}
+                                        loading="lazy"
+                                    />
+                                ) : (
+                                    <span class="missing">图片不存在</span>
+                                )}
+                            </td>
+                            <td class="mono">{s.imageId}</td>
+                            <td class="cell-category" data-value={s.category}>{s.category || '—'}</td>
+                            <td class="cell-note" data-value={s.note}>{s.note || '—'}</td>
+                            <td class="actions">
+                                <button type="button" class="btn btn-sm btn-secondary edit-btn">编辑</button>
+                                <form
+                                    method="POST"
+                                    action="/api/stickers/remove"
+                                    class="remove-form"
+                                    onsubmit="return confirm('确定删除该收藏？')"
+                                >
+                                    <input type="hidden" name="imageId" value={s.imageId} />
+                                    <button type="submit" class="btn btn-sm btn-danger">删除</button>
+                                </form>
+                            </td>
+                        </tr>
+                    );
+                })}
+            </tbody>
+        </table>
+    )}
+</Layout>
+
+<style>
+    .add-bar {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+    .input {
+        padding: 8px 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-size: 14px;
+        font-family: inherit;
+    }
+    .input:focus { outline: none; border-color: var(--accent); }
+    .input-id { width: 110px; }
+    .input-sm { padding: 5px 10px; font-size: 13px; width: 100%; }
+    .empty { color: var(--text-secondary); text-align: center; padding: 40px; }
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+    .table th, .table td {
+        padding: 10px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+        font-size: 14px;
+    }
+    .table th {
+        color: var(--text-secondary);
+        font-weight: 500;
+        background: var(--bg);
+    }
+    .table tbody tr:hover { background: var(--surface-hover); }
+    .thumb {
+        width: 72px;
+        height: 72px;
+        object-fit: cover;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+        display: block;
+    }
+    .missing { color: var(--text-secondary); font-size: 13px; }
+    .mono {
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+    .actions { display: flex; gap: 8px; align-items: center; }
+:global(.edit-btn) { display: inline-flex; }
+</style>
+
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        document.querySelectorAll('.edit-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const row = btn.closest('tr');
+                if (!row || row.dataset.editing) return;
+                row.dataset.editing = '1';
+
+                const imageId = row.dataset.imageId;
+                const categoryCell = row.querySelector<HTMLElement>('.cell-category');
+                const noteCell = row.querySelector<HTMLElement>('.cell-note');
+                const actions = row.querySelector('.actions');
+                if (!imageId || !categoryCell || !noteCell || !actions) return;
+
+                const category = categoryCell.dataset.value ?? '';
+                const note = noteCell.dataset.value ?? '';
+
+                categoryCell.innerHTML = '';
+                noteCell.innerHTML = '';
+                const categoryInput = document.createElement('input');
+                categoryInput.className = 'input input-sm';
+                categoryInput.value = category;
+                const noteInput = document.createElement('input');
+                noteInput.className = 'input input-sm';
+                noteInput.value = note;
+                categoryCell.appendChild(categoryInput);
+                noteCell.appendChild(noteInput);
+
+                actions.innerHTML = '';
+                const saveBtn = document.createElement('button');
+                saveBtn.className = 'btn btn-sm';
+                saveBtn.textContent = '保存';
+                const cancelBtn = document.createElement('button');
+                cancelBtn.className = 'btn btn-sm btn-secondary';
+                cancelBtn.textContent = '取消';
+                actions.appendChild(saveBtn);
+                actions.appendChild(cancelBtn);
+
+                cancelBtn.addEventListener('click', () => window.location.reload());
+                saveBtn.addEventListener('click', async () => {
+                    saveBtn.disabled = true;
+                    const form = new FormData();
+                    form.set('imageId', imageId);
+                    form.set('category', categoryInput.value);
+                    form.set('note', noteInput.value);
+                    const res = await fetch('/api/stickers/update', {
+                        method: 'POST',
+                        body: form,
+                        credentials: 'same-origin'
+                    });
+                    if (!res.ok) {
+                        alert(`保存失败: ${await res.text()}`);
+                        saveBtn.disabled = false;
+                        return;
+                    }
+                    window.location.reload();
+                });
+            });
+        });
+    });
+</script>

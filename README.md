@@ -132,7 +132,8 @@ assignments: {
 | `/group/{id}/memory` | 群总体记忆查看与删除 |
 | `/group/{id}/preview` | Prompt 预览 |
 | `/group/{id}/harness` | 会话日志查看：新在前排序、前端分页、角色筛选、错误/中止高亮、条目 JSON 原文切换 |
-| `/images` | 图片管理 |
+| `/images` | 图片管理：分页展示（固定卡片高度，卡片显示图片 id）、描述搜索与编辑、删除描述 |
+| `/stickers` | 表情包收藏管理：添加 / 编辑分类与备注 / 删除 |
 | `/memories` | Graphiti 记忆管理：语义搜索 / 分页列表 / 实体图谱可视化（`?view=graph`，cytoscape.js 力导向图，节点点击查看详情并支持展开 1-hop 邻居、边点击查看事实并可删除） |
 
 ## 定时任务配置

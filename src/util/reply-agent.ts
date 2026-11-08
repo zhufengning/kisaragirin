@@ -137,19 +137,19 @@ function buildGroupMemoryMessage (memory: string): Message {
     } as Message;
 }
 
-function buildStickerListMessage (stickers: StickerRecord[]): Message {
+function buildStickerListMessage (stickers: StickerRecord[], maxCount: number): Message {
     return {
         role: 'user',
-        content: [{type: 'text', text: prompts.stickerListContext(stickers)}],
+        content: [{type: 'text', text: prompts.stickerListContext(stickers, maxCount)}],
         timestamp: Date.now()
     } as Message;
 }
 
 /** 会话头部消息：总体记忆与表情包收藏列表，压缩时不计入聊天内容 */
-function buildSessionHeaderMessages (memory: string | null, stickers: StickerRecord[]): Message[] {
+function buildSessionHeaderMessages (memory: string | null, stickers: StickerRecord[], maxCount: number): Message[] {
     const messages: Message[] = [];
     if (memory) messages.push(buildGroupMemoryMessage(memory));
-    messages.push(buildStickerListMessage(stickers));
+    messages.push(buildStickerListMessage(stickers, maxCount));
     return messages;
 }
 
@@ -268,7 +268,7 @@ export class ReplyAgent {
         if (isNew) {
             const memory = await getGroupOverallMemory(db, groupId);
             const stickers = await getStickers(db);
-            for (const message of buildSessionHeaderMessages(memory, stickers)) {
+            for (const message of buildSessionHeaderMessages(memory, stickers, config.input.sticker_max_count)) {
                 sessionManager.appendMessage(message);
             }
         }
@@ -881,7 +881,7 @@ export class ReplyAgent {
     private async replaceSession (memory: string | null): Promise<void> {
         const stickers = await getStickers(this.db);
         const created = createGroupSession(this.groupId);
-        for (const message of buildSessionHeaderMessages(memory, stickers)) {
+        for (const message of buildSessionHeaderMessages(memory, stickers, this.config.input.sticker_max_count)) {
             created.sessionManager.appendMessage(message);
         }
         const session = await createReplyAgentSession({

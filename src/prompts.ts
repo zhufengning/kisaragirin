@@ -92,22 +92,57 @@ export class Prompts {
     }
 
     /** 新会话顶部的表情包收藏列表前缀，用于识别会话头部消息 */
-    stickerListPrefix = '以下是本群历史收藏的表情包（图片ID、分类、备注）：';
+    stickerListPrefix = '以下是收藏的表情包（按分类分组，每行是图片ID与备注）：';
 
     /** 收藏列表为空时展示的内容 */
     stickerListEmpty = '（内容为空）';
 
     /** 表情包收藏列表的结尾说明 */
-    stickerListFooter = '这些是历史收藏的表情，当前对话中新收藏的表情不会立刻写入这里。';
+    stickerListFooter = '这些是历史收藏的表情，当前对话中新收藏或删除的表情不会立刻写入这里。';
+
+    /** 收藏数量偏少时的提示语 */
+    stickerHintLow = '有点少，继续加油，积少成多哦';
+
+    /** 收藏数量中等时的提示语 */
+    stickerHintMedium = '小有积蓄，还可以更进一步';
+
+    /** 收藏数量达到上限时的提示语 */
+    stickerHintFull = '已经满了呢，替换掉群里不常用的吧';
+
+    /** 根据收藏数量给出收集进度提示 */
+    stickerListHint (count: number, categoryCount: number, maxCount: number): string {
+        let phrase: string;
+        if (count >= maxCount) {
+            phrase = this.stickerHintFull;
+        } else if (count * 2 >= maxCount) {
+            phrase = this.stickerHintMedium;
+        } else {
+            phrase = this.stickerHintLow;
+        }
+        return `已收藏 ${categoryCount} 个分类的 ${count} 个表情，${phrase}`;
+    }
 
     /** 新会话顶部的表情包收藏列表消息 */
-    stickerListContext (stickers: StickerRecord[]): string {
+    stickerListContext (stickers: StickerRecord[], maxCount: number): string {
+        const groups = new Map<string, StickerRecord[]>();
+        for (const sticker of stickers) {
+            const category = sticker.category || '未分类';
+            const group = groups.get(category);
+            if (group) {
+                group.push(sticker);
+            } else {
+                groups.set(category, [sticker]);
+            }
+        }
         const body = stickers.length === 0 ?
             this.stickerListEmpty :
-            stickers
-                .map(sticker => `- 图片ID：${sticker.imageId} 分类：${sticker.category} 备注：${sticker.note}`)
+            Array.from(groups.entries())
+                .map(([category, items]) => [
+                    `【${category}】`,
+                    ...items.map(item => `- 图片ID：${item.imageId} 备注：${item.note}`)
+                ].join('\n'))
                 .join('\n');
-        return `${this.stickerListPrefix}\n${body}\n${this.stickerListFooter}`;
+        return `${this.stickerListPrefix}\n${this.stickerListHint(stickers.length, groups.size, maxCount)}\n${body}\n${this.stickerListFooter}`;
     }
 
     memoryQueryPrompt = `你是一个记忆检索助手。根据以下群聊消息和已检索到的记忆，判断是否需要搜索更多历史记忆来辅助回复。

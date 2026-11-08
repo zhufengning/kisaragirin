@@ -246,8 +246,9 @@ test('压缩后在会话头部注入表情包收藏列表', {timeout: 180000}, a
         await env.oneBot.waitForGroupSendCount(1001, 1);
 
         const firstRequest = env.openAI.requests.filter(request => request.model === 'primary')[0];
-        assert.match(firstRequest.serialized, /以下是本群历史收藏的表情包/);
+        assert.match(firstRequest.serialized, /以下是收藏的表情包/);
         assert.match(firstRequest.serialized, /（内容为空）/);
+        assert.match(firstRequest.serialized, /已收藏 0 个分类的 0 个表情，有点少，继续加油，积少成多哦/);
 
         const initialMetadata = env.db.harnessMetadata(1001);
         assert.ok(initialMetadata);
@@ -262,9 +263,11 @@ test('压缩后在会话头部注入表情包收藏列表', {timeout: 180000}, a
         const compactedMetadata = env.db.harnessMetadata(1001);
         assert.ok(compactedMetadata);
         const header = sessionHeaderText(compactedMetadata.path);
-        assert.match(header, /以下是本群历史收藏的表情包/);
+        assert.match(header, /以下是收藏的表情包/);
         assert.match(header, /带问号的小狗/);
-        assert.match(header, /当前对话中新收藏的表情不会立刻写入这里/);
+        assert.match(header, /当前对话中新收藏或删除的表情不会立刻写入这里/);
+        assert.match(header, /已收藏 1 个分类的 1 个表情，有点少，继续加油，积少成多哦/);
+        assert.match(header, /【疑惑】\n- 图片ID：1 备注：带问号的小狗/);
 
         env.oneBot.emitGroupMessage({
             groupId: 1001,

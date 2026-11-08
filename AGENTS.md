@@ -121,10 +121,12 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/memory.astro  -- 群总体记忆查看与删除
       group/[id]/harness.astro -- AgentSession 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
-      images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑）
+      images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑，固定卡片高度，卡片显示图片 id）
+      stickers.astro         -- 表情包收藏管理（添加 / 编辑分类备注 / 删除）
       memories.astro         -- Graphiti 记忆管理（浏览 + 语义搜索 + 删除 + 实体图谱可视化：?view=graph 用 cytoscape.js 渲染实体事实网络，节点点击查看详情并可展开 1-hop 邻居，边点击查看事实并删除）
       api/
         images/...           -- 图片文件服务 + 描述管理 API
+        stickers/...         -- 表情包收藏管理 API（add / update / remove，读写 kv_store 的 stickers 键）
         memories/...         -- Graphiti REST API 封装（search / get_edges / get_edge / delete_edge / graph 子图 / graph 邻居）
         messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）

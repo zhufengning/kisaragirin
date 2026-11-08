@@ -65,7 +65,7 @@ const descRows = sha256List.length > 0 ?
     await db.select().from(schema.images)
         .where(sql`${schema.images.sha256} IN ${sha256List}`) :
     [];
-const descMap = new Map(descRows.map(r => [r.sha256, r.description]));
+const descMap = new Map(descRows.map(r => [r.sha256, r]));
 
 // 构建分页URL
 function pageUrl (page: number) {
@@ -106,15 +106,17 @@ function pageUrl (page: number) {
     <form method="POST" action="/api/images/delete-descriptions" id="batch">
         <div class="grid">
             {pageFiles.map(f => {
-                const desc = descMap.get(f.sha256);
+                const row = descMap.get(f.sha256);
+                const desc = row?.description ?? null;
                 const descText = desc ?? '';
                 return (
                     <div class="card" data-sha256={f.sha256}>
                         <img src={`/api/images/file/${f.name}`} alt={f.sha256} loading="lazy" />
                         <div class="info">
                             <div class="sha">{f.sha256.slice(0, 16)}…</div>
+                            <div class="img-id">ID {row?.id ?? '?'}</div>
                             <div class="desc-wrap" data-desc={descText}>
-                                <div class={`desc-view ${desc ? '' : 'empty'}`}>
+                                <div class={`desc-view ${desc ? '' : 'empty'}`} title={descText}>
                                     {desc ?? '（无描述）'}
                                 </div>
                                 <textarea class="desc-input hidden" rows="3">{descText}</textarea>
@@ -350,6 +352,7 @@ function pageUrl (page: number) {
         overflow: hidden;
         display: flex;
         flex-direction: column;
+        height: 400px;
         transition: background 0.15s;
     }
     .card:hover { background: var(--surface-hover); }
@@ -359,21 +362,32 @@ function pageUrl (page: number) {
         object-fit: cover;
         border-bottom: 1px solid var(--border);
     }
-    .info { padding: 12px; flex: 1; }
+    .info { padding: 12px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
     .sha {
         font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
         font-size: 12px;
         color: var(--text-secondary);
-        margin-bottom: 6px;
+        margin-bottom: 4px;
         word-break: break-all;
     }
+    .img-id {
+        font-size: 12px;
+        color: var(--accent);
+        margin-bottom: 6px;
+        font-weight: 500;
+    }
+    .desc-wrap { flex: 1; min-height: 0; overflow: hidden; }
     .desc-view {
         font-size: 13px;
         color: var(--text);
         line-height: 1.5;
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
     .desc-view.empty { color: var(--text-secondary); font-style: italic; }
-    .edit-desc { margin-top: 10px; }
+    .edit-desc { margin-top: auto; flex-shrink: 0; }
     .desc-input {
         width: 100%;
         min-height: 64px;
