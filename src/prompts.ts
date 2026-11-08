@@ -70,7 +70,7 @@ export class Prompts {
 
     /** 上一版超过字数上限时要求缩减 */
     groupCompactionReducePrompt (actualChars: number, maxChars: number): string {
-        return `上一版总体记忆有${actualChars}字，超过${maxChars}字上限。请保留四节结构与仍有参考价值的内容，优先删减细节、旧事件和不活跃群友印象，缩减到${maxChars}字以内。直接输出缩减后的总体记忆正文。`;
+        return `上一版总体记忆有${actualChars}字，超过${maxChars}字上限。请保留四节结构与仍有参考价值的内容，优先压缩、合并、删减细节、旧事件和不活跃群友印象，缩减到${maxChars}字以内。直接输出缩减后的总体记忆正文。`;
     }
 
     /** 新会话顶部的群总体记忆消息 */
