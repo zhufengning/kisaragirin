@@ -12,6 +12,7 @@ import {
     type SessionManager,
     type ToolDefinition
 } from '@earendil-works/pi-coding-agent';
+import type {AgentMessage} from '@earendil-works/pi-agent-core';
 import type {AssistantMessage, Context, Message} from '@earendil-works/pi-ai';
 import {
     schema,
@@ -41,6 +42,8 @@ import {resolveAssignmentModels} from './models-factory';
 import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './reply-tool';
 import {createGraphitiTools} from './graphiti-tool';
 import {createImageTools} from './image-tool';
+import {createStickerTools} from './sticker-tool';
+import {getStickers, type StickerRecord} from './sticker-store';
 import {addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
 import {buildSystemPrompt, buildUserPromptArray, formatToolsDescription, formatUsage} from './reply-prompt';
@@ -132,6 +135,39 @@ function buildGroupMemoryMessage (memory: string): Message {
         content: [{type: 'text', text: prompts.groupMemoryContext(memory)}],
         timestamp: Date.now()
     } as Message;
+}
+
+function buildStickerListMessage (stickers: StickerRecord[]): Message {
+    return {
+        role: 'user',
+        content: [{type: 'text', text: prompts.stickerListContext(stickers)}],
+        timestamp: Date.now()
+    } as Message;
+}
+
+/** 会话头部消息：总体记忆与表情包收藏列表，压缩时不计入聊天内容 */
+function buildSessionHeaderMessages (memory: string | null, stickers: StickerRecord[]): Message[] {
+    const messages: Message[] = [];
+    if (memory) messages.push(buildGroupMemoryMessage(memory));
+    messages.push(buildStickerListMessage(stickers));
+    return messages;
+}
+
+function messageText (message: AgentMessage): string {
+    if (message.role !== 'user') return '';
+    const content = message.content;
+    if (typeof content === 'string') return content;
+    let text = '';
+    for (const block of content) {
+        if (block.type === 'text') text += block.text;
+    }
+    return text;
+}
+
+function isSessionHeaderMessage (message: AgentMessage): boolean {
+    const text = messageText(message);
+    return text.startsWith(prompts.groupMemoryContextPrefix) ||
+        text.startsWith(prompts.stickerListPrefix);
 }
 
 function assistantText (message: AssistantMessage): string {
@@ -231,14 +267,16 @@ export class ReplyAgent {
         const {sessionManager, isNew} = await getOrCreateGroupSession(groupId, db);
         if (isNew) {
             const memory = await getGroupOverallMemory(db, groupId);
-            if (memory) {
-                sessionManager.appendMessage(buildGroupMemoryMessage(memory));
+            const stickers = await getStickers(db);
+            for (const message of buildSessionHeaderMessages(memory, stickers)) {
+                sessionManager.appendMessage(message);
             }
         }
 
         const agentRef: {current: ReplyAgent | null} = {current: null};
 
         const replyTool = createReplyTool({
+            db,
             onCalled: params => {
                 agentRef.current!.lastReplyToolParams = params;
             }
@@ -246,7 +284,12 @@ export class ReplyAgent {
 
         const graphitiTools = graphiti ? createGraphitiTools(graphiti, config.log.level, groupId) : [];
         const imageTools = createImageTools({db, descQueue});
-        const tools: ToolDefinition[] = [replyTool, ...imageTools, ...graphitiTools];
+        const stickerTools = createStickerTools({
+            db,
+            groupId,
+            maxStickers: config.input.sticker_max_count
+        });
+        const tools: ToolDefinition[] = [replyTool, ...imageTools, ...stickerTools, ...graphitiTools];
 
         const systemPromptText = buildSystemPrompt({
             botName: config.input.bot_name || '机器人',
@@ -612,8 +655,9 @@ export class ReplyAgent {
             return {messages: [], requiresDeepResearch: false, failed: true, processedUpToId};
         }
 
-        // 过滤全空白文本的消息；过滤后为空表示模型选择不回复
-        const messages = params.messages.filter(m => m.text.trim());
+        // 过滤既无文字也无图片的消息；过滤后为空表示模型选择不回复
+        const messages = params.messages.filter(m =>
+            (m.text ?? '').trim().length > 0 || typeof m.image_id === 'number');
         if (messages.length === 0) {
             this.logger.info(`[ReplyAgent] [${this.groupId}] ${label} replied with empty messages (no reply)`);
         }
@@ -746,16 +790,19 @@ export class ReplyAgent {
     async triggerCompact (): Promise<boolean> {
         await this.waitForIdle();
         const contextMessages = this.sessionManager.buildSessionContext().messages;
-        const memory = await getGroupOverallMemory(this.db, this.groupId);
-        const chatMessages = memory && contextMessages[0]?.role === 'user' ?
-            contextMessages.slice(1) :
-            contextMessages;
+        let headerCount = 0;
+        while (headerCount < contextMessages.length && isSessionHeaderMessage(contextMessages[headerCount])) {
+            headerCount++;
+        }
+        const chatMessages = contextMessages.slice(headerCount);
         if (!serializeConversation(convertToLlm(chatMessages)).trim()) {
             this.logger.info(`[ReplyAgent] [${this.groupId}] no chat messages to compact`);
             return false;
         }
 
-        const conversation = serializeConversation(convertToLlm(contextMessages));
+        const conversationMessages = contextMessages.filter(message =>
+            !messageText(message).startsWith(prompts.stickerListPrefix));
+        const conversation = serializeConversation(convertToLlm(conversationMessages));
         const summary = await this.generateOverallMemory(conversation);
         await setGroupOverallMemory(this.db, this.groupId, summary);
         await this.replaceSession(summary);
@@ -832,9 +879,10 @@ export class ReplyAgent {
     }
 
     private async replaceSession (memory: string | null): Promise<void> {
+        const stickers = await getStickers(this.db);
         const created = createGroupSession(this.groupId);
-        if (memory) {
-            created.sessionManager.appendMessage(buildGroupMemoryMessage(memory));
+        for (const message of buildSessionHeaderMessages(memory, stickers)) {
+            created.sessionManager.appendMessage(message);
         }
         const session = await createReplyAgentSession({
             config: this.config,

@@ -6,6 +6,8 @@
 - 群消息采集（按群串行入库：每群一条 promise 链，保证数据库自增 id 与消息真实到达顺序一致，避免图片下载等入库前 await 造成乱序）
 - 消息与图片浏览
 - 图片唯一标识与追问（消息文本以 `[image#ID: 描述]` 展示图片，模型可用 `ask_image` 工具按图片 id 向 vision 模型追问细节）
+- 图片发送（`reply` 工具的每条消息可用图片 id 发送已有图片）与工具调用校验（文字与图片不能同时出现在一条消息、未请求深度研究时不得包含主题；校验失败返回提示且不发送）
+- 表情包收藏（`add_sticker` / `remove_sticker`，所有群共享同一个库，数量上限可配置；收藏列表在每次压缩后注入会话头部）
 - @触发回复（支持merge_window合并）
 - 闲时触发回复（沉默定时器 + 概率抽卡）
 - 按群定时任务触发（crontab-like，支持触发前预研究）
@@ -68,8 +70,10 @@ src/
     credential-store.ts -- SDK `InMemoryCredentialStore` 实例与凭据初始化
     models-factory.ts   -- 模型注册与 assignment 解析（不读取生产配置）
     harness-factory.ts  -- `SessionManager` 缓存、活动会话元数据与独立会话文件创建（`data/harness/`）
-    reply-tool.ts       -- 回复工具（`reply`），由 AgentSession 调用
+    reply-tool.ts       -- 回复工具（`reply`），由 AgentSession 调用；校验消息中的文字/图片组合与深度研究主题
     image-tool.ts       -- 图片追问工具（`ask_image`），按图片 id 向 vision 模型提问
+    sticker-store.ts    -- 全局表情包收藏列表的 kv_store 读写
+    sticker-tool.ts     -- 表情包收藏与取消收藏工具（`add_sticker` / `remove_sticker`）
     reply-task.ts       -- `ReplyTask` / `ScheduledReplyTask` 任务类型
     reply-prompt.ts     -- 回复 system prompt 与 user message 构建
     reply-debug.ts      -- 回复流程的 `data/debug/` 调试导出
@@ -147,7 +151,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
     database-inspector.ts -- better-sqlite3 只读数据库检查器
     messages.ts         -- OneBot 消息段构造与请求文本提取
   scenarios/            -- 调度场景（ingress-order / at-merge / silence / queue-fifo / watermark /
-                           scheduled / scheduled-tasks / tools-research / image-ask / failures / graphiti / desc-queue / restart）
+                           scheduled / scheduled-tasks / tools-research / image-ask / sticker / failures / graphiti / desc-queue / restart）
 ```
 
 ### 关键组件关系
@@ -160,7 +164,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - 启动时通过 `globalThis.__db__` / `globalThis.__queue__` / `globalThis.__config__` 暴露给 Astro
 - `replyManagers`（`Map<number, GroupReplyManager>`）通过 `globalThis.__replyManagers__` 暴露给 Astro，使 webui 能按群号获取 `ReplyAgent`
 - `GroupReplyManager` 通过 `GroupReplyManager.create(...)` 异步初始化，内部调用 `ReplyAgent.create(...)` 获取按群复用的 `AgentSession`
-- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 按数据库元数据获取/创建持久化 `SessionManager`；活动文件位于 `data/harness/`，每次压缩使用独立文件，旧版固定路径 `group-{id}.jsonl` 可直接打开。全新 session 不从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息）；若数据库已有总体记忆，则先将会话顶部插入总体记忆，再推进边界。其他历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
+- `ReplyAgent.create(...)` 使用 `harness-factory.ts` 的 `getOrCreateGroupSession` 按数据库元数据获取/创建持久化 `SessionManager`；活动文件位于 `data/harness/`，每次压缩使用独立文件，旧版固定路径 `group-{id}.jsonl` 可直接打开。全新 session 不从数据库导入历史消息，创建时会把 `lastTriggerId` 推进到该群最新消息 id（后续回复只处理新消息）；若数据库已有总体记忆，则先将会话顶部插入总体记忆，随后插入表情包收藏列表（列表为空时保留结构并标注内容为空），再推进边界。其他历史上下文由 webui 按日期范围手动导入（`importMessagesByDateRange`，忽略 compact 消息）
 - `models-factory.ts` 负责自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析；`config.ts` 创建唯一的 `ModelRuntime` 单例（`modelsPath: null`、`refreshOnCreate: false`，启动时等待凭据写入完成）并注入 `createApplication`
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
@@ -172,7 +176,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `ReplyAgent.buildPreviewPrompt(task)` 复用同一逻辑，从 `task.lastTriggerId` 读取消息并构造 user message 预览，不修改会话状态
 - `ReplyAgent.triggerCompact()` 整理并保存群总体记忆，随后创建新会话；`GroupReplyManager.triggerCompact()` 将定时与手动操作纳入单群队列
 - **bot 和 webui 共用同一入口**，避免两边逻辑偏差
-- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `image-tool.ts` / `desc-queue.ts`）
+- 所有 prompt 默认值集中在 `src/prompts.ts` 的 `Prompts` 类中，`input.prompts` 可在启动时覆盖任意成员（`applyPromptsOverrides`）；`prompts` 单例由回复流程各模块共用（`reply-prompt.ts` / `reply-agent.ts` / `reply-sender.ts` / `memory-context.ts` / `deep-research.ts` / `reply-tool.ts` / `image-tool.ts` / `sticker-tool.ts` / `desc-queue.ts`）
 - `GroupReplyManager` 维护每群 `lastTriggerId`，回复完成后更新为本轮实际读入 prompt 的最大消息 id（`processedUpToId`），而非 bot 回复行 id——否则回复执行期间到达的新消息（id 小于 bot 回复行）会被永久跳过；新 session 创建时 `lastTriggerId` 由 `ReplyAgent.create` 推进到该群最新消息 id，历史上下文由 webui 按日期范围手动导入
 - **乱序时序提示**：回复生成期间送达的消息 id 小于 bot 回复行 id，但在会话中排在回复之后。`ReplyAgent` 跟踪 `lastBotReplyId`（`appendBotMessage` 时更新，创建时从数据库恢复），prompt 构建时若读入 `id <= lastBotReplyId` 的消息，则将 `prompts.outOfOrderHint` 提示拼在 user 消息最后（在 graphiti 合并 episode 快照之后追加，不进记忆），提醒模型按消息 id 推断真实时序
 - `GroupReplyManager.create(...)` 异步初始化 `ReplyAgent`，并通过 `getAgent()` 暴露给外部
@@ -194,7 +198,9 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - **不发送 response_format**：`ai.graphiti.llm.structured_output_mode` 为 `none` 时，graphiti 服务端在传输层从请求体中移除 `response_format`，同时把客户端按 json_object 模式构造，使 graphiti-core 把 pydantic schema 拼入 prompt 末尾
 - 记忆工具在 tool loop 中可被多次调用（先搜索 → 看到结果 → 决定再搜索别的）
 - **自动记忆搜索**：配置 `ai.assignments.memory_keyword` 后，`memory-context.ts` 每次触发回复时自动调用指定模型从全部最新消息生成搜索关键词（自然语言查询 + 实体名称），查询走 `search`；`ai.memoryKeyword.enable_entity_search` 为 true 时实体走 `search_nodes`，结果按「事实」与「相关实体」两节各取前 10 条注入，默认关闭（仅注入事实列表），注入位置为最后一条 user message 末尾
-- **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text`，可选 `ref` 指向被引用消息的数据库 id），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）
+- **回复工具** (`reply`) 设置 `terminate: true`，参数 `messages` 为消息数组（每条含 `text` 或 `image_id`，可选 `ref` 指向被引用消息的数据库 id；图片默认按表情发送，设置 `not_sticker: true` 时按普通图片发送），被调用后 Agent loop 立即退出；`messages` 传空数组表示模型主动选择不回复（合法结果，不视为失败）。工具调用前校验：一条消息不能同时包含文字和图片、必须有文字或图片、图片 id 必须存在、未请求深度研究时不得包含 `deep_research_topic`；未通过时返回失败提示（逐条列出违反的规则）且不发送，模型可在同一 loop 中修正后重新调用
+- **表情包收藏工具** (`sticker-tool.ts`) 注册 `add_sticker`（图片 id、分类、备注）与 `remove_sticker`（图片 id）两个 `ToolDefinition`；收藏全局保存在 `kv_store` 的 `stickers`（JSON 数组，按收藏顺序），所有群共享，数量上限由 `input.sticker_max_count` 控制（默认 50），重复收藏同一图片时更新分类与备注；首次读取时合并旧版按群收藏并删除旧键。每次压缩更换会话时读取最新列表写入会话头部；压缩时头部消息不计入聊天内容，表情包列表不进入总体记忆摘要
+- 消息轮与深度研究轮共用回合链与工具调用轮数配额，`add_sticker` / `remove_sticker` 与其他非 `reply` 工具一样计入 `input.max_tool_call_rounds`
 - **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后由内联 extension 的 `tool_call` 处理器返回 `{block: true}` 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
@@ -233,9 +239,10 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `input.max_tool_call_rounds`：每个回合中允许的非 `reply` 工具调用轮数上限，默认 5
 - `input.compact_context_ratio`：上下文占用比例触发总体记忆压缩，默认 0.8，0 表示禁用比例触发；每日04:00压缩不受其影响
 - `input.compact_max_chars`：群总体记忆最大字符数，默认 3000，超出时持续要求模型缩减
+- `input.sticker_max_count`：表情包收藏数量上限，默认 50
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
-- `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用
+- `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用。表情包使用与收藏规则写在 `rules` 中
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`
 - `ai.assignments.agent_harness`：驱动 `AgentSession` 的模型 assignment（`string | ScheduledModelAssignment`）
 - `ai.assignments.deep_research`：深度研究执行方式（`string | PiRpcConfig`）。字符串为 `ai.models` 中的模型 key，通过 LLM 兼容接口直接发起单次研究；对象为 pi rpc 配置，字段：`command`（pi CLI 命令，默认 `pi`）、`args`（追加在 `--mode rpc` 之后的参数，默认 `['--no-session']`）、`env`（子进程环境变量，覆盖 `process.env` 同名变量）、`cwd`（子进程工作目录，默认当前工作目录）、`timeout_ms`（单次研究超时时间，默认 1800000）
@@ -293,6 +300,8 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `src/util/credential-store.ts` — SDK `InMemoryCredentialStore` 实例与启动时凭据写入
 - `src/util/reply-tool.ts` — 回复工具（`reply`，`ToolDefinition`）
 - `src/util/image-tool.ts` — 图片追问工具（`ask_image`，`ToolDefinition`）
+- `src/util/sticker-store.ts` — 全局表情包收藏列表的 kv_store 读写
+- `src/util/sticker-tool.ts` — 表情包收藏与取消收藏工具（`add_sticker` / `remove_sticker`）
 - `src/util/scheduled-tasks.ts` — Croner 定时任务调度
 - `src/util/graphiti-tool.ts` — Graphiti 记忆工具（仅 `search_memory`），注册为 `ToolDefinition`
 - `src/util/graphiti-client.ts` — Graphiti Node.js 客户端（stdio JSON-RPC 通信）

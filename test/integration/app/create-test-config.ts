@@ -20,6 +20,7 @@ export interface TestConfigOverrides {
     maxDeepResearchRounds?: number;
     compactContextRatio?: number;
     compactMaxChars?: number;
+    stickerMaxCount?: number;
     contextWindow?: number;
     visionConcurrency?: number;
     visionMaxFrames?: number;
@@ -100,6 +101,7 @@ export function createTestConfig (input: TestConfigInput): AppConfig {
         max_deep_research_rounds: input.maxDeepResearchRounds ?? 3,
         compact_context_ratio: input.compactContextRatio ?? 0.8,
         compact_max_chars: input.compactMaxChars ?? 3000,
+        sticker_max_count: input.stickerMaxCount ?? 50,
         vision_concurrency: input.visionConcurrency ?? 2,
         vision_max_frames: input.visionMaxFrames ?? 5,
         vision_thinking_level: input.visionThinkingLevel ?? 'off',

@@ -11,6 +11,8 @@ import {addMessageEpisode} from './graphiti-episode';
 import {prompts} from '~/prompts';
 import {Logger} from '@lib/util/logger';
 import {eq} from 'drizzle-orm';
+import {readFile} from 'node:fs/promises';
+import {findImagePath} from './image-store';
 
 /** 上一轮实际发送的信息，供下一轮回复引用与兜底定位 */
 export interface TurnLocation {
@@ -146,16 +148,46 @@ export class ReplySender {
         if (ref.onebotId) {
             onebotSegments.push({type: 'reply', data: {id: ref.onebotId}});
         }
-        onebotSegments.push({type: 'text', data: {text: item.text}});
 
         if (ref.dbSegment) {
             dbSegments.push(ref.dbSegment);
         }
-        dbSegments.push({type: 'text', text: item.text});
+
+        let preview: string;
+        if (typeof item.image_id === 'number') {
+            const rows = await this.db
+                .select({sha256: schema.images.sha256})
+                .from(schema.images)
+                .where(eq(schema.images.id, item.image_id))
+                .limit(1);
+            const image = rows[0];
+            if (!image) {
+                throw new Error(`reply image id ${item.image_id} not found`);
+            }
+            const filePath = findImagePath(image.sha256);
+            if (!filePath) {
+                throw new Error(`reply image file for id ${item.image_id} not found`);
+            }
+            const data = await readFile(filePath);
+            onebotSegments.push({
+                type: 'image',
+                data: {
+                    file: `base64://${data.toString('base64')}`,
+                    ...(item.not_sticker ? {} : {sub_type: 1})
+                }
+            });
+            dbSegments.push({type: 'image', sha256: image.sha256});
+            preview = `[image#${item.image_id}]`;
+        } else {
+            const text = item.text ?? '';
+            onebotSegments.push({type: 'text', data: {text}});
+            dbSegments.push({type: 'text', text});
+            preview = text;
+        }
 
         this.logger.info(
             `[ReplyManager] [${this.groupId}] sending item ${index + 1}/${total}: ` +
-            `${item.text.slice(0, 80)}${item.text.length > 80 ? '...' : ''}` +
+            `${preview.slice(0, 80)}${preview.length > 80 ? '...' : ''}` +
             `${ref.onebotId ? ` (ref=${item.ref})` : ''}`);
 
         const sendResult = await this.bot.sendGroupMsg(this.groupId, onebotSegments);
@@ -171,7 +203,7 @@ export class ReplySender {
             isBot: true,
             isAtBot: false,
             segments: dbSegments as StoredSegment[],
-            rawMessage: item.text
+            rawMessage: item.text?.trim() ? item.text : preview
         })
             .returning({id: schema.messages.id});
 
@@ -245,7 +277,7 @@ export class ReplySender {
                         senderCard: botCard ?? undefined,
                         isBot: true,
                         isAtBot: false,
-                        segments: [{type: 'text', text: prevTurn.messages.map(m => m.text).join('')}]
+                        segments: [{type: 'text', text: prevTurn.messages.map(m => m.text ?? '').join('')}]
                     }
                 }
             };

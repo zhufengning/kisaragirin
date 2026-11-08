@@ -30,6 +30,8 @@ export class InputConfig {
     compact_context_ratio = 0.8;
     /** 群总体记忆的最大字符数 */
     compact_max_chars = 3000;
+    /** 表情包收藏数量上限 */
+    sticker_max_count = 50;
     /** 每个任务内允许的最大深度研究次数（深度研究轮可链式再次请求研究，达到上限后忽略），默认 3 */
     max_deep_research_rounds = 3;
     vision_concurrency = 5;

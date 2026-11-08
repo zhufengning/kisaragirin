@@ -293,12 +293,10 @@ function pageUrl (page: number) {
             if (cancelBtn) cancelBtn.disabled = true;
 
             try {
-                const form = new FormData();
-                form.append('sha256', sha256);
-                form.append('description', input.value);
                 const res = await fetch('/api/images/update-description', {
                     method: 'POST',
-                    body: form,
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({sha256, description: input.value}),
                     credentials: 'same-origin'
                 });
                 if (!res.ok) throw new Error(await res.text());

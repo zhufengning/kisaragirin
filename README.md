@@ -6,6 +6,7 @@
 
 - 接收并存储群消息
 - 下载、去重并 AI 描述消息中的图片；消息文本以 `[image#12: 描述]` 形式展示图片，模型可用 `ask_image` 工具按图片 id 向视觉模型追问细节
+- 回复工具可按图片 id 发送已有图片；模型可将图片收藏为表情包（分类与备注），所有群共享同一个表情包库，收藏列表在每次压缩后注入会话头部
 - 自动回复：@触发、闲时触发
 - 按群定时任务触发
 - 支持深度研究多轮回复（研究轮可链式再次请求研究，轮数上限可配置）
@@ -36,6 +37,8 @@ pnpm web:build && pnpm start
 - 总体记忆保存在 SQLite 的 `kv_store` 中。每次整理成功后创建独立的新 session 文件，并将总体记忆放在会话顶部；删除 session 文件后仍可从数据库恢复。Web 面板可查看或删除总体记忆，删除后立即更换为不含总体记忆的新会话
 - 启用 Graphiti 时，可在回复中通过 `search_memory` 工具搜索记忆；记忆自动创建（触发回复时合并消息，内容与模型看到的 user message 一致；bot 回复发送后、深度研究结果产生时）；通过覆写 graphiti-core 官方语言扩展点强制事实与摘要以简体中文生成（专有名词/昵称/引用原文保留）；服务端在传输层用 jsonrepair 修复模型返回的非法 JSON（markdown 围栏、被截断、根值之后的尾随内容）
 - 图片描述不足以判断图片内容时，模型可调用 `ask_image`（参数为图片 id 与具体问题）向 vision 模型追问，追问使用独立的问答 prompt，回答只作为工具结果返回，不改写已保存的图片描述
+- 回复消息中的每条可以是文字或图片（`image_id`），文字与图片不能同时出现在一条消息；未请求深度研究时不得设置 `deep_research_topic`。图片默认按表情（`sub_type=1`）发送，消息中设置 `not_sticker: true` 时按普通图片发送。校验不通过时 reply 工具返回失败提示且不发送，模型可修正后重新调用
+- 模型可通过 `add_sticker`（图片 id、分类、备注）收藏表情包，通过 `remove_sticker` 按图片 id 取消收藏；表情包库由所有群共享，收藏数量上限由 `input.sticker_max_count` 控制（默认50）。首次读取时自动合并旧版按群收藏并删除旧键。收藏列表在每次压缩创建新会话时写入会话头部，列表为空时保留结构并标注内容为空；当前对话中新收藏的表情不会立即写入该列表
 - 可通过 `ai.graphiti.llm.headers` 为 Graphiti 的 LLM 请求附加自定义头部；值为 null 表示删除 SDK 默认头部（如 `X-Stainless-*`）。该配置只作用于生成型 LLM，嵌入与重排请求由 graphiti-core 内部各自创建客户端，不受其影响
 - `ai.graphiti.llm.structured_output_mode` 指定 Graphiti 抽取等结构化输出的请求方式，默认 `json_schema`（`response_format` 携带 pydantic schema）。端点按严格模式校验 schema（要求每个 object 显式给出 `additionalProperties: false`）时设为 `json_object`：`response_format` 为 `json_object`，schema 拼入 prompt 末尾。端点完全不提供 `response_format` 时设为 `none`：请求不带该字段，schema 只拼入 prompt 末尾；返回内容由 jsonrepair 清洗后再解析
 - 配置 `ai.assignments.memory_keyword` 后，每次回复前自动从最新消息生成搜索关键词（自然语言查询 + 实体名称）检索 Graphiti，将相关记忆按「事实」与「相关实体」两节注入上下文；实体搜索由 `ai.memoryKeyword.enable_entity_search` 控制（默认关闭，关闭时仅注入事实列表）
@@ -54,6 +57,15 @@ input: {
 ```
 
 每日04:00的压缩始终注册到所有白名单群，不依赖 `input.scheduled_tasks`。压缩与回复在同一群队列中串行执行，压缩不会向群内发送消息。
+
+## 表情包收藏配置
+
+```typescript
+input: {
+    // 表情包收藏数量上限，默认50
+    sticker_max_count: 50,
+}
+```
 
 ## 模型 Assignment 配置
 
@@ -171,6 +183,7 @@ input: {
 ```
 
 - 字符串字段直接给值即可覆盖；方法（如 `replyIdentity`）需提供同签名函数，若函数内部引用了其他成员请使用普通函数以保证 `this` 绑定
+- 表情包使用与收藏规则写在 `input.prompts.rules` 中
 - 未覆盖的成员使用 `src/prompts.ts` 中的默认值
 
 ## 图片处理配置
@@ -195,7 +208,7 @@ input: {
 
 ## 集成测试
 
-`test/integration/` 提供完整的消息回复调度集成测试，覆盖消息入库顺序、@合并窗口、闲时触发、定时任务、每群 FIFO 与跨群并行、水位线与乱序提示、工具循环、图片追问、深度研究回合链、模型回退与 reminder、Graphiti 检索与 episode、图片描述队列以及进程重启恢复。
+`test/integration/` 提供完整的消息回复调度集成测试，覆盖消息入库顺序、@合并窗口、闲时触发、定时任务、每群 FIFO 与跨群并行、水位线与乱序提示、工具循环、图片追问、图片发送与表情包收藏、深度研究回合链、模型回退与 reminder、Graphiti 检索与 episode、图片描述队列以及进程重启恢复。
 
 ```bash
 pnpm run test:integration

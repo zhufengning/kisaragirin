@@ -436,6 +436,9 @@ export async function onebotMessageToSegments (
                 break;
             }
             case 'image': {
+                if (!m.data.url) {
+                    throw new Error(`image segment missing url: ${m.data.file}`);
+                }
                 const {sha256} = await downloadAndStoreImage(m.data.url);
                 out.push({type: 'image', sha256});
                 break;

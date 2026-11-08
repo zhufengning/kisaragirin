@@ -42,11 +42,13 @@ export interface ImageMessage {
          * Indicates the image is a flash image. absent if not.
          */
         type?: 'flash';
+        /** 图片子类型；发送时设为 1 表示按表情图片发送 */
+        sub_type?: number;
         /**
          * URL of the image.
          * WARNING: If you want to send, you should use the `file` field instead.
          */
-        url: string;
+        url?: string;
     };
 }
 

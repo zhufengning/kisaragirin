@@ -1,7 +1,11 @@
+import type {StickerRecord} from './util/sticker-store';
+
 export interface ReplyToolParameterDescriptions {
     messages: string;
     messageRef: string;
     messageText: string;
+    messageImageId: string;
+    messageNotSticker: string;
     requiresDeepResearch: string;
     deepResearchTopic: string;
 }
@@ -9,6 +13,12 @@ export interface ReplyToolParameterDescriptions {
 export interface AskImageParameterDescriptions {
     imageId: string;
     question: string;
+}
+
+export interface StickerParameterDescriptions {
+    imageId: string;
+    category: string;
+    note: string;
 }
 
 /**
@@ -73,9 +83,31 @@ export class Prompts {
         return `上一版总体记忆有${actualChars}字，超过${maxChars}字上限。请保留四节结构与仍有参考价值的内容，优先压缩、合并、删减细节、旧事件和不活跃群友印象，缩减到${maxChars}字以内。直接输出缩减后的总体记忆正文。`;
     }
 
+    /** 新会话顶部的群总体记忆消息前缀，用于识别会话头部消息 */
+    groupMemoryContextPrefix = '以下是本群的总体记忆，请在后续交流中参考：';
+
     /** 新会话顶部的群总体记忆消息 */
     groupMemoryContext (memory: string): string {
-        return `以下是本群的总体记忆，请在后续交流中参考：\n\n${memory}`;
+        return `${this.groupMemoryContextPrefix}\n\n${memory}`;
+    }
+
+    /** 新会话顶部的表情包收藏列表前缀，用于识别会话头部消息 */
+    stickerListPrefix = '以下是本群历史收藏的表情包（图片ID、分类、备注）：';
+
+    /** 收藏列表为空时展示的内容 */
+    stickerListEmpty = '（内容为空）';
+
+    /** 表情包收藏列表的结尾说明 */
+    stickerListFooter = '这些是历史收藏的表情，当前对话中新收藏的表情不会立刻写入这里。';
+
+    /** 新会话顶部的表情包收藏列表消息 */
+    stickerListContext (stickers: StickerRecord[]): string {
+        const body = stickers.length === 0 ?
+            this.stickerListEmpty :
+            stickers
+                .map(sticker => `- 图片ID：${sticker.imageId} 分类：${sticker.category} 备注：${sticker.note}`)
+                .join('\n');
+        return `${this.stickerListPrefix}\n${body}\n${this.stickerListFooter}`;
     }
 
     memoryQueryPrompt = `你是一个记忆检索助手。根据以下群聊消息和已检索到的记忆，判断是否需要搜索更多历史记忆来辅助回复。
@@ -117,7 +149,30 @@ export class Prompts {
     }
 
     replyToolDescription (): string {
-        return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。';
+        return '最终回复工具。当你已经完成所有思考、记忆检索与研究后，调用此工具提交你要发送给群的最终回复内容。每条消息可以是文字，也可以是用图片ID发送一张已有图片；图片默认按表情发送，设置 not_sticker 为 true 时按普通图片发送。';
+    }
+
+    /** reply 工具参数校验未通过时的失败提示 */
+    replyValidationFailed (violations: string[]): string {
+        const list = violations.map((violation, index) => `${index + 1}. ${violation}`)
+            .join('\n');
+        return `回复未发送，违反以下规则：\n${list}\n请修正后重新调用 reply。`;
+    }
+
+    replyValidationImageAndText (index: number): string {
+        return `第${index}条消息同时包含文字和图片，一条消息只能是文字或图片`;
+    }
+
+    replyValidationEmptyMessage (index: number): string {
+        return `第${index}条消息既没有文字也没有图片`;
+    }
+
+    replyValidationImageMissing (index: number, imageId: number): string {
+        return `第${index}条消息的图片ID ${imageId} 不存在`;
+    }
+
+    replyValidationDeepResearchTopic (): string {
+        return '未请求深度研究（requires_deep_research 为 false）时不得包含 deep_research_topic';
     }
 
     replyToolResultText (): string {
@@ -126,9 +181,11 @@ export class Prompts {
 
     replyToolParameterDescriptions (): ReplyToolParameterDescriptions {
         return {
-            messages: '回复消息数组，每条消息可选引用一条已有消息。将按顺序逐条发送数组中的消息；传空数组表示不进行回复（用于你判断无需回复的场合）',
+            messages: '回复消息数组，每条消息可选引用一条已有消息。每条消息只能包含文字或图片之一。将按顺序逐条发送数组中的消息；传空数组表示不进行回复（用于你判断无需回复的场合）',
             messageRef: '被引用消息的消息ID（即消息格式中(#id)的数字部分）。@触发时省略则默认引用触发消息',
-            messageText: '消息正文内容',
+            messageText: '消息正文内容，与 image_id 二选一',
+            messageImageId: '要发送的图片ID，与 text 二选一。可用于发送收藏的表情包',
+            messageNotSticker: '仅图片消息有效。默认按表情发送；设为 true 时按普通图片发送',
             requiresDeepResearch: '是否需要先进行深度研究再回复',
             deepResearchTopic: '深度研究的主题，requires_deep_research 为 true 时提供'
         };
@@ -151,6 +208,56 @@ export class Prompts {
 
     askImageFailed (): string {
         return '图片追问失败，未能获得回答。';
+    }
+
+    addStickerToolDescription (): string {
+        return '将一张已有图片收藏为表情包。收藏后可在 reply 工具中用图片ID发送该图片。';
+    }
+
+    addStickerToolParameterDescriptions (): StickerParameterDescriptions {
+        return {
+            imageId: '图片ID，即消息文本中 [image#12: 描述] 里 # 后面的数字',
+            category: '表情分类，如疑惑、开心、无语',
+            note: '表情备注，尽量精简，不要直接使用完整图片描述'
+        };
+    }
+
+    removeStickerToolDescription (): string {
+        return '按图片ID取消收藏表情包。';
+    }
+
+    removeStickerToolParameterDescriptions (): Pick<StickerParameterDescriptions, 'imageId'> {
+        return {
+            imageId: '要取消收藏的图片ID'
+        };
+    }
+
+    stickerAdded (imageId: number, category: string, note: string): string {
+        return `已收藏表情：图片ID ${imageId}，分类：${category}，备注：${note}`;
+    }
+
+    stickerUpdated (imageId: number, category: string, note: string): string {
+        return `已更新收藏的表情：图片ID ${imageId}，分类：${category}，备注：${note}`;
+    }
+
+    stickerRemoved (imageId: number): string {
+        return `已取消收藏图片ID ${imageId} 的表情。`;
+    }
+
+    stickerImageMissing (imageId: number): string {
+        return `图片ID ${imageId} 不存在，无法收藏。`;
+    }
+
+    stickerNotFavorited (imageId: number): string {
+        return `图片ID ${imageId} 不在收藏列表中。`;
+    }
+
+    stickerListFull (maxCount: number): string {
+        return `表情包收藏已达上限 ${maxCount} 张，请先取消收藏不再需要的表情。`;
+    }
+
+    stickerEmptyField (): string {
+        return '分类和备注都不能为空。';
     }
 
     replyReminder (): string {

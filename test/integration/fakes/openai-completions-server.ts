@@ -4,7 +4,7 @@ import {ScenarioArtifacts} from '../runner/artifacts';
 import {sleep, waitFor} from '../runner/wait-for';
 
 export interface ReplyToolParams {
-    messages: Array<{ref?: number; text: string}>;
+    messages: Array<{ref?: number; text?: string; image_id?: number; not_sticker?: boolean}>;
     requires_deep_research: boolean;
     deep_research_topic?: string;
 }

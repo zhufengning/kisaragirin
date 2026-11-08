@@ -3,6 +3,24 @@ function formatDate (d: Date): string {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 读取 JSON 响应；非 JSON 错误响应转为带状态码的错误，避免 JSON.parse 掩盖真实原因 */
+async function parseJsonResponse (res: Response): Promise<Record<string, unknown>> {
+    const text = await res.text();
+    let data: Record<string, unknown> = {};
+    if (text) {
+        try {
+            data = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+            if (res.ok) throw new Error('返回数据格式不正确');
+        }
+    }
+    if (!res.ok) {
+        const error = typeof data.error === 'string' ? data.error : text.trim() || `HTTP ${res.status}`;
+        throw new Error(error);
+    }
+    return data;
+}
+
 export async function deleteMessageIds (ids: number[]): Promise<void> {
     if (ids.length === 0) return;
     const noun = ids.length === 1 ? '这条消息' : `${ids.length} 条消息`;
@@ -13,7 +31,7 @@ export async function deleteMessageIds (ids: number[]): Promise<void> {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ids})
         });
-        const data = await res.json();
+        const data = await parseJsonResponse(res);
         if (data.success) {
             location.reload();
         } else {
@@ -59,7 +77,7 @@ export function initImportControls (groupId: number): void {
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({startDate: start, endDate: end})
             });
-            const data = await res.json();
+            const data = await parseJsonResponse(res);
             if (data.success) {
                 alert(`已导入 ${data.imported} 条消息`);
             } else {
@@ -83,8 +101,11 @@ export function initCompactButton (groupId: number): void {
         compactBtn.disabled = true;
         compactBtn.textContent = '压缩中...';
         try {
-            const res = await fetch(`/api/compact?groupId=${groupId}`, {method: 'POST'});
-            const data = await res.json();
+            const res = await fetch(`/api/compact?groupId=${groupId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await parseJsonResponse(res);
             if (data.success) {
                 alert(data.compacted ? '群总体记忆已更新' : '当前会话没有可压缩的聊天记录');
                 location.reload();
@@ -109,8 +130,11 @@ export function initClearButton (groupId: number): void {
         clearBtn.disabled = true;
         clearBtn.textContent = '清空中...';
         try {
-            const res = await fetch(`/api/group/${groupId}/clear`, {method: 'POST'});
-            const data = await res.json();
+            const res = await fetch(`/api/group/${groupId}/clear`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await parseJsonResponse(res);
             if (data.success) {
                 alert('已清空所有消息');
                 location.reload();

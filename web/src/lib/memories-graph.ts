@@ -547,7 +547,11 @@ export class MemoriesGraphView {
     private deleteEdge (edgeId: string): void {
         if (!this.cy) return;
         if (!confirm('确定删除这条事实？相关节点和其余事实不受影响。')) return;
-        fetch(`/api/memories/${encodeURIComponent(edgeId)}`, {method: 'DELETE', credentials: 'same-origin'})
+        fetch(`/api/memories/${encodeURIComponent(edgeId)}`, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin'
+        })
             .then(res => {
                 if (!res.ok) throw new Error();
                 this.cy?.getElementById(edgeId).remove();

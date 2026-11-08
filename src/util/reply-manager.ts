@@ -528,7 +528,7 @@ export class GroupReplyManager {
     }
 
     private resolveResearchTopic (outcome: TurnOutcome): string | null {
-        const topic = (outcome.deepResearchTopic || outcome.messages.map(m => m.text).join('')).trim();
+        const topic = (outcome.deepResearchTopic || outcome.messages.map(m => m.text ?? '').join('')).trim();
         return topic || null;
     }
 

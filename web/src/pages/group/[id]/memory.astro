@@ -67,7 +67,10 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
         deleteButton.disabled = true;
         deleteButton.textContent = '删除中...';
         try {
-            const response = await fetch(`/api/group/${groupId}/memory`, {method: 'DELETE'});
+            const response = await fetch(`/api/group/${groupId}/memory`, {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json'}
+            });
             const data = await response.json();
             if (!response.ok || !data.success) {
                 throw new Error(data.error || '未知错误');

@@ -17,7 +17,11 @@ function initDeleteAction (): void {
         if (!uuid) return;
         if (!confirm('确定删除这条记忆？')) return;
 
-        fetch(`/api/memories/${uuid}`, {method: 'DELETE', credentials: 'same-origin'})
+        fetch(`/api/memories/${uuid}`, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin'
+        })
             .then(res => {
                 if (!res.ok) throw new Error();
                 alert('删除成功！');
