@@ -22,8 +22,11 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
                 <div class="memory-meta">
                     更新于 {formatDateTime(memory.updatedAt?.toISOString())}
                 </div>
-                <pre class="memory-content">{memory.content}</pre>
-                <button id="delete-memory-btn" class="btn btn-danger" type="button">删除总体记忆</button>
+                <textarea id="memory-content" class="memory-editor" rows="18" spellcheck="false">{memory.content}</textarea>
+                <div class="memory-actions">
+                    <button id="save-memory-btn" class="btn" type="button">保存修改</button>
+                    <button id="delete-memory-btn" class="btn btn-danger" type="button">删除总体记忆</button>
+                </div>
             </section>
         ) : (
             <p class="empty">暂无总体记忆。每日04:00、上下文达到设定比例或手动压缩时生成。</p>
@@ -43,12 +46,22 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
         color: var(--text-secondary);
         font-size: 13px;
     }
-    .memory-content {
-        margin-bottom: 20px;
+    .memory-editor {
+        width: 100%;
+        margin-bottom: 16px;
+        padding: 12px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        color: var(--text);
         font-family: inherit;
+        font-size: 14px;
         line-height: 1.8;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
+        resize: vertical;
+    }
+    .memory-actions {
+        display: flex;
+        gap: 12px;
     }
     .empty {
         padding: 40px;
@@ -59,7 +72,36 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
 
 <script>
     const root = document.querySelector<HTMLElement>('.memory-page');
+    const contentInput = document.querySelector<HTMLTextAreaElement>('#memory-content');
+    const saveButton = document.querySelector<HTMLButtonElement>('#save-memory-btn');
     const deleteButton = document.querySelector<HTMLButtonElement>('#delete-memory-btn');
+    saveButton?.addEventListener('click', async () => {
+        const groupId = Number(root?.dataset.groupId);
+        if (!groupId) throw new Error('group id not found');
+        const content = contentInput?.value.trim() ?? '';
+        if (!content) {
+            alert('总体记忆内容不能为空');
+            return;
+        }
+        saveButton.disabled = true;
+        saveButton.textContent = '保存中...';
+        try {
+            const response = await fetch(`/api/group/${groupId}/memory`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({content})
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || '未知错误');
+            }
+            location.reload();
+        } catch (error) {
+            alert(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+            saveButton.disabled = false;
+            saveButton.textContent = '保存修改';
+        }
+    });
     deleteButton?.addEventListener('click', async () => {
         const groupId = Number(root?.dataset.groupId);
         if (!groupId) throw new Error('group id not found');

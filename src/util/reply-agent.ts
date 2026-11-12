@@ -871,6 +871,28 @@ export class ReplyAgent {
         return true;
     }
 
+    /** 编辑总体记忆：更新数据库并替换当前会话开头的总体记忆消息 */
+    async updateOverallMemory (content: string): Promise<void> {
+        const trimmed = content.trim();
+        if (!trimmed) throw new Error('overall memory content must not be empty');
+        await this.waitForIdle();
+        const memoryEntry = this.sessionManager.getBranch().find(entry =>
+            entry.type === 'message' &&
+            entry.message.role === 'user' &&
+            messageText(entry.message).startsWith(prompts.groupMemoryContextPrefix));
+        if (!memoryEntry) {
+            throw new Error('overall memory message not found in the current session');
+        }
+        await setGroupOverallMemory(this.db, this.groupId, trimmed);
+        this.sessionManager.appendContextEdit(memoryEntry.id, {
+            content: [{type: 'text', text: prompts.groupMemoryContext(trimmed)}]
+        });
+        this.session.refreshContext();
+        this.logger.info(
+            `[ReplyAgent] [${this.groupId}] overall memory edited, ` +
+            `chars=${Array.from(trimmed).length}`);
+    }
+
     /** 删除总体记忆并更换为空会话，使当前上下文立即停止使用该记忆 */
     async clearOverallMemory (): Promise<void> {
         await this.waitForIdle();

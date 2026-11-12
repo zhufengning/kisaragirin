@@ -30,7 +30,16 @@ interface ClearOverallMemoryOperation {
     reject: (error: unknown) => void;
 }
 
-type QueueItem = ReplyTask | CompactOperation | ClearOverallMemoryOperation;
+interface UpdateOverallMemoryOperation {
+    type: 'update-overall-memory';
+    content: string;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+}
+
+type MemoryOperation = ClearOverallMemoryOperation | UpdateOverallMemoryOperation;
+
+type QueueItem = ReplyTask | CompactOperation | MemoryOperation;
 
 interface GroupReplyManagerOptions {
     groupId: number;
@@ -148,6 +157,14 @@ export class GroupReplyManager {
         if (this.stopped) throw new Error('reply manager is stopped');
         return new Promise<void>((resolve, reject) => {
             this.enqueueMemoryOperation({type: 'clear-overall-memory', resolve, reject});
+        });
+    }
+
+    /** 编辑总体记忆同样进入单群队列，避免与正在生成的回复同时使用会话 */
+    async updateOverallMemory (content: string): Promise<void> {
+        if (this.stopped) throw new Error('reply manager is stopped');
+        return new Promise<void>((resolve, reject) => {
+            this.enqueueMemoryOperation({type: 'update-overall-memory', content, resolve, reject});
         });
     }
 
@@ -368,7 +385,7 @@ export class GroupReplyManager {
         });
     }
 
-    private enqueueMemoryOperation (operation: CompactOperation | ClearOverallMemoryOperation): void {
+    private enqueueMemoryOperation (operation: CompactOperation | MemoryOperation): void {
         this.replyQueue.push(operation);
         if (!this.processingQueue) {
             void this.processQueue();
@@ -399,12 +416,16 @@ export class GroupReplyManager {
 
         while (this.replyQueue.length > 0) {
             const item = this.replyQueue.shift()!;
-            if (item.type === 'compact' || item.type === 'clear-overall-memory') {
+            if (item.type === 'compact' || item.type === 'clear-overall-memory' ||
+                item.type === 'update-overall-memory') {
                 try {
                     if (item.type === 'compact') {
                         item.resolve(await this.agent.triggerCompact());
-                    } else {
+                    } else if (item.type === 'clear-overall-memory') {
                         await this.agent.clearOverallMemory();
+                        item.resolve();
+                    } else {
+                        await this.agent.updateOverallMemory(item.content);
                         item.resolve();
                     }
                 } catch (err) {

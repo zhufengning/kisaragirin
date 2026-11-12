@@ -52,7 +52,7 @@ pnpm web:build && pnpm start
 |------|------|
 | `/` | 群列表 |
 | `/group/{id}` | 群消息浏览与搜索、删除、清空全部、查看详情（含图片描述）、手动压缩总体记忆、按日期范围导入历史消息 |
-| `/group/{id}/memory` | 群总体记忆查看与删除 |
+| `/group/{id}/memory` | 群总体记忆查看、编辑与删除 |
 | `/group/{id}/preview` | Prompt 预览 |
 | `/group/{id}/harness` | 会话日志：角色筛选、错误高亮、条目原文查看 |
 | `/images` | 图片描述搜索、编辑与删除 |

@@ -33,7 +33,7 @@ export interface ScenarioOptions extends TestConfigOverrides {
 }
 
 interface ChildMessage {
-    type: 'alive' | 'ready' | 'stopped' | 'error';
+    type: 'alive' | 'ready' | 'stopped' | 'updated-overall-memory' | 'error';
     detail?: string;
 }
 
@@ -128,6 +128,13 @@ export class AppProcess {
         }
         await this.waitForExit(10000);
         this.cleanup();
+    }
+
+    async updateOverallMemory (groupId: number, content: string, timeoutMs = 60000): Promise<void> {
+        const child = this.child;
+        if (!child) throw new Error('application not started');
+        child.send({type: 'update-overall-memory', groupId, content});
+        await this.waitForMessage('updated-overall-memory', timeoutMs);
     }
 
     private onMessage (message: ChildMessage): void {
@@ -283,6 +290,11 @@ export class ScenarioEnvironment {
         this.closeInspector();
         this.appProcess = this.createAppProcess();
         await this.startApp();
+    }
+
+    /** 通过应用子进程调用群回复管理器的总体记忆编辑，与 Web 面板走同一入口 */
+    async updateOverallMemory (groupId: number, content: string): Promise<void> {
+        await this.appProcess.updateOverallMemory(groupId, content);
     }
 
     private openInspector (): void {

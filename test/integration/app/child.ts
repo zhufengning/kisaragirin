@@ -12,7 +12,13 @@ interface StopMessage {
     type: 'stop';
 }
 
-type ChildMessage = StartMessage | StopMessage;
+interface UpdateOverallMemoryMessage {
+    type: 'update-overall-memory';
+    groupId: number;
+    content: string;
+}
+
+type ChildMessage = StartMessage | StopMessage | UpdateOverallMemoryMessage;
 
 let app: Application | null = null;
 
@@ -40,6 +46,13 @@ async function handleMessage (message: ChildMessage): Promise<void> {
     try {
         if (message.type === 'start') {
             await handleStart(message);
+            return;
+        }
+        if (message.type === 'update-overall-memory') {
+            const manager = globalThis.__replyManagers__?.get(message.groupId);
+            if (!manager) throw new Error(`group ${message.groupId} has no reply manager`);
+            await manager.updateOverallMemory(message.content);
+            reply({type: 'updated-overall-memory'});
             return;
         }
         if (message.type === 'stop') {
