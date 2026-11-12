@@ -207,7 +207,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - **回合链编排**：`GroupReplyManager.executeTask` 按 `消息轮（runMessageTurn）→ 深度研究轮（runResearchTurn，可链式）` 组织任务执行；回合的 reply 工具结果中 `requires_deep_research=true` 时进入研究轮，研究轮中可再次请求研究，直到达到 `input.max_deep_research_rounds`（默认 3）后忽略；每回合有独立的工具调用轮数配额
 - **工具调用轮数限制**：通过 `input.max_tool_call_rounds`（默认 5）限制每轮 prompt 的非 `reply` 工具调用轮数。超过上限后由内联 extension 的 `tool_call` 处理器返回 `{block: true}` 阻止后续工具执行，并发送 reminder 提示词引导模型回复
 - 如果 Agent loop 结束时未调用回复工具，自动发送 reminder 提示词重新引导（最多 2 次）；API 错误（`stopReason='error'/'aborted'`）同样进入 reminder 重试，且使用专用的错误 reminder 提示词（`prompts.replyErrorReminder`）
-- **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退
+- **API 错误处理**：当模型返回 `stopReason='error'` 时，不会把错误内容当作正常回复；所有尝试（初始 prompt + 最多 2 次 reminder）均失败后进入失败回退。失败尝试的 assistant 消息写入会话文件后由 `context_edit` 排除出模型上下文（Web 日志仍可见）；回退重试按现有上下文续跑（`session.agent.continue()`），本轮的 user 文本只出现一次
 - **失败回退**：消息轮失败时 @触发返回 `@响应失败`（`prompts.atFailureFallback`），闲时/定时触发则静默失败；深度研究轮失败时，引用上一轮回复消息并回复兜底文案（所有触发类型），文案按失败原因区分：深度研究本身失败回复 `深度研究失败`（`prompts.deepResearchFailedFallback`），研究成功但回复生成失败回复 `回复生成失败`（`prompts.deepResearchFinalFailedFallback`）
 - **空任务跳过**：排队任务执行时若 `lastTriggerId` 之后无新消息（触发消息已被前序任务读入其 prompt），`runMessageTurn` 返回 `noop: true`，静默跳过不发送失败回退
 - 深度研究按 `ai.assignments.deep_research` 的类型执行：字符串为 `ai.models` 中的模型 key，用 `completeSimple()` 通过 LLM 兼容接口直接发起单次研究；对象为 pi CLI rpc 模式子进程（`src/util/pi-rpc-client.ts`），以严格 JSONL 协议写入 prompt，等待 `agent_settled` 后通过 `get_last_assistant_text` 取回最后一条 assistant 消息文本，研究报告由 pi agent 自己的模型与工具（网络检索等）产出，子进程的模型、凭据与扩展由 `PI_CODING_AGENT_DIR` 指向的配置目录决定；两种方式都把深度研究指令（`prompts.deepResearchSystem`）拼入 prompt 文本；失败（API 错误、子进程退出、超时、assistant 报错、空结果）时记录错误并用 fallback 文本继续研究轮

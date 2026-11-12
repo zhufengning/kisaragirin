@@ -42,6 +42,9 @@ test('首选模型400后立即回退到回退链下一个模型且不消耗remin
         assert.match(retryText, /触发回退/);
         assert.doesNotMatch(retryText, REMINDER_TEXT);
         assert.doesNotMatch(retryText, ERROR_REMINDER_TEXT);
+        // 回退重试按现有上下文续跑：本轮 user 文本只追加一次，失败的 assistant 消息不进模型上下文
+        assert.equal(env.openAI.requests[1].serialized.split('触发回退').length - 1, 1);
+        assert.ok(!env.openAI.requests[1].body.messages.some(message => message.role === 'assistant'));
 
         const sent = env.oneBot.sentMessagesFor(1001);
         assert.deepEqual(sent[0].message[1], {type: 'text', data: {text: '回退回复'}});
@@ -72,6 +75,8 @@ test('回退链耗尽后最多重试两次reminder，@触发最终发送兜底',
         assert.doesNotMatch(lastUserText(env.openAI.requests[1].body), ERROR_REMINDER_TEXT);
         assert.match(lastUserText(env.openAI.requests[2].body), ERROR_REMINDER_TEXT);
         assert.match(lastUserText(env.openAI.requests[3].body), ERROR_REMINDER_TEXT);
+        // 回退链耗尽后的 reminder 重试同样不携带失败尝试的 assistant 消息
+        assert.ok(!env.openAI.requests[2].body.messages.some(message => message.role === 'assistant'));
 
         const sent = env.oneBot.sentMessagesFor(1001);
         assert.equal(sent.length, 1);

@@ -684,6 +684,50 @@ export class ReplyAgent {
         return this.lastAssistantMessage;
     }
 
+    /**
+     * 按当前会话上下文重新发起请求，不追加新的 user 消息。
+     * 用于失败后的重试：失败尝试的 user 文本已经在会话里，再 prompt 一次会让模型看到重复的同一段消息。
+     */
+    private async continueTurn (): Promise<AssistantMessage | undefined> {
+        this.lastAssistantMessage = undefined;
+        try {
+            await this.session.agent.continue();
+        } catch (err) {
+            this.logger.error(
+                `[ReplyAgent] [${this.groupId}] continue error: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+        }
+        return this.lastAssistantMessage;
+    }
+
+    /**
+     * 把失败尝试留下的 assistant 消息排除出模型上下文。
+     * 会话文件保留原文（Web 日志仍能看到错误详情），模型上下文不再包含这条错误消息。
+     */
+    private omitFailedAssistant (): void {
+        const branch = this.sessionManager.getBranch();
+        for (let i = branch.length - 1; i >= 0; i--) {
+            const entry = branch[i];
+            if (entry.type !== 'message') continue;
+            const message = entry.message;
+            if (message.role !== 'assistant') return;
+            if (message.stopReason !== 'error' && message.stopReason !== 'aborted') return;
+            this.sessionManager.appendContextEdit(entry.id, null);
+            this.session.refreshContext();
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] failed assistant message omitted from context ` +
+                `(stopReason=${message.stopReason})`);
+            return;
+        }
+    }
+
+    /** 本次尝试是否已经把 user 文本写进会话（上下文末尾多出一条 user 消息） */
+    private hasPendingUserMessage (messageCountBefore: number): boolean {
+        const messages = this.session.messages;
+        if (messages.length <= messageCountBefore) return false;
+        return messages[messages.length - 1].role === 'user';
+    }
+
     private async promptWithReminders (lastText: string): Promise<AssistantMessage | undefined> {
         let assistant: AssistantMessage | undefined;
         const MAX_REMINDERS = 2;
@@ -692,11 +736,23 @@ export class ReplyAgent {
         // 回退链：API 错误时按配置顺序切换到下一个模型
         const modelEntries = resolveAssignmentModels(this.config, this.config.ai.assignments.agent_harness);
         let fallbackIndex = 0;
+        // 下一轮按当前上下文续跑（上一段的 user 文本已经在会话里，不再重复追加）
+        let resumeContext = false;
 
         for (let i = 0; i <= MAX_REMINDERS; i++) {
-            await this.syncSessionModel(modelEntries[fallbackIndex]);
+            const entry = modelEntries[fallbackIndex];
+            await this.syncSessionModel(entry);
             this.lastReplyToolParams = null;
-            if (i === 0) {
+
+            const resume = resumeContext;
+            resumeContext = false;
+            const messageCountBefore = this.session.messages.length;
+            if (resume) {
+                this.logger.info(
+                    `[ReplyAgent] [${this.groupId}] retrying turn with model ${entry.model.id} ` +
+                    `from the existing context`);
+                assistant = await this.continueTurn();
+            } else if (i === 0) {
                 assistant = await this.runPrompt(lastText);
             } else {
                 this.logger.info(
@@ -714,6 +770,7 @@ export class ReplyAgent {
                         `falling back to model ${modelEntries[fallbackIndex].model.id}`);
                     lastWasError = true;
                     i--;
+                    resumeContext = this.hasPendingUserMessage(messageCountBefore);
                     continue;
                 }
                 lastWasError = true;
@@ -721,6 +778,7 @@ export class ReplyAgent {
             }
             this.logger.info(`[ReplyAgent] [${this.groupId}] turn usage: ${formatUsage(assistant.usage)}`);
             if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
+                this.omitFailedAssistant();
                 // 优先按回退链切换模型重试（不消耗 reminder 额度）；链耗尽后进入 reminder 重试（最多 MAX_REMINDERS 次）
                 if (fallbackIndex < modelEntries.length - 1) {
                     fallbackIndex++;
@@ -730,6 +788,7 @@ export class ReplyAgent {
                         `falling back to model ${modelEntries[fallbackIndex].model.id}`);
                     lastWasError = true;
                     i--;
+                    resumeContext = this.hasPendingUserMessage(messageCountBefore);
                     continue;
                 }
                 this.logger.warn(
