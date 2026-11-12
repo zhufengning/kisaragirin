@@ -20,7 +20,7 @@ const imageMap = new Map(imageRows.map(r => [r.id, r]));
     <h1>表情包管理 <span class="meta">({stickers.length} 张)</span></h1>
 
     <!-- 添加收藏 -->
-    <form class="add-bar" method="POST" action="/api/stickers/add">
+    <form class="add-bar" id="add-form">
         <input type="number" name="imageId" placeholder="图片 ID" required class="input input-id" min="1" />
         <input type="text" name="category" placeholder="分类（可留空）" class="input" />
         <input type="text" name="note" placeholder="备注（可留空）" class="input" />
@@ -30,53 +30,47 @@ const imageMap = new Map(imageRows.map(r => [r.id, r]));
     {stickers.length === 0 ? (
         <p class="empty">暂无收藏的表情包</p>
     ) : (
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>图片</th>
-                    <th>ID</th>
-                    <th>分类</th>
-                    <th>备注</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                {stickers.map(s => {
-                    const img = imageMap.get(s.imageId);
-                    return (
-                        <tr data-image-id={s.imageId}>
-                            <td>
-                                {img ? (
-                                    <img
-                                        class="thumb"
-                                        src={`/api/images/file/${img.sha256}`}
-                                        alt={img.description ?? String(s.imageId)}
-                                        loading="lazy"
-                                    />
-                                ) : (
-                                    <span class="missing">图片不存在</span>
-                                )}
-                            </td>
-                            <td class="mono">{s.imageId}</td>
-                            <td class="cell-category" data-value={s.category}>{s.category || '—'}</td>
-                            <td class="cell-note" data-value={s.note}>{s.note || '—'}</td>
-                            <td class="actions">
-                                <button type="button" class="btn btn-sm btn-secondary edit-btn">编辑</button>
-                                <form
-                                    method="POST"
-                                    action="/api/stickers/remove"
-                                    class="remove-form"
-                                    onsubmit="return confirm('确定删除该收藏？')"
-                                >
-                                    <input type="hidden" name="imageId" value={s.imageId} />
-                                    <button type="submit" class="btn btn-sm btn-danger">删除</button>
-                                </form>
-                            </td>
-                        </tr>
-                    );
-                })}
-            </tbody>
-        </table>
+        <div class="table-scroll">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>图片</th>
+                        <th>ID</th>
+                        <th>分类</th>
+                        <th>备注</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {stickers.map(s => {
+                        const img = imageMap.get(s.imageId);
+                        return (
+                            <tr data-image-id={s.imageId}>
+                                <td>
+                                    {img ? (
+                                        <img
+                                            class="thumb"
+                                            src={`/api/images/file/${img.sha256}`}
+                                            alt={img.description ?? String(s.imageId)}
+                                            loading="lazy"
+                                        />
+                                    ) : (
+                                        <span class="missing">图片不存在</span>
+                                    )}
+                                </td>
+                                <td class="mono">{s.imageId}</td>
+                                <td class="cell-category" data-value={s.category}>{s.category || '—'}</td>
+                                <td class="cell-note" data-value={s.note}>{s.note || '—'}</td>
+                                <td class="actions">
+                                    <button type="button" class="btn btn-sm btn-secondary edit-btn">编辑</button>
+                                    <button type="button" class="btn btn-sm btn-danger remove-btn">删除</button>
+                                </td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        </div>
     )}
 </Layout>
 
@@ -100,13 +94,16 @@ const imageMap = new Map(imageRows.map(r => [r.id, r]));
     .input-id { width: 110px; }
     .input-sm { padding: 5px 10px; font-size: 13px; width: 100%; }
     .empty { color: var(--text-secondary); text-align: center; padding: 40px; }
-    .table {
-        width: 100%;
-        border-collapse: collapse;
-        background: var(--surface);
+    .table-scroll {
+        overflow-x: auto;
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        overflow: hidden;
+    }
+    .table {
+        width: 100%;
+        min-width: 640px;
+        border-collapse: collapse;
+        background: var(--surface);
     }
     .table th, .table td {
         padding: 10px 14px;
@@ -135,11 +132,51 @@ const imageMap = new Map(imageRows.map(r => [r.id, r]));
         color: var(--text-secondary);
     }
     .actions { display: flex; gap: 8px; align-items: center; }
-:global(.edit-btn) { display: inline-flex; }
+    :global(.edit-btn) { display: inline-flex; }
 </style>
 
 <script>
+    async function postJson (url: string, payload: Record<string, unknown>): Promise<void> {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+            credentials: 'same-origin'
+        });
+        if (!res.ok) throw new Error(await res.text());
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
+        const addForm = document.getElementById('add-form') as HTMLFormElement | null;
+        addForm?.addEventListener('submit', async event => {
+            event.preventDefault();
+            const form = new FormData(addForm);
+            try {
+                await postJson('/api/stickers/add', {
+                    imageId: Number(form.get('imageId')),
+                    category: String(form.get('category') ?? ''),
+                    note: String(form.get('note') ?? '')
+                });
+                window.location.reload();
+            } catch (err) {
+                alert(`添加失败: ${(err as Error).message}`);
+            }
+        });
+
+        document.querySelectorAll('.remove-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const row = btn.closest('tr');
+                const imageId = row?.dataset.imageId;
+                if (!imageId || !confirm('确定删除该收藏？')) return;
+                try {
+                    await postJson('/api/stickers/remove', {imageId: Number(imageId)});
+                    window.location.reload();
+                } catch (err) {
+                    alert(`删除失败: ${(err as Error).message}`);
+                }
+            });
+        });
+
         document.querySelectorAll('.edit-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const row = btn.closest('tr');
@@ -179,21 +216,17 @@ const imageMap = new Map(imageRows.map(r => [r.id, r]));
                 cancelBtn.addEventListener('click', () => window.location.reload());
                 saveBtn.addEventListener('click', async () => {
                     saveBtn.disabled = true;
-                    const form = new FormData();
-                    form.set('imageId', imageId);
-                    form.set('category', categoryInput.value);
-                    form.set('note', noteInput.value);
-                    const res = await fetch('/api/stickers/update', {
-                        method: 'POST',
-                        body: form,
-                        credentials: 'same-origin'
-                    });
-                    if (!res.ok) {
-                        alert(`保存失败: ${await res.text()}`);
+                    try {
+                        await postJson('/api/stickers/update', {
+                            imageId: Number(imageId),
+                            category: categoryInput.value,
+                            note: noteInput.value
+                        });
+                        window.location.reload();
+                    } catch (err) {
+                        alert(`保存失败: ${(err as Error).message}`);
                         saveBtn.disabled = false;
-                        return;
                     }
-                    window.location.reload();
                 });
             });
         });

@@ -170,6 +170,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `models-factory.ts` 负责自定义 provider 注册（`ModelRuntime.registerNativeProvider`）与 assignment 解析；`config.ts` 创建唯一的 `ModelRuntime` 单例（`modelsPath: null`、`refreshOnCreate: false`，启动时等待凭据写入完成）并注入 `createApplication`
 - `ScheduledTaskManager` 在 bot 登录信息就绪、群 `ReplyManager` 预初始化后启动；使用 Croner 注册 `input.scheduled_tasks` 中白名单群的任务
 - Astro `middleware.ts` 提供 Basic Auth；页面直接查 DB 渲染 HTML
+- webui 所有写操作统一使用 JSON fetch（`Content-Type: application/json`）：Astro `security.checkOrigin`（默认开启，只校验无 Content-Type 或表单编码的 POST）继续为面板提供 CSRF 保护，且面板经域名/IP/反代访问时写操作行为一致；禁止新增传统 form POST 的写接口
 - `src/web/server.ts` 仅做 Node HTTP server 适配，把请求交给 Astro `handler`
 
 ### Prompt 构建封装

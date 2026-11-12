@@ -9,11 +9,15 @@ function getMaxStickers (): number {
     return config?.input.sticker_max_count ?? 50;
 }
 
-export const POST: APIRoute = async ({request, redirect}) => {
-    const form = await request.formData();
-    const imageId = parseInt(String(form.get('imageId') ?? ''), 10);
-    const category = String(form.get('category') ?? '').trim();
-    const note = String(form.get('note') ?? '').trim();
+export const POST: APIRoute = async ({request}) => {
+    const body = await request.json() as {
+        imageId?: unknown;
+        category?: unknown;
+        note?: unknown;
+    };
+    const imageId = typeof body.imageId === 'number' ? body.imageId : NaN;
+    const category = typeof body.category === 'string' ? body.category.trim() : '';
+    const note = typeof body.note === 'string' ? body.note.trim() : '';
 
     if (!imageId || isNaN(imageId)) {
         return new Response('Invalid imageId', {status: 400});
@@ -40,5 +44,5 @@ export const POST: APIRoute = async ({request, redirect}) => {
     }
 
     await setStickers(db, stickers);
-    return redirect('/stickers');
+    return new Response(null, {status: 204});
 };

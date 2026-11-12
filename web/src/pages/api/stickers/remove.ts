@@ -2,9 +2,9 @@ import type {APIRoute} from 'astro';
 import {db} from '@lib/db';
 import {getStickers, setStickers} from '~/util/sticker-store';
 
-export const POST: APIRoute = async ({request, redirect}) => {
-    const form = await request.formData();
-    const imageId = parseInt(String(form.get('imageId') ?? ''), 10);
+export const POST: APIRoute = async ({request}) => {
+    const body = await request.json() as {imageId?: unknown};
+    const imageId = typeof body.imageId === 'number' ? body.imageId : NaN;
 
     if (!imageId || isNaN(imageId)) {
         return new Response('Invalid imageId', {status: 400});
@@ -18,5 +18,5 @@ export const POST: APIRoute = async ({request, redirect}) => {
 
     stickers.splice(index, 1);
     await setStickers(db, stickers);
-    return redirect('/stickers');
+    return new Response(null, {status: 204});
 };

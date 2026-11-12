@@ -5,20 +5,13 @@ import {
     buildMemoriesPageUrl,
     buildMemoriesViewSwitchUrl,
     loadMemoriesEdges,
-    parseMemoriesParams,
-    resolveMemoriesPostRedirect
+    parseMemoriesParams
 } from '@lib/memories-query';
 import type {GraphitiEdge} from '~/util/graphiti-client';
 import '../styles/memories.css';
 
 const params = parseMemoriesParams(Astro.url);
 const {allGroups, groupId, searchQuery, mode, view, graphEdgeLimit, currentPage} = params;
-
-// POST 处理（搜索或列出）
-if (Astro.request.method === 'POST') {
-    const redirectTarget = await resolveMemoriesPostRedirect(Astro.url, Astro.request, groupId);
-    if (redirectTarget) return Astro.redirect(redirectTarget);
-}
 
 // 只在有明确操作时查询数据库（图谱视图通过客户端脚本按需拉取）
 let edges: GraphitiEdge[] = [];
@@ -58,7 +51,7 @@ function viewSwitchUrl (targetView: 'list' | 'graph'): string {
     {view !== 'graph' && (
         <>
             <!-- 搜索/列出栏 -->
-            <form class="search-bar" method="POST" action="/memories">
+            <form class="search-bar" method="GET" action="/memories">
                 <input
                     type="text"
                     name="search"
@@ -74,7 +67,7 @@ function viewSwitchUrl (targetView: 'list' | 'graph'): string {
                 <button type="submit" name="action" value="search" class="btn">🔍 搜索</button>
                 <button type="submit" name="action" value="list" class="btn btn-secondary">📋 列出</button>
                 {mode !== 'idle' && (
-                    <button type="submit" name="action" value="clear" class="btn btn-secondary">清除</button>
+                    <a href="/memories" class="btn btn-secondary">清除</a>
                 )}
             </form>
 

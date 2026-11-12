@@ -103,7 +103,7 @@ function pageUrl (page: number) {
         )}
     </form>
 
-    <form method="POST" action="/api/images/delete-descriptions" id="batch">
+    <div id="batch">
         <div class="grid">
             {pageFiles.map(f => {
                 const row = descMap.get(f.sha256);
@@ -142,10 +142,10 @@ function pageUrl (page: number) {
 
         {pageFiles.length > 0 && (
             <div class="toolbar">
-                <button type="submit" class="btn btn-secondary btn-sm">🗑️ 删除选中描述</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="batch-delete">🗑️ 删除选中描述</button>
             </div>
         )}
-    </form>
+    </div>
 
     <!-- 分页导航 -->
     {totalPages > 1 && (
@@ -170,11 +170,9 @@ function pageUrl (page: number) {
         </nav>
     )}
 
-    <form method="POST" action="/api/images/clear-all" class="danger-zone"
-        onsubmit="return confirm('确定清空全部图片描述？')"
-    >
-        <button type="submit" class="btn btn-danger btn-sm">⚠️ 全部清空描述</button>
-    </form>
+    <div class="danger-zone">
+        <button type="button" class="btn btn-danger btn-sm" id="clear-all">⚠️ 全部清空描述</button>
+    </div>
 </Layout>
 
 <script>
@@ -201,6 +199,47 @@ function pageUrl (page: number) {
 
 <script>
     document.addEventListener('DOMContentLoaded', () => {
+        const batchBtn = document.getElementById('batch-delete');
+        batchBtn?.addEventListener('click', async () => {
+            const selected = Array.from(
+                document.querySelectorAll('#batch input[name="sha256"]:checked')
+            ).map(el => (el as HTMLInputElement).value);
+            if (selected.length === 0) {
+                alert('请先勾选图片');
+                return;
+            }
+            if (!confirm(`确定删除选中 ${selected.length} 张图片的描述？`)) return;
+            try {
+                const res = await fetch('/api/images/delete-descriptions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({sha256: selected}),
+                    credentials: 'same-origin'
+                });
+                if (!res.ok) throw new Error(await res.text());
+                window.location.reload();
+            } catch (err) {
+                alert(`删除失败: ${(err as Error).message}`);
+            }
+        });
+
+        const clearAllBtn = document.getElementById('clear-all');
+        clearAllBtn?.addEventListener('click', async () => {
+            if (!confirm('确定清空全部图片描述？')) return;
+            try {
+                const res = await fetch('/api/images/clear-all', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: '{}',
+                    credentials: 'same-origin'
+                });
+                if (!res.ok) throw new Error(await res.text());
+                window.location.reload();
+            } catch (err) {
+                alert(`清空失败: ${(err as Error).message}`);
+            }
+        });
+
         const grid = document.querySelector('.grid');
         if (!grid) return;
 
