@@ -170,6 +170,11 @@ function isSessionHeaderMessage (message: AgentMessage): boolean {
         text.startsWith(prompts.stickerListPrefix);
 }
 
+function isTransferableMessage (message: AgentMessage): message is Message {
+    return message.role === 'user' || message.role === 'assistant' ||
+        message.role === 'toolResult' || message.role === 'system';
+}
+
 function assistantText (message: AssistantMessage): string {
     return message.content
         .filter((block): block is Extract<typeof block, {type: 'text'}> => block.type === 'text')
@@ -871,7 +876,7 @@ export class ReplyAgent {
         return true;
     }
 
-    /** 编辑总体记忆：更新数据库并替换当前会话开头的总体记忆消息 */
+    /** 编辑或添加总体记忆：更新数据库并让当前会话以它开头 */
     async updateOverallMemory (content: string): Promise<void> {
         const trimmed = content.trim();
         if (!trimmed) throw new Error('overall memory content must not be empty');
@@ -880,10 +885,17 @@ export class ReplyAgent {
             entry.type === 'message' &&
             entry.message.role === 'user' &&
             messageText(entry.message).startsWith(prompts.groupMemoryContextPrefix));
-        if (!memoryEntry) {
-            throw new Error('overall memory message not found in the current session');
-        }
         await setGroupOverallMemory(this.db, this.groupId, trimmed);
+        if (!memoryEntry) {
+            const carriedMessages = this.sessionManager.buildSessionProjection().messages
+                .filter(message => !isSessionHeaderMessage(message))
+                .filter(isTransferableMessage);
+            await this.replaceSession(trimmed, carriedMessages);
+            this.logger.info(
+                `[ReplyAgent] [${this.groupId}] overall memory created, ` +
+                `chars=${Array.from(trimmed).length}, carried=${carriedMessages.length}`);
+            return;
+        }
         this.sessionManager.appendContextEdit(memoryEntry.id, {
             content: [{type: 'text', text: prompts.groupMemoryContext(trimmed)}]
         });
@@ -959,10 +971,15 @@ export class ReplyAgent {
         }
     }
 
-    private async replaceSession (memory: string | null): Promise<void> {
+    private async replaceSession (
+        memory: string | null, carriedMessages: Message[] = []
+    ): Promise<void> {
         const stickers = await getStickers(this.db);
         const created = createGroupSession(this.groupId);
         for (const message of buildSessionHeaderMessages(memory, stickers, this.config.input.sticker_max_count)) {
+            created.sessionManager.appendMessage(message);
+        }
+        for (const message of carriedMessages) {
             created.sessionManager.appendMessage(message);
         }
         const session = await createReplyAgentSession({

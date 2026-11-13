@@ -122,7 +122,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       index.astro     -- 群列表（群名称备注 + 小字号群号）
       group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗[带图片的消息同时展示图片描述，含 reply/forward 嵌套图片] + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
-      group/[id]/memory.astro  -- 群总体记忆查看、编辑与删除
+      group/[id]/memory.astro  -- 群总体记忆查看、添加、编辑与删除
       group/[id]/harness.astro -- AgentSession 会话日志查看（调用 agent.getBranch，新在前排序 + 前端分页，错误/中止消息高亮，条目 JSON 原文切换）
       images.astro           -- 图片管理（分页 + 描述搜索 + 描述编辑，固定卡片高度，卡片显示图片 id）
       stickers.astro         -- 表情包收藏管理（添加 / 编辑分类备注 / 删除）
@@ -134,7 +134,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
         messages/delete.ts   -- 单条/批量删除消息 API
         preview-prompt.ts    -- Prompt 预览 API（调用 ReplyAgent.buildPreviewPrompt）
         compact.ts           -- 手动触发群总体记忆压缩 API（通过 GroupReplyManager 进入群队列）
-        group/[id]/memory.ts -- 群总体记忆编辑（替换当前会话头部的总体记忆消息）与删除（更换会话）API
+        group/[id]/memory.ts -- 群总体记忆添加与编辑（无记忆时新建会话，有记忆时替换当前会话头部的总体记忆消息）与删除（更换会话）API
         harness.ts           -- AgentSession 会话条目 API（调用 agent.getBranch）
         group/[id]/import.ts -- 按日期范围导入历史消息 API（调用 agent.importMessagesByDateRange）
 
@@ -232,7 +232,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `input.compact_max_chars` 设置字符上限（默认3000）。超出时将上一版结果与缩减提示追加到压缩对话，持续请求模型缩减至满足上限；API 错误按模型回退链处理
 - 总体记忆保存在 `kv_store` 的 `group:{groupId}:overallMemory` 项。生成成功后通过 `replaceSession()` 创建独立会话文件，以 `prompts.groupMemoryContext()` 包装总体记忆并作为第一条 user 消息；旧会话文件保留。活动会话路径与 id 写入元数据，文件被删除后重启会根据数据库总体记忆创建并初始化新会话
 - 手动压缩可通过 webui 的 `/api/compact` 触发；`/group/{id}/memory` 查看总体记忆，删除操作清理数据库并立即更换为空会话
-- `/group/{id}/memory` 的编辑操作走 `GroupReplyManager.updateOverallMemory()` 进入单群队列，写入数据库后由 `ReplyAgent.updateOverallMemory()` 用 `SessionManager.appendContextEdit()` 记录一条指向会话头部总体记忆消息的 `context_edit`，并调用 `session.refreshContext()`，使模型上下文中的头部消息立即变为编辑后的内容；会话文件其余条目保持不变
+- `/group/{id}/memory` 的编辑操作走 `GroupReplyManager.updateOverallMemory()` 进入单群队列，写入数据库后由 `ReplyAgent.updateOverallMemory()` 更新会话：会话中存在总体记忆消息时用 `SessionManager.appendContextEdit()` 记录一条指向该消息的 `context_edit` 并调用 `session.refreshContext()`，使模型上下文中的头部消息立即变为编辑后的内容；会话中没有总体记忆消息时用 `replaceSession()` 创建以该记忆开头的新会话，并把当前会话投影中的聊天消息（跳过旧头部消息）逐条搬运到新会话
 - 会话文件为 version 3 JSONL（`SessionManager` 读写），`kv_store` 表还持久化 `lastTriggerId`（数据库自增消息 `id`）和会话元数据，重启后不丢失上下文边界；旧版运行时写入的 `active_tools_change` 等条目仍可读取并在 Web 日志中展示，不进入模型上下文
 
 ### AI 配置架构

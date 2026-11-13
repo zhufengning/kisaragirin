@@ -19,20 +19,16 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
         <h1>
             <a href={`/group/${groupId}`}>← 消息列表</a> · <GroupLabel groupId={groupId} /> 总体记忆
         </h1>
-        {memory ? (
-            <section class="memory-card">
-                <div class="memory-meta">
-                    更新于 {formatDateTime(memory.updatedAt?.toISOString())}
-                </div>
-                <textarea id="memory-content" class="memory-editor" rows="18" spellcheck="false">{memory.content}</textarea>
-                <div class="memory-actions">
-                    <button id="save-memory-btn" class="btn" type="button">保存修改</button>
-                    <button id="delete-memory-btn" class="btn btn-danger" type="button">删除总体记忆</button>
-                </div>
-            </section>
-        ) : (
-            <p class="empty">暂无总体记忆。每日04:00、上下文达到设定比例或手动压缩时生成。</p>
-        )}
+        <section class="memory-card">
+            <div class="memory-meta">
+                {memory ? `更新于 ${formatDateTime(memory.updatedAt?.toISOString())}` : '暂无总体记忆，填写内容并保存即可添加。'}
+            </div>
+            <textarea id="memory-content" class="memory-editor" rows="18" spellcheck="false">{memory?.content ?? ''}</textarea>
+            <div class="memory-actions">
+                <button id="save-memory-btn" class="btn" type="button">{memory ? '保存修改' : '添加总体记忆'}</button>
+                {memory && <button id="delete-memory-btn" class="btn btn-danger" type="button">删除总体记忆</button>}
+            </div>
+        </section>
     </div>
 </Layout>
 
@@ -65,11 +61,6 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
         display: flex;
         gap: 12px;
     }
-    .empty {
-        padding: 40px;
-        color: var(--text-secondary);
-        text-align: center;
-    }
 </style>
 
 <script>
@@ -77,6 +68,7 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
     const contentInput = document.querySelector<HTMLTextAreaElement>('#memory-content');
     const saveButton = document.querySelector<HTMLButtonElement>('#save-memory-btn');
     const deleteButton = document.querySelector<HTMLButtonElement>('#delete-memory-btn');
+    const saveDefaultText = saveButton?.textContent ?? '保存';
     saveButton?.addEventListener('click', async () => {
         const groupId = Number(root?.dataset.groupId);
         if (!groupId) throw new Error('group id not found');
@@ -101,7 +93,7 @@ const memory = await getGroupOverallMemoryRecord(db, groupId);
         } catch (error) {
             alert(`保存失败：${error instanceof Error ? error.message : String(error)}`);
             saveButton.disabled = false;
-            saveButton.textContent = '保存修改';
+            saveButton.textContent = saveDefaultText;
         }
     });
     deleteButton?.addEventListener('click', async () => {
