@@ -1,5 +1,7 @@
 ---
 import Layout from '@layouts/Layout.astro';
+import GroupLabel from '../../../components/GroupLabel.astro';
+import {formatGroupTitle} from '@lib/group-display';
 import {db} from '@lib/db';
 import {getGroupOverallMemoryRecord} from '~/db';
 import {formatDateTime} from '@lib/format-date';
@@ -12,10 +14,10 @@ if (!groupId || isNaN(groupId)) {
 const memory = await getGroupOverallMemoryRecord(db, groupId);
 ---
 
-<Layout title={`群 ${groupId} 总体记忆`}>
+<Layout title={formatGroupTitle(groupId, '总体记忆')}>
     <div class="memory-page" data-group-id={groupId}>
         <h1>
-            <a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} 总体记忆
+            <a href={`/group/${groupId}`}>← 消息列表</a> · <GroupLabel groupId={groupId} /> 总体记忆
         </h1>
         {memory ? (
             <section class="memory-card">

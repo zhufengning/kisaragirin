@@ -109,6 +109,9 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
       memories-client.ts   -- 记忆管理页客户端入口
       harness-entry.ts     -- Harness 日志条目渲染与筛选
       harness-client.ts    -- Harness 日志页客户端入口
+      group-display.ts     -- 群名称备注读取与浏览器标题格式化
+    components/
+      GroupLabel.astro     -- 群名称与小字号群号展示
     styles/
       messages.css     -- 群消息页样式
       memories.css     -- 记忆管理页样式
@@ -116,7 +119,7 @@ web/                  -- Astro 6.4 独立项目（SSR，Node middleware 模式�
     layouts/
       Layout.astro    -- 暗色主题全局布局
     pages/
-      index.astro     -- 群列表
+      index.astro     -- 群列表（群名称备注 + 小字号群号）
       group/[id].astro       -- 群消息 CRUD 浏览（分页表格 + 搜索 + 单条/批量删除 + 详情弹窗[带图片的消息同时展示图片描述，含 reply/forward 嵌套图片] + 按日期范围导入历史消息）
       group/[id]/preview.astro -- Prompt 预览（调用 ReplyAgent.buildPreviewPrompt）
       group/[id]/memory.astro  -- 群总体记忆查看、编辑与删除
@@ -245,6 +248,7 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 - `input.compact_max_chars`：群总体记忆最大字符数，默认 3000，超出时持续要求模型缩减
 - `input.sticker_max_count`：表情包收藏数量上限，默认 50
 - `input.max_deep_research_rounds`：每个任务内允许的最大深度研究次数（研究轮可链式再次请求研究，达到上限后忽略后续的 `requires_deep_research`），默认 3
+- `input.group_names`：按群号配置的群名称备注（`Record<number, string>`），webui 群列表与群页面显示名称，并在名称旁以小字号显示群号；未配置的群只显示群号
 - `input.group_custom_prompts`：按群号配置的专属提示词（`Record<number, string>`），注入在 system prompt 人设之后，有 `----- 本群专属提示 -----` 分割线
 - `input.prompts`：按成员覆盖 `src/prompts.ts` 中 `Prompts` 类的默认 prompt（`Partial<Prompts>`），如 `rules`（群聊回复规则）、`deepResearchSystem`（深度研究提示词）；未覆盖的成员使用 `prompts.ts` 中的通用默认值。启动时由 `src/app.ts` 调用 `applyPromptsOverrides` 应用。表情包使用与收藏规则写在 `rules` 中
 - `input.scheduled_tasks`：按群号配置的定时任务（`Record<number, ScheduledGroupTask[]>`），字段包含 `name`、`cron`、`timezone`、`prompt`、`deep_research_topic`、`enabled`

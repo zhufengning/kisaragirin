@@ -1,5 +1,7 @@
 ---
 import Layout from '@layouts/Layout.astro';
+import GroupLabel from '../../../components/GroupLabel.astro';
+import {formatGroupTitle} from '@lib/group-display';
 
 const groupId = Number(Astro.params.id);
 if (!groupId || isNaN(groupId)) {
@@ -7,8 +9,8 @@ if (!groupId || isNaN(groupId)) {
 }
 ---
 
-<Layout title={`群 ${groupId} Prompt 预览`}>
-    <h1><a href={`/group/${groupId}`}>← 消息列表</a> · 群 {groupId} Prompt 预览</h1>
+<Layout title={formatGroupTitle(groupId, 'Prompt 预览')}>
+    <h1><a href={`/group/${groupId}`}>← 消息列表</a> · <GroupLabel groupId={groupId} /> Prompt 预览</h1>
 
     <div class="controls">
         <label>触发类型：</label>

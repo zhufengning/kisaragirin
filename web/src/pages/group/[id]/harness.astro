@@ -1,5 +1,7 @@
 ---
 import Layout from '@layouts/Layout.astro';
+import GroupLabel from '../../../components/GroupLabel.astro';
+import {formatGroupTitle} from '@lib/group-display';
 import '../../../styles/harness.css';
 
 const groupId = Number(Astro.params.id);
@@ -8,12 +10,12 @@ if (!groupId || isNaN(groupId)) {
 }
 ---
 
-<Layout title={`群 ${groupId} Harness 日志`}>
+<Layout title={formatGroupTitle(groupId, 'Harness 日志')}>
     <div class="harness-page" data-group-id={groupId}>
         <header class="page-header">
             <div class="page-title-row">
                 <a class="back-link" href={`/group/${groupId}`}>← 消息列表</a>
-                <h1>群 {groupId} <span class="title-muted">Harness 日志</span></h1>
+                <h1><GroupLabel groupId={groupId} /> <span class="title-muted">Harness 日志</span></h1>
             </div>
             <p class="page-desc">只读查看 AgentHarness 会话分支，按角色筛选与展开长内容。</p>
         </header>

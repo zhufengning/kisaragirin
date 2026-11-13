@@ -49,6 +49,8 @@ export class InputConfig {
     vision_max_total_pixels = 0;
     bot_name?: string;
     bot_persona?: string;
+    /** 按群号配置的群名称备注，webui 在群名旁以小字号显示群号；未配置的群只显示群号 */
+    group_names?: Record<number, string>;
     group_custom_prompts?: Record<number, string>;
     scheduled_tasks?: Record<number, ScheduledGroupTask[]>;
     /** 覆盖 src/prompts.ts 中 `Prompts` 类的默认 prompt（如 rules、deepResearchSystem 等） */

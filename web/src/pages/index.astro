@@ -1,5 +1,6 @@
 ---
 import Layout from '@layouts/Layout.astro';
+import GroupLabel from '../components/GroupLabel.astro';
 import {db, schema} from '@lib/db';
 import {desc, sql} from 'drizzle-orm';
 
@@ -23,7 +24,7 @@ function fmtTime (ts: number): string {
     <div class="grid">
         {rows.map(r => (
             <a class="card" href={`/group/${r.groupId}`}>
-                <div class="card-title">群 {r.groupId}</div>
+                <div class="card-title"><GroupLabel groupId={r.groupId} /></div>
                 <div class="card-meta">{r.count} 条消息 · 最后更新 {fmtTime(r.lastTime)}</div>
             </a>
         ))}

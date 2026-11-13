@@ -37,6 +37,7 @@ pnpm web:build && pnpm start
 - `input.group_whitelist`：生效的群号列表，列表以外的群不处理
 - `input.bot_name` / `input.bot_persona`：机器人名称与人设
 - `input.prompts` / `input.group_custom_prompts`：覆盖默认提示词、为单个群追加指令；方法类型的成员需提供同签名函数
+- `input.group_names`：按群号配置群名称备注，webui 显示群名称与小字号群号
 - `input.scheduled_tasks`：按群的定时任务
 - `web`：面板监听地址、账号与密码
 - `ai.models` / `ai.assignments`：模型定义与用途分配；assignment 可以写成单个模型 key、失败时依次尝试的模型数组，或按时间段选择模型的 `slots`
@@ -50,7 +51,7 @@ pnpm web:build && pnpm start
 
 | 页面 | 功能 |
 |------|------|
-| `/` | 群列表 |
+| `/` | 群列表（群名称备注 + 小字号群号） |
 | `/group/{id}` | 群消息浏览与搜索、删除、清空全部、查看详情（含图片描述）、手动压缩总体记忆、按日期范围导入历史消息 |
 | `/group/{id}/memory` | 群总体记忆查看、编辑与删除 |
 | `/group/{id}/preview` | Prompt 预览 |

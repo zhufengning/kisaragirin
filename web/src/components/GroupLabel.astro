@@ -1,0 +1,29 @@
+---
+import {getGroupName} from '@lib/group-display';
+
+interface Props {
+    groupId: number;
+}
+
+const {groupId} = Astro.props;
+const name = getGroupName(groupId);
+---
+
+<span class="group-label">
+    <span class="group-name">{name ?? `群 ${groupId}`}</span>
+    {name && <span class="group-id">{groupId}</span>}
+</span>
+
+<style>
+    .group-label {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 8px;
+    }
+    .group-id {
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 400;
+        letter-spacing: 0.02em;
+    }
+</style>
