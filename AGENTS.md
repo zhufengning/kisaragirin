@@ -345,5 +345,5 @@ test/integration/       -- 消息回复调度集成测试（不使用外部账�
 
 ## 其他
 
-- 只考虑数组格式消息，不考虑CQ码。允许使用napcat扩展，禁止在任何时候提及go-cqhttp
+- 只考虑数组格式消息，不考虑CQ码。项目已由napcat迁移到使用官方bot api的qbob，部分代码使用了napcat扩展，可能兼容也可能不兼容，出现问题时需要修复。禁止在任何时候提及go-cqhttp
 - api key绝不会出现在环境变量里
