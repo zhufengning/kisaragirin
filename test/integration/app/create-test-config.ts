@@ -34,6 +34,7 @@ export interface TestConfigOverrides {
     logLevel?: 'debug' | 'info' | 'warn' | 'error';
     prompts?: Partial<Prompts>;
     debugDumpPrompt?: boolean;
+    groupNames?: Record<number, string>;
 }
 
 export interface TestConfigInput extends TestConfigOverrides {
@@ -108,6 +109,7 @@ export function createTestConfig (input: TestConfigInput): AppConfig {
         bot_name: '测试机器人',
         bot_persona: '测试用机器人',
         group_custom_prompts: groupCustomPrompts,
+        group_names: input.groupNames ?? {},
         scheduled_tasks: input.scheduledTasks,
         prompts: input.prompts ?? {},
         debug_dump_prompt: input.debugDumpPrompt ?? false

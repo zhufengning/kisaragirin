@@ -237,6 +237,9 @@ test('压缩后在会话头部注入表情包收藏列表', {timeout: 180000}, a
             ]
         }
     }, async env => {
+        // 压缩在回复发送后立即发生，先记录启动时的会话，避免读取时已被替换
+        const initialMetadata = env.db.harnessMetadata(1001);
+        assert.ok(initialMetadata);
         const url = env.assets.serveFixture('image-a.png');
         env.oneBot.emitGroupMessage({
             groupId: 1001,
@@ -250,8 +253,6 @@ test('压缩后在会话头部注入表情包收藏列表', {timeout: 180000}, a
         assert.match(firstRequest.serialized, /（内容为空）/);
         assert.match(firstRequest.serialized, /已收藏 0 个分类的 0 个表情，有点少，继续加油，积少成多哦/);
 
-        const initialMetadata = env.db.harnessMetadata(1001);
-        assert.ok(initialMetadata);
         await waitFor(() => {
             const current = env.db.harnessMetadata(1001);
             return current !== undefined && current.path !== initialMetadata.path;

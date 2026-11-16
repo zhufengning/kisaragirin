@@ -62,7 +62,7 @@ test('无总体记忆时添加记忆并保留现有会话消息', {timeout: 1800
         const addedMetadata = env.db.harnessMetadata(1001);
         assert.ok(addedMetadata);
         assert.notEqual(addedMetadata.path, initialMetadata.path);
-        assert.ok(existsSync(initialMetadata.path), '旧会话文件应保留');
+        assert.ok(!existsSync(initialMetadata.path), '旧会话文件在切换后删除');
         assert.match(firstMessageText(addedMetadata.path), new RegExp(memory));
         const carried = projectionText(addedMetadata.path);
         assert.match(carried, /第一条消息/, '新会话应包含原有聊天消息');

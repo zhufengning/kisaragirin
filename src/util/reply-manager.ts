@@ -127,7 +127,9 @@ export class GroupReplyManager {
             descQueue: options.descQueue,
             config,
             models: options.models,
-            graphiti: config.ai.graphiti ? globalThis.__graphiti__ ?? undefined : undefined
+            graphiti: config.ai.graphiti ? globalThis.__graphiti__ ?? undefined : undefined,
+            bot: options.bot,
+            botSelfId: options.botSelfId
         });
 
         let lastTriggerId = 0;

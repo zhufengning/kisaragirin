@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, rmSync} from 'node:fs';
+import {basename} from 'node:path';
 import {SessionManager} from '@earendil-works/pi-coding-agent';
 import {runScenario} from '../runner/scenario-runner';
 import {atSegment, nowSeconds, textSegment} from '../runner/messages';
@@ -35,6 +36,7 @@ test('上下文比例触发总体记忆压缩并在新会话及文件重建后�
         contextWindow: 150,
         compactContextRatio: 0.8,
         compactMaxChars: 20,
+        groupNames: {1001: '技术交流群'},
         channels: {
             primary: [
                 replyRule('第一次回复'),
@@ -47,6 +49,9 @@ test('上下文比例触发总体记忆压缩并在新会话及文件重建后�
     }, async env => {
         const initialMetadata = env.db.harnessMetadata(1001);
         assert.ok(initialMetadata);
+        assert.ok(
+            basename(initialMetadata.path).startsWith('技术交流群_group-1001_'),
+            `会话文件名应以群名称开头，实际为 ${basename(initialMetadata.path)}`);
 
         env.oneBot.emitGroupMessage({
             groupId: 1001,
@@ -56,6 +61,13 @@ test('上下文比例触发总体记忆压缩并在新会话及文件重建后�
         await env.oneBot.waitForGroupSendCount(1001, 1);
         await waitFor(() => env.db.overallMemory(1001) === memory, {
             description: '生成符合字数上限的总体记忆',
+            timeoutMs: 20000
+        });
+        await waitFor(() => {
+            const current = env.db.harnessMetadata(1001);
+            return current !== undefined && current.path !== initialMetadata.path;
+        }, {
+            description: '压缩后更换会话',
             timeoutMs: 20000
         });
 
@@ -74,7 +86,10 @@ test('上下文比例触发总体记忆压缩并在新会话及文件重建后�
         assert.ok(compactedMetadata);
         assert.notEqual(compactedMetadata.path, initialMetadata.path);
         assert.notEqual(compactedMetadata.id, initialMetadata.id);
-        assert.ok(existsSync(initialMetadata.path), '旧会话文件应保留');
+        assert.ok(
+            basename(compactedMetadata.path).startsWith('技术交流群_group-1001_'),
+            `压缩后的会话文件名应以群名称开头，实际为 ${basename(compactedMetadata.path)}`);
+        assert.ok(!existsSync(initialMetadata.path), '旧会话文件在切换后删除');
         assert.match(firstSessionText(compactedMetadata.path), new RegExp(memory));
         assert.doesNotMatch(firstSessionText(compactedMetadata.path), /第一次消息/);
 
@@ -108,5 +123,10 @@ test('上下文比例触发总体记忆压缩并在新会话及文件重建后�
         });
         assert.equal(env.openAI.requestCount(), 5);
         assert.equal(env.openAI.remainingRules('primary'), 0);
+
+        const finalMetadata = env.db.harnessMetadata(1001);
+        assert.ok(finalMetadata);
+        assert.ok(existsSync(finalMetadata.path), '当前会话文件存在');
+        assert.ok(!existsSync(restoredMetadata.path), '第二次切换后旧会话文件删除');
     });
 });

@@ -36,6 +36,7 @@ test('合并窗口内的多条消息合并为一次回复', {timeout: 60000}, as
         });
 
         await env.oneBot.waitForGroupSendCount(1001, 1);
+        await env.waitForGroupMessages(1001, 4);
         await env.expectNoActivity({windowMs: 300, description: '合并窗口结束后不应再触发'});
 
         assert.equal(env.openAI.requestCount(), 1);

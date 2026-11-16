@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import assert from 'node:assert/strict';
 import type {AppConfig} from '../../../src/config';
 import {ScenarioArtifacts} from './artifacts';
-import {FakeOneBotServer} from '../fakes/onebot-server';
+import {FakeOneBotServer, type FakeBotRole, type FakeGroupMember} from '../fakes/onebot-server';
 import {FakeOpenAIServer, type ModelResponseRule} from '../fakes/openai-completions-server';
 import {FakeAssetServer} from '../fakes/asset-server';
 import {DatabaseInspector} from './database-inspector';
@@ -27,6 +27,10 @@ export interface FakeGraphitiOptions {
 export interface ScenarioOptions extends TestConfigOverrides {
     name: string;
     groups: number[];
+    /** bot 在群里的平台角色，默认为 member */
+    botRole?: FakeBotRole;
+    /** 覆盖假 OneBot server 的群成员列表 */
+    groupMembers?: FakeGroupMember[];
     /** 按 channel（模型 id 或 模型id/group-<id>）配置响应序列 */
     channels?: Record<string, ModelResponseRule[]>;
     graphiti?: FakeGraphitiOptions;
@@ -423,7 +427,11 @@ export class ScenarioEnvironment {
 
 export async function startScenario (options: ScenarioOptions): Promise<ScenarioEnvironment> {
     const artifacts = new ScenarioArtifacts(options.name);
-    const oneBot = await FakeOneBotServer.start({artifacts});
+    const oneBot = await FakeOneBotServer.start({
+        artifacts,
+        botRole: options.botRole,
+        groupMembers: options.groupMembers
+    });
     const openAI = await FakeOpenAIServer.start(artifacts, options.channels ?? {});
     const assets = await FakeAssetServer.start();
 

@@ -13,6 +13,8 @@ export interface FakeGroupMember {
 
 export interface EmitGroupMessageOptions {
     groupId: number;
+    /** 指定的 OneBot 消息 id，不传时使用自增序号 */
+    messageId?: number;
     userId?: number;
     senderName?: string;
     senderCard?: string;
@@ -50,11 +52,21 @@ interface GateState {
     releaseResolvers: Array<() => void>;
 }
 
+export type FakeBotRole = 'owner' | 'admin' | 'member';
+
+export interface RecordedApiCall {
+    action: string;
+    params: Record<string, unknown>;
+    at: number;
+}
+
 export interface FakeOneBotOptions {
     artifacts: ScenarioArtifacts;
     selfId?: number;
     botNickname?: string;
     botCard?: string;
+    /** bot 自己在群里的平台角色，get_group_member_info 返回该值 */
+    botRole?: FakeBotRole;
     groupMembers?: FakeGroupMember[];
 }
 
@@ -69,10 +81,12 @@ export class FakeOneBotServer {
     private selfId: number;
     private botNickname: string;
     private botCard: string;
+    private botRole: FakeBotRole;
     private groupMembers: FakeGroupMember[];
     private clients = new Set<WebSocket>();
     private messageIdCounter = 1;
     private sent: SentGroupMessage[] = [];
+    private apiCalls: RecordedApiCall[] = [];
     private registered = new Map<number, RegisteredMessage>();
     private failures = new Map<string, FailureConfig>();
     private gates = new Map<string, GateState>();
@@ -84,6 +98,7 @@ export class FakeOneBotServer {
         this.selfId = options.selfId ?? 10000;
         this.botNickname = options.botNickname ?? '测试机器人';
         this.botCard = options.botCard ?? '测试机器人';
+        this.botRole = options.botRole ?? 'member';
         this.groupMembers = options.groupMembers ?? [
             {userId: 1001, nickname: '群友甲', card: '甲'},
             {userId: 1002, nickname: '群友乙'}
@@ -184,7 +199,7 @@ export class FakeOneBotServer {
 
     /** 注入真实 OneBot 群消息事件，返回分配的消息 id */
     emitGroupMessage (options: EmitGroupMessageOptions): number {
-        const messageId = this.messageIdCounter++;
+        const messageId = options.messageId ?? this.messageIdCounter++;
         const event = {
             post_type: 'message',
             message_type: 'group',
@@ -215,6 +230,10 @@ export class FakeOneBotServer {
 
     sentMessagesFor (groupId: number): SentGroupMessage[] {
         return this.sent.filter(item => item.groupId === groupId);
+    }
+
+    apiCallsFor (action: string): RecordedApiCall[] {
+        return this.apiCalls.filter(call => call.action === action);
     }
 
     async waitForGroupSendCount (groupId: number, count: number, timeoutMs = 10000): Promise<void> {
@@ -252,6 +271,7 @@ export class FakeOneBotServer {
 
     private async handleMessage (ws: WebSocket, raw: string): Promise<void> {
         const request = JSON.parse(raw) as {action: string; params: Record<string, unknown>; echo: string};
+        this.apiCalls.push({action: request.action, params: request.params, at: Date.now()});
         this.artifacts.appendJsonl('onebot-events.jsonl', {
             kind: 'api',
             at: Date.now(),
@@ -286,7 +306,7 @@ export class FakeOneBotServer {
                     join_time: 0,
                     last_sent_time: 0,
                     level: '1',
-                    role: 'member',
+                    role: this.botRole,
                     unfriendly: false,
                     title: '',
                     title_expire_time: 0,

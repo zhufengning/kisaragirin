@@ -14,6 +14,8 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type {AgentMessage} from '@earendil-works/pi-agent-core';
 import type {AssistantMessage, Context, Message} from '@earendil-works/pi-ai';
+import type {Bot} from '@lib/types';
+import {rmSync} from 'node:fs';
 import {
     schema,
     type Db,
@@ -43,6 +45,7 @@ import {createReplyTool, type ReplyToolParams, type ReplyMessageItem} from './re
 import {createGraphitiTools} from './graphiti-tool';
 import {createImageTools} from './image-tool';
 import {createStickerTools} from './sticker-tool';
+import {createGroupAdminTools} from './group-admin-tool';
 import {getStickers, type StickerRecord} from './sticker-store';
 import {addMergedMessagesEpisode} from './graphiti-episode';
 import {GraphitiClient} from './graphiti-client';
@@ -265,11 +268,14 @@ export class ReplyAgent {
         config: AppConfig;
         models: ModelRuntime;
         graphiti?: GraphitiClient | null;
+        bot: Bot;
+        botSelfId: number;
     }): Promise<ReplyAgent> {
-        const {groupId, db, descQueue, config, models, graphiti} = options;
+        const {groupId, db, descQueue, config, models, graphiti, bot, botSelfId} = options;
 
         const logger = new Logger();
-        const {sessionManager, isNew} = await getOrCreateGroupSession(groupId, db);
+        const {sessionManager, isNew} = await getOrCreateGroupSession(
+            groupId, db, config.input.group_names?.[groupId]);
         if (isNew) {
             const memory = await getGroupOverallMemory(db, groupId);
             const stickers = await getStickers(db);
@@ -294,7 +300,14 @@ export class ReplyAgent {
             groupId,
             maxStickers: config.input.sticker_max_count
         });
-        const tools: ToolDefinition[] = [replyTool, ...imageTools, ...stickerTools, ...graphitiTools];
+        const adminTools = await createGroupAdminTools({bot, db, groupId, selfId: botSelfId});
+        const tools: ToolDefinition[] = [
+            replyTool,
+            ...imageTools,
+            ...stickerTools,
+            ...adminTools,
+            ...graphitiTools
+        ];
 
         const systemPromptText = buildSystemPrompt({
             botName: config.input.bot_name || '机器人',
@@ -974,8 +987,10 @@ export class ReplyAgent {
     private async replaceSession (
         memory: string | null, carriedMessages: Message[] = []
     ): Promise<void> {
+        const previousSessionFile = this.sessionManager.getSessionFile();
         const stickers = await getStickers(this.db);
-        const created = createGroupSession(this.groupId);
+        const created = createGroupSession(
+            this.groupId, this.config.input.group_names?.[this.groupId]);
         for (const message of buildSessionHeaderMessages(memory, stickers, this.config.input.sticker_max_count)) {
             created.sessionManager.appendMessage(message);
         }
@@ -1015,8 +1030,21 @@ export class ReplyAgent {
             debug: this.debug
         });
         disposeAgentSession(previous);
+        this.deleteSessionFile(previousSessionFile);
         this.logger.info(
             `[ReplyAgent] [${this.groupId}] active session replaced with ${created.metadata.id}`);
+    }
+
+    /** 删除被替换的会话文件，避免每次压缩在 data/harness 留下新的无用文件 */
+    private deleteSessionFile (path: string | undefined): void {
+        if (!path) return;
+        try {
+            rmSync(path, {force: true});
+        } catch (err) {
+            this.logger.warn(
+                `[ReplyAgent] [${this.groupId}] failed to delete replaced session file ${path}: ` +
+                `${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     async waitForIdle (): Promise<void> {

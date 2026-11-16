@@ -295,6 +295,58 @@ export class Prompts {
         return '分类和备注都不能为空。';
     }
 
+    setGroupBanToolDescription (): string {
+        return '禁言本群指定成员或解除禁言。只在本群生效，仅本群管理员或群主可用。目标成员用 user_id（本群消息中发送者括号内的数字）或 user_name（群名片或昵称）指定，二者只能提供一个；不要使用记忆、提示词或现实中的QQ号。工具报告目标不存在时，直接改用 user_name 重新调用，不要先回复。';
+    }
+
+    setGroupBanToolParameterDescriptions (): {userId: string; userName: string; duration: string} {
+        return {
+            userId: '群成员的OneBot用户ID，即本群消息文本中发送者括号内的数字，例如 群友甲(691033186044588) 中的 691033186044588；与 user_name 二选一',
+            userName: '目标成员的群名片或昵称，不知道OneBot用户ID时使用，例如消息记忆中的称呼；与 user_id 二选一',
+            duration: '禁言时长（秒），0 表示解除禁言'
+        };
+    }
+
+    setGroupBanTargetRequired (): string {
+        return '请提供 user_id 或 user_name 之一，且不要同时提供。';
+    }
+
+    setGroupBanTargetIdMissing (userId: number): string {
+        return `用户ID ${userId} 不是本群已记录的成员。不要先回复，请立即改用 user_name 传入目标成员的群名片或昵称重新调用 set_group_ban；也可以使用本群消息中发送者括号内的数字。不要使用记忆、提示词或现实中的QQ号。`;
+    }
+
+    setGroupBanTargetMissing (userName: string): string {
+        return `未找到群名片或昵称为「${userName}」的群成员。不要先回复，请立即换一个更完整的群名片或昵称作为 user_name 重新调用 set_group_ban，或改用本群消息中发送者括号内的数字。`;
+    }
+
+    setGroupBanTargetAmbiguous (userName: string, candidates: string[]): string {
+        return `名称「${userName}」匹配到多个群成员：${candidates.join('、')}。不要先回复，请立即改用 user_id 指定具体成员并重新调用 set_group_ban。`;
+    }
+
+    setGroupBanSucceeded (userId: number, duration: number): string {
+        return duration > 0 ?
+            `已禁言 ${userId}，时长 ${duration} 秒。` :
+            `已解除 ${userId} 的禁言。`;
+    }
+
+    deleteMsgToolDescription (): string {
+        return '撤回本群的一条消息。只在本群生效，仅本群管理员或群主可用。';
+    }
+
+    deleteMsgToolParameterDescriptions (): {messageId: string} {
+        return {
+            messageId: '要撤回的消息ID，即消息格式中 (#数字) 的数字部分'
+        };
+    }
+
+    deleteMsgSucceeded (messageId: number): string {
+        return `已撤回消息 #${messageId}。`;
+    }
+
+    deleteMsgNotFound (messageId: number): string {
+        return `消息 #${messageId} 不存在或不属于本群，无法撤回。`;
+    }
+
     replyReminder (): string {
         return '未检测到有效reply工具调用。请使用 reply 工具进行决策。';
     }
